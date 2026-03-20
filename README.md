@@ -72,8 +72,23 @@ Unsupported cases fail explicitly with typed errors.
 ## Testing
 
 ```sh
-cargo test
+cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
+cargo run -p grib-reader --example sync_corpus
+git diff --exit-code
+cargo test --all-features
+cargo test --no-default-features
+cargo check --manifest-path grib-reader/fuzz/Cargo.toml --bins
+cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins -- -D warnings
+```
+
+## Release Checklist
+
+```sh
+cargo publish -p grib-reader --dry-run
+cargo publish -p grib-reader
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
 ## Corpus And Fuzzing
