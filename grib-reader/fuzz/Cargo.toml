@@ -7,6 +7,8 @@ edition = "2021"
 [package.metadata]
 cargo-fuzz = true
 
+[workspace]
+
 [dependencies]
 libfuzzer-sys = "0.4"
 grib-reader = { path = ".." }
@@ -14,6 +16,20 @@ grib-reader = { path = ".." }
 [[bin]]
 name = "fuzz_grib_open"
 path = "fuzz_targets/fuzz_grib_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_grib_tolerant"
+path = "fuzz_targets/fuzz_grib_tolerant.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_grib_sections"
+path = "fuzz_targets/fuzz_grib_sections.rs"
 test = false
 doc = false
 bench = false

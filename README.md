@@ -76,6 +76,13 @@ cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
+## Corpus And Fuzzing
+
+- Bootstrap corpus samples live in `grib-reader/tests/corpus/bootstrap/`
+- Real interoperability samples belong in `grib-reader/tests/corpus/interop/samples/`
+- Regenerate the bootstrap and fuzz seed corpora with `cargo run -p grib-reader --example sync_corpus`
+- Fuzzer entry points and usage notes live in `grib-reader/fuzz/README.md`
+
 ## License
 
 MIT OR Apache-2.0
