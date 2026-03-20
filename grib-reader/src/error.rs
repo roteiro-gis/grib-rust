@@ -37,6 +37,9 @@ pub enum Error {
     #[error("unsupported bitmap indicator: {0}")]
     UnsupportedBitmapIndicator(u8),
 
+    #[error("unsupported packing width: {0} bits per value")]
+    UnsupportedPackingWidth(u8),
+
     #[error("unsupported scanning mode: 0b{0:08b}")]
     UnsupportedScanningMode(u8),
 

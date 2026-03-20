@@ -407,6 +407,11 @@ fn try_index_message(data: &[u8], pos: usize) -> Result<(Vec<MessageIndex>, usiz
         Error::InvalidMessage(format!("failed to parse indicator at byte offset {pos}"))
     })?;
     let length = indicator.total_length as usize;
+    if length < 12 {
+        return Err(Error::InvalidMessage(format!(
+            "message at byte offset {pos} reports impossible length {length}"
+        )));
+    }
     let end = pos
         .checked_add(length)
         .ok_or_else(|| Error::InvalidMessage("message length overflow".into()))?;
@@ -440,10 +445,10 @@ fn index_grib1_message(message_bytes: &[u8], offset: usize) -> Result<Vec<Messag
     let grid = grid_description.grid;
 
     let bitmap_present_count = match sections.bitmap {
-        Some(bitmap) => count_bitmap_present_points(grib1::bitmap_payload(section_bytes(
-            message_bytes,
-            bitmap,
-        ))?),
+        Some(bitmap) => count_bitmap_present_points(
+            grib1::bitmap_payload(section_bytes(message_bytes, bitmap))?,
+            grid.num_points(),
+        )?,
         None => grid.num_points(),
     };
 
@@ -543,10 +548,23 @@ fn index_grib2_message(
     Ok(messages)
 }
 
-fn count_bitmap_present_points(bitmap: Option<&[u8]>) -> usize {
-    bitmap
-        .map(|payload| payload.iter().map(|byte| byte.count_ones() as usize).sum())
-        .unwrap_or(0)
+fn count_bitmap_present_points(bitmap: Option<&[u8]>, num_grid_points: usize) -> Result<usize> {
+    let Some(payload) = bitmap else {
+        return Ok(0);
+    };
+
+    let mut present = 0usize;
+    for bit_index in 0..num_grid_points {
+        let byte = payload
+            .get(bit_index / 8)
+            .copied()
+            .ok_or(Error::MissingBitmap)?;
+        if ((byte >> (7 - (bit_index % 8))) & 1) != 0 {
+            present += 1;
+        }
+    }
+
+    Ok(present)
 }
 
 #[cfg(test)]

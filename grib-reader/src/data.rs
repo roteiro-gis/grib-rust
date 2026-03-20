@@ -149,6 +149,9 @@ pub fn unpack_simple(
     if bits == 0 {
         return Ok(vec![params.reference_value as f64; num_values]);
     }
+    if bits > u64::BITS as usize {
+        return Err(Error::UnsupportedPackingWidth(params.bits_per_value));
+    }
 
     let required_bits = bits
         .checked_mul(num_values)
@@ -256,6 +259,7 @@ mod tests {
     use super::{
         bitmap_payload, decode_field, unpack_simple, DataRepresentation, SimplePackingParams,
     };
+    use crate::error::Error;
 
     #[test]
     fn unpack_simple_constant() {
@@ -304,5 +308,19 @@ mod tests {
         assert!(decoded[1].is_nan());
         assert_eq!(decoded[2], 20.0);
         assert_eq!(decoded[3], 30.0);
+    }
+
+    #[test]
+    fn rejects_simple_packing_wider_than_u64() {
+        let params = SimplePackingParams {
+            encoded_values: 1,
+            reference_value: 0.0,
+            binary_scale: 0,
+            decimal_scale: 0,
+            bits_per_value: 65,
+            original_field_type: 0,
+        };
+        let err = unpack_simple(&[0; 9], &params, 1).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedPackingWidth(65)));
     }
 }

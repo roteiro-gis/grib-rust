@@ -2,7 +2,10 @@ mod common;
 
 use std::io::Write;
 
-use common::{build_grib1_message, build_grib2_message, build_grib2_multifield_message};
+use common::{
+    build_grib1_message, build_grib1_message_with_bitmap, build_grib2_message,
+    build_grib2_multifield_message,
+};
 use grib_reader::{GribFile, OpenOptions};
 
 #[test]
@@ -83,4 +86,28 @@ fn tolerant_open_skips_malformed_candidates() {
             .collect::<Vec<_>>(),
         vec![9.0, 8.0, 7.0, 6.0]
     );
+}
+
+#[test]
+fn open_grib1_bitmap_field_ignores_padding_bits() {
+    let opened = GribFile::from_bytes(build_grib1_message_with_bitmap(
+        &[9, 7],
+        3,
+        1,
+        Some(&[0b1011_1111]),
+    ))
+    .unwrap();
+
+    let decoded = opened
+        .message(0)
+        .unwrap()
+        .read_data_as_f64()
+        .unwrap()
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+    assert_eq!(decoded.len(), 3);
+    assert_eq!(decoded[0], 9.0);
+    assert!(decoded[1].is_nan());
+    assert_eq!(decoded[2], 7.0);
 }

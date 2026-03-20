@@ -23,13 +23,22 @@ pub fn build_grib2_multifield_message() -> Vec<u8> {
 }
 
 pub fn build_grib1_message(values: &[u8]) -> Vec<u8> {
+    build_grib1_message_with_bitmap(values, 2, 2, None)
+}
+
+pub fn build_grib1_message_with_bitmap(
+    values: &[u8],
+    ni: u16,
+    nj: u16,
+    bitmap_payload: Option<&[u8]>,
+) -> Vec<u8> {
     let mut pds = vec![0u8; 28];
     pds[..3].copy_from_slice(&[0, 0, 28]);
     pds[3] = 2;
     pds[4] = 7;
     pds[5] = 255;
     pds[6] = 0;
-    pds[7] = 0b1000_0000;
+    pds[7] = 0b1000_0000 | if bitmap_payload.is_some() { 0b0100_0000 } else { 0 };
     pds[8] = 11;
     pds[9] = 100;
     pds[10..12].copy_from_slice(&850u16.to_be_bytes());
@@ -48,8 +57,8 @@ pub fn build_grib1_message(values: &[u8]) -> Vec<u8> {
     let mut gds = vec![0u8; 32];
     gds[..3].copy_from_slice(&[0, 0, 32]);
     gds[5] = 0;
-    gds[6..8].copy_from_slice(&2u16.to_be_bytes());
-    gds[8..10].copy_from_slice(&2u16.to_be_bytes());
+    gds[6..8].copy_from_slice(&ni.to_be_bytes());
+    gds[8..10].copy_from_slice(&nj.to_be_bytes());
     gds[10..13].copy_from_slice(&[0x01, 0x4d, 0x50]);
     gds[13..16].copy_from_slice(&[0x81, 0xd4, 0xc0]);
     gds[16] = 0x80;
@@ -65,7 +74,17 @@ pub fn build_grib1_message(values: &[u8]) -> Vec<u8> {
     bds[10] = 8;
     bds[11..].copy_from_slice(values);
 
-    let total_len = 8 + pds.len() + gds.len() + bds.len() + 4;
+    let bitmap = bitmap_payload.map(|payload| {
+        let mut section = vec![0u8; payload.len() + 6];
+        let len = section.len() as u32;
+        section[..3].copy_from_slice(&[(len >> 16) as u8, (len >> 8) as u8, len as u8]);
+        section[4..6].copy_from_slice(&0u16.to_be_bytes());
+        section[6..].copy_from_slice(payload);
+        section
+    });
+
+    let total_len =
+        8 + pds.len() + gds.len() + bitmap.as_ref().map_or(0, Vec::len) + bds.len() + 4;
     let mut message = Vec::new();
     message.extend_from_slice(b"GRIB");
     message.extend_from_slice(&[
@@ -76,6 +95,9 @@ pub fn build_grib1_message(values: &[u8]) -> Vec<u8> {
     ]);
     message.extend_from_slice(&pds);
     message.extend_from_slice(&gds);
+    if let Some(bitmap) = bitmap {
+        message.extend_from_slice(&bitmap);
+    }
     message.extend_from_slice(&bds);
     message.extend_from_slice(b"7777");
     message
