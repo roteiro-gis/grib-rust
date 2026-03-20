@@ -34,5 +34,19 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Run tests
+      - name: Verify corpus fixtures are up to date
+        run: |
+          cargo run -p grib-reader --example sync_corpus
+          git diff --exit-code
+
+      - name: Run tests with all features
         run: cargo test --all-features
+
+      - name: Run tests with no default features
+        run: cargo test --no-default-features
+
+      - name: Check fuzz targets
+        run: cargo check --manifest-path grib-reader/fuzz/Cargo.toml --bins
+
+      - name: Lint fuzz targets
+        run: cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins -- -D warnings
