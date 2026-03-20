@@ -6,7 +6,7 @@ Pure-Rust, read-only GRIB decoder for weather and climate data. No C libraries, 
 
 | Crate | Description |
 |---|---|
-| `grib-reader` | GRIB1/GRIB2 field scanner, section parser, metadata extraction, and data unpacking |
+| `grib-reader` | GRIB1/GRIB2 field scanning, metadata parsing, and packed data decoding |
 
 ## Usage
 
@@ -18,18 +18,21 @@ println!("messages: {}", file.message_count());
 
 for msg in file.messages() {
     println!(
-        "  {} {:?} reference={}Z",
+        "  {} {:?} {:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
         msg.parameter_name(),
         msg.grid_shape(),
-        msg.reference_time().hour
+        msg.reference_time().year,
+        msg.reference_time().month,
+        msg.reference_time().day,
+        msg.reference_time().hour,
+        msg.reference_time().minute,
+        msg.reference_time().second,
     );
 }
 
-// Read a single field as an f64 ndarray
 let data = file.message(0)?.read_data_as_f64()?;
 println!("shape: {:?}", data.shape());
 
-// Tolerant scan mode for byte streams containing junk or malformed candidates.
 let tolerant = GribFile::from_bytes_with_options(
     std::fs::read("mixed.bin")?,
     grib_reader::OpenOptions { strict: false },
@@ -37,27 +40,28 @@ let tolerant = GribFile::from_bytes_with_options(
 println!("recoverable messages: {}", tolerant.message_count());
 ```
 
-## Features
+## Supported Now
 
 - GRIB1 and GRIB2 message scanning with `"GRIB"`/`"7777"` boundary detection
 - Logical field indexing for multi-field GRIB2 messages
-- Section parsing for edition-specific metadata, grid, bitmap, and packed data sections
 - Regular latitude/longitude grids for GRIB1 and GRIB2
 - Simple packing for GRIB1 and GRIB2
 - WMO parameter table lookups (Code Table 4.2)
-- Typed metadata access for reference time, parameter identity, product metadata, and grid geometry
+- Typed metadata access for reference time, parameter identity, product metadata, grid geometry, and lat/lon coordinates
 - `OpenOptions` for strict or tolerant scanning
 - Bitmap application with missing values surfaced as `NaN`
 - Parallel field decoding via Rayon
 - Output: `ndarray::ArrayD<f64>`
-- Memory-mapped I/O or owned byte buffers (WASM-compatible)
-- Integration tests, corruption tests, and a `cargo-fuzz` target scaffold
+- Memory-mapped I/O or owned byte buffers
 
-## Current Scope
+## Not Yet Supported
 
-- Supported end-to-end today: GRIB1 and GRIB2 regular lat/lon grids with simple packing
-- Unsupported today: non-lat/lon grid templates, complex packing, JPEG2000, PNG, GRIB1 predefined bitmaps, and more advanced multi-packing templates
-- Unsupported cases fail explicitly with typed errors; the crate does not silently fabricate metadata or values
+- Non-lat/lon grid templates
+- Complex packing and more advanced multi-packing templates
+- JPEG2000 and PNG-packed GRIB2 fields
+- GRIB1 predefined bitmaps
+
+Unsupported cases fail explicitly with typed errors.
 
 ## Feature flags
 
@@ -69,6 +73,7 @@ println!("recoverable messages: {}", tolerant.message_count());
 
 ```sh
 cargo test
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
 ## License
