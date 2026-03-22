@@ -17,6 +17,10 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
 jobs:
   checks:
     runs-on: ubuntu-latest
@@ -53,29 +57,3 @@ jobs:
 
       - name: Lint fuzz targets
         run: cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins -- -D warnings
-
-  eccodes-interop:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Build ecCodes test image
-        run: docker build -f docker/eccodes.Dockerfile -t grib-rust-eccodes .
-
-      - name: Run ecCodes parity tests
-        run: |
-          docker run --rm -v "$PWD:/workspace" -w /workspace grib-rust-eccodes bash -lc '
-            mkdir -p target
-            cc -O2 -Wall -Wextra $(pkg-config --cflags eccodes) tools/eccodes-reference.c -o target/eccodes-reference $(pkg-config --libs eccodes)
-            GRIB_READER_ECCODES_HELPER=/workspace/target/eccodes-reference /usr/local/cargo/bin/cargo test -p grib-reader --test parity_eccodes --all-features
-          '
-
-      - name: Run ecCodes benchmark harness
-        run: |
-          docker run --rm -v "$PWD:/workspace" -w /workspace -e GRIB_READER_BENCH_ITERATIONS=3 grib-rust-eccodes bash -lc '
-            mkdir -p target
-            cc -O2 -Wall -Wextra $(pkg-config --cflags eccodes) tools/eccodes-reference.c -o target/eccodes-reference $(pkg-config --libs eccodes)
-            GRIB_READER_ECCODES_HELPER=/workspace/target/eccodes-reference /usr/local/cargo/bin/cargo test -p grib-reader --test benchmark_eccodes --all-features -- --ignored --nocapture
-          '

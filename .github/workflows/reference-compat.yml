@@ -1,0 +1,50 @@
+name: Reference Compatibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_benchmarks:
+        description: Run Criterion comparison benchmarks against ecCodes
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reference-compat-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  eccodes:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run ecCodes parity tests
+        run: ./scripts/run-reference-parity.sh
+
+      - name: Run ecCodes Criterion benchmarks
+        if: ${{ inputs.run_benchmarks }}
+        run: ./scripts/run-reference-benchmarks.sh
+
+      - name: Upload Criterion artifacts
+        if: ${{ always() && inputs.run_benchmarks }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-eccodes-${{ github.sha }}
+          path: target/criterion
+          if-no-files-found: warn

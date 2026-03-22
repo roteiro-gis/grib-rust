@@ -80,8 +80,13 @@ cargo test --all-features
 cargo test --no-default-features
 cargo check --manifest-path grib-reader/fuzz/Cargo.toml --bins
 cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins -- -D warnings
-./scripts/run-eccodes-parity.sh
-./scripts/run-eccodes-benchmarks.sh
+```
+
+Reference compatibility checks are intentionally outside default PR CI:
+
+```sh
+./scripts/run-reference-parity.sh
+./scripts/run-reference-benchmarks.sh
 ```
 
 ## Release Checklist
@@ -102,10 +107,10 @@ git push origin v0.1.0
 
 ## Dockerized ecCodes Checks
 
-- `./scripts/run-eccodes-parity.sh` builds a Docker image with `ecCodes`, compiles `tools/eccodes-reference.c`, and runs parity tests against the C library.
-- `./scripts/run-eccodes-benchmarks.sh` runs the opt-in benchmark comparison test in the same container.
-- `GRIB_READER_BENCH_ITERATIONS=50 ./scripts/run-eccodes-benchmarks.sh` overrides the default benchmark loop count.
-- `GRIB_READER_BENCH_MAX_RATIO=1.5` can be set when running the benchmark test directly to fail if Rust exceeds the configured `rust_ms / eccodes_ms` ratio.
+- `./scripts/run-reference-parity.sh` builds a Docker image with `ecCodes`, compiles `tools/eccodes-reference.c`, and runs the parity integration tests against the C library.
+- `./scripts/run-reference-benchmarks.sh` runs the Criterion comparison bench in the same container and writes reports to `target/criterion/`.
+- `./scripts/run-eccodes-parity.sh` and `./scripts/run-eccodes-benchmarks.sh` remain as compatibility wrappers around the shared reference script names.
+- CI benchmark numbers are smoke signals, not authoritative performance claims on shared runners.
 
 ## License
 
