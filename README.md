@@ -82,6 +82,12 @@ cargo check --manifest-path grib-reader/fuzz/Cargo.toml --bins
 cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins -- -D warnings
 ```
 
+Reference compatibility checks are intentionally outside default PR CI:
+
+```sh
+./scripts/run-reference-parity.sh
+```
+
 ## Release Checklist
 
 ```sh
@@ -97,6 +103,12 @@ git push origin v0.1.0
 - Real interoperability samples belong in `grib-reader/tests/corpus/interop/samples/`
 - Regenerate the bootstrap and fuzz seed corpora with `cargo run -p grib-reader --example sync_corpus`
 - Fuzzer entry points and usage notes live in `grib-reader/fuzz/README.md`
+
+## Reference Checks
+
+- `./scripts/run-reference-parity.sh` runs the Dockerized ecCodes parity suite.
+- For reference comparisons and current benchmark results against ecCodes, see
+  [docs/benchmark-report.md](docs/benchmark-report.md).
 
 ## License
 

@@ -92,17 +92,32 @@ pub fn parameter_name(discipline: u8, category: u8, number: u8) -> &'static str 
 pub fn parameter_description(discipline: u8, category: u8, number: u8) -> &'static str {
     match (discipline, category, number) {
         (0, 0, 0) => "Temperature",
+        (0, 0, 1) => "Virtual temperature",
+        (0, 0, 2) => "Potential temperature",
+        (0, 0, 4) => "Maximum temperature",
+        (0, 0, 5) => "Minimum temperature",
         (0, 0, 6) => "Dew point temperature",
+        (0, 1, 0) => "Specific humidity",
         (0, 1, 1) => "Relative humidity",
+        (0, 1, 3) => "Precipitable water",
         (0, 1, 8) => "Total precipitation",
+        (0, 2, 0) => "Wind direction",
+        (0, 2, 1) => "Wind speed",
         (0, 2, 2) => "U-component of wind",
         (0, 2, 3) => "V-component of wind",
+        (0, 2, 22) => "Wind gust",
         (0, 3, 0) => "Pressure",
         (0, 3, 1) => "Pressure reduced to MSL",
         (0, 3, 5) => "Geopotential height",
+        (0, 4, 7) => "Downward short-wave radiation flux",
+        (0, 5, 3) => "Downward long-wave radiation flux",
         (0, 6, 1) => "Total cloud cover",
         (0, 7, 6) => "Convective available potential energy",
+        (0, 7, 7) => "Convective inhibition",
         (10, 0, 3) => "Significant height of combined wind waves and swell",
+        (10, 0, 4) => "Direction of wind waves",
+        (10, 0, 5) => "Mean period of wind waves",
+        (10, 3, 0) => "Water temperature",
         _ => "Unknown parameter",
     }
 }
@@ -119,6 +134,8 @@ mod tests {
         assert_eq!(parameter_name(0, 2, 2), "UGRD");
         assert_eq!(parameter_name(0, 3, 5), "HGT");
         assert_eq!(parameter_name(10, 0, 3), "HTSGW");
+        assert_eq!(parameter_description(0, 0, 2), "Potential temperature");
+        assert_eq!(parameter_description(10, 3, 0), "Water temperature");
     }
 
     #[test]
