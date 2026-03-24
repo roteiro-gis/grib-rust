@@ -93,8 +93,8 @@ Reference compatibility checks are intentionally outside default PR CI:
 ```sh
 cargo publish -p grib-reader --dry-run
 cargo publish -p grib-reader
-git tag v0.1.0
-git push origin v0.1.0
+git tag v<version>
+git push origin v<version>
 ```
 
 ## Corpus And Fuzzing
