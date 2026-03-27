@@ -4,7 +4,7 @@ use std::io::Write;
 
 use common::{
     build_grib1_message, build_grib1_message_with_bitmap, build_grib2_message,
-    build_grib2_multifield_message,
+    build_grib2_message_with_forecast, build_grib2_multifield_message,
 };
 use grib_reader::{GribFile, OpenOptions};
 
@@ -21,6 +21,10 @@ fn open_grib2_from_file_and_decode() {
     let field = opened.message(0).unwrap();
     assert_eq!(field.parameter_name(), "TMP");
     assert_eq!(field.reference_time().year, 2026);
+    assert_eq!(
+        field.read_flat_data_as_f64().unwrap(),
+        vec![1.0, 2.0, 3.0, 4.0]
+    );
     assert_eq!(
         field
             .read_data_as_f64()
@@ -55,6 +59,23 @@ fn open_grib1_from_file_and_decode() {
             .collect::<Vec<_>>(),
         vec![5.0, 6.0, 7.0, 8.0]
     );
+}
+
+#[test]
+fn computes_valid_time_from_forecast_lead() {
+    let opened =
+        GribFile::from_bytes(build_grib2_message_with_forecast(&[1, 2, 3, 4], 18)).unwrap();
+    let field = opened.message(0).unwrap();
+    let valid = field.valid_time().unwrap();
+
+    assert_eq!(field.forecast_time_unit(), Some(1));
+    assert_eq!(field.forecast_time(), Some(18));
+    assert_eq!(valid.year, 2026);
+    assert_eq!(valid.month, 3);
+    assert_eq!(valid.day, 21);
+    assert_eq!(valid.hour, 6);
+    assert_eq!(valid.minute, 0);
+    assert_eq!(valid.second, 0);
 }
 
 #[test]

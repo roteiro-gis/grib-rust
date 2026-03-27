@@ -28,10 +28,26 @@ for msg in file.messages() {
         msg.reference_time().minute,
         msg.reference_time().second,
     );
+
+    if let Some(valid) = msg.valid_time() {
+        println!(
+            "  valid {:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+            valid.year,
+            valid.month,
+            valid.day,
+            valid.hour,
+            valid.minute,
+            valid.second,
+        );
+    }
 }
 
-let data = file.message(0)?.read_data_as_f64()?;
-println!("shape: {:?}", data.shape());
+let field = file.message(0)?;
+let flat = field.read_flat_data_as_f64()?;
+println!("decoded values: {}", flat.len());
+
+let data = field.read_data_as_f64()?;
+println!("ndarray shape: {:?}", data.shape());
 
 let tolerant = GribFile::from_bytes_with_options(
     std::fs::read("mixed.bin")?,
@@ -48,10 +64,11 @@ println!("recoverable messages: {}", tolerant.message_count());
 - Simple packing for GRIB1 and GRIB2
 - WMO parameter table lookups (Code Table 4.2)
 - Typed metadata access for reference time, parameter identity, product metadata, grid geometry, and lat/lon coordinates
+- Forecast valid-time helpers from reference time + lead time
 - `OpenOptions` for strict or tolerant scanning
 - Bitmap application with missing values surfaced as `NaN`
 - Parallel field decoding via Rayon
-- Output: `ndarray::ArrayD<f64>`
+- Output: flat `Vec<f64>` or `ndarray::ArrayD<f64>`
 - Memory-mapped I/O or owned byte buffers
 
 ## Not Yet Supported

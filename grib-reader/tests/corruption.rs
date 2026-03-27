@@ -61,3 +61,30 @@ fn rejects_grib1_section_length_past_end_of_message() {
     let err = expect_err(message);
     assert!(matches!(err, Error::Truncated { .. }));
 }
+
+#[test]
+fn rejects_grib2_encoded_value_count_mismatch_without_bitmap() {
+    let mut message = build_grib2_message(&[1, 2, 3, 4]);
+    let section5_offset = 16 + 21 + 72 + 34;
+    message[section5_offset + 5..section5_offset + 9].copy_from_slice(&3u32.to_be_bytes());
+
+    let opened = GribFile::from_bytes(message).unwrap();
+    let err = opened.message(0).unwrap().read_data_as_f64().unwrap_err();
+    assert!(matches!(
+        err,
+        Error::DataLengthMismatch {
+            expected: 4,
+            actual: 3,
+        }
+    ));
+}
+
+#[test]
+fn rejects_internal_end_marker_reached_via_bad_section_length() {
+    let mut message = build_grib2_message(&[55, 55, 55, 55]);
+    let section7_offset = 16 + 21 + 72 + 34 + 21;
+    message[section7_offset..section7_offset + 4].copy_from_slice(&5u32.to_be_bytes());
+
+    let err = expect_err(message);
+    assert!(matches!(err, Error::InvalidMessage(_)));
+}

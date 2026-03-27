@@ -10,6 +10,16 @@ pub fn build_grib2_message(values: &[u8]) -> Vec<u8> {
     ])
 }
 
+pub fn build_grib2_message_with_forecast(values: &[u8], forecast_time: u32) -> Vec<u8> {
+    assemble_grib2_message(&[
+        build_identification(),
+        build_grid(2, 2, 0),
+        build_product_with_forecast(0, 0, forecast_time),
+        build_simple_representation(values.len(), 8),
+        build_data(values),
+    ])
+}
+
 pub fn build_grib2_multifield_message() -> Vec<u8> {
     assemble_grib2_message(&[
         build_identification(),
@@ -154,6 +164,14 @@ fn build_identification() -> Vec<u8> {
 }
 
 fn build_product(parameter_category: u8, parameter_number: u8) -> Vec<u8> {
+    build_product_with_forecast(parameter_category, parameter_number, 0)
+}
+
+fn build_product_with_forecast(
+    parameter_category: u8,
+    parameter_number: u8,
+    forecast_time: u32,
+) -> Vec<u8> {
     let mut section = vec![0u8; 34];
     section[..4].copy_from_slice(&(34u32).to_be_bytes());
     section[4] = 4;
@@ -162,7 +180,7 @@ fn build_product(parameter_category: u8, parameter_number: u8) -> Vec<u8> {
     section[10] = parameter_number;
     section[11] = 2;
     section[17] = 1;
-    section[18..22].copy_from_slice(&0u32.to_be_bytes());
+    section[18..22].copy_from_slice(&forecast_time.to_be_bytes());
     section[22] = 103;
     section[23] = 0;
     section[24..28].copy_from_slice(&850u32.to_be_bytes());

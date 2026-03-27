@@ -10,31 +10,30 @@ use common::{
 use criterion::{criterion_group, criterion_main, Criterion};
 
 fn compare_against_eccodes(c: &mut Criterion) {
-    let Some(helper) = helper_path() else {
-        eprintln!("skipping ecCodes Criterion benchmark; GRIB_READER_ECCODES_HELPER is not set");
-        return;
-    };
-
     let files = collect_parity_samples();
     assert!(
         !files.is_empty(),
         "benchmark corpus is empty; expected bootstrap fixtures at minimum"
     );
 
-    let rust_validation = benchmark_rust(&files, 1);
-    let reference_validation = benchmark_reference(&helper, &files, 1);
-    assert_benchmark_coverage(&rust_validation, &reference_validation);
-
-    let mut group = c.benchmark_group("reference-compare");
+    let mut group = c.benchmark_group("decode");
     group.bench_function("grib-rust", |b| {
         b.iter_custom(|iters| benchmark_rust(&files, iters as usize).elapsed)
     });
-    group.bench_function("eccodes", |b| {
-        b.iter_custom(|iters| {
-            let reference = benchmark_reference(&helper, &files, iters as usize);
-            duration_from_nanos(reference.elapsed_ns)
-        })
-    });
+    if let Some(helper) = helper_path() {
+        let rust_validation = benchmark_rust(&files, 1);
+        let reference_validation = benchmark_reference(&helper, &files, 1);
+        assert_benchmark_coverage(&rust_validation, &reference_validation);
+
+        group.bench_function("eccodes", |b| {
+            b.iter_custom(|iters| {
+                let reference = benchmark_reference(&helper, &files, iters as usize);
+                duration_from_nanos(reference.elapsed_ns)
+            })
+        });
+    } else {
+        eprintln!("ecCodes benchmark disabled; GRIB_READER_ECCODES_HELPER is not set");
+    }
     group.finish();
 }
 

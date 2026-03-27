@@ -67,21 +67,30 @@ pub fn decode_field(
         });
     }
 
-    let payload = &data_section[5..];
+    decode_payload(
+        &data_section[5..],
+        representation,
+        bitmap_section,
+        num_grid_points,
+    )
+}
+
+pub(crate) fn decode_payload(
+    payload: &[u8],
+    representation: &DataRepresentation,
+    bitmap_section: Option<&[u8]>,
+    num_grid_points: usize,
+) -> Result<Vec<f64>> {
     match representation {
         DataRepresentation::SimplePacking(params) => {
-            let encoded_values = match bitmap_section {
-                Some(_) => params.encoded_values,
-                None => num_grid_points,
-            };
-            let unpacked = unpack_simple(payload, params, encoded_values)?;
+            let unpacked = unpack_simple(payload, params, params.encoded_values)?;
             match bitmap_section {
                 Some(bitmap) => apply_bitmap(bitmap, unpacked, num_grid_points),
                 None => {
-                    if unpacked.len() != num_grid_points {
+                    if params.encoded_values != num_grid_points {
                         return Err(Error::DataLengthMismatch {
                             expected: num_grid_points,
-                            actual: unpacked.len(),
+                            actual: params.encoded_values,
                         });
                     }
                     Ok(unpacked)
@@ -322,5 +331,27 @@ mod tests {
         };
         let err = unpack_simple(&[0; 9], &params, 1).unwrap_err();
         assert!(matches!(err, Error::UnsupportedPackingWidth(65)));
+    }
+
+    #[test]
+    fn rejects_encoded_value_count_mismatch_without_bitmap() {
+        let data_section = [0, 0, 0, 8, 7, 10, 20, 30];
+        let representation = DataRepresentation::SimplePacking(SimplePackingParams {
+            encoded_values: 3,
+            reference_value: 0.0,
+            binary_scale: 0,
+            decimal_scale: 0,
+            bits_per_value: 8,
+            original_field_type: 0,
+        });
+
+        let err = decode_field(&data_section, &representation, None, 4).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::DataLengthMismatch {
+                expected: 4,
+                actual: 3,
+            }
+        ));
     }
 }

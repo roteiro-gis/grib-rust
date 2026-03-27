@@ -282,6 +282,22 @@ impl<'a> Message<'a> {
         self.metadata.parameter.description
     }
 
+    pub fn forecast_time_unit(&self) -> Option<u8> {
+        self.metadata.forecast_time_unit
+    }
+
+    pub fn forecast_time(&self) -> Option<u32> {
+        self.metadata.forecast_time
+    }
+
+    pub fn valid_time(&self) -> Option<ReferenceTime> {
+        let unit = self.metadata.forecast_time_unit?;
+        let lead = self.metadata.forecast_time?;
+        self.metadata
+            .reference_time
+            .checked_add_forecast_time(unit, lead)
+    }
+
     pub fn grid_shape(&self) -> (usize, usize) {
         self.metadata.grid.shape()
     }
@@ -300,7 +316,7 @@ impl<'a> Message<'a> {
         }
     }
 
-    pub fn read_data_as_f64(&self) -> Result<ArrayD<f64>> {
+    pub fn read_flat_data_as_f64(&self) -> Result<Vec<f64>> {
         let grid = match &self.metadata.grid {
             GridDefinition::LatLon(grid) => grid,
             GridDefinition::Unsupported(template) => {
@@ -343,7 +359,11 @@ impl<'a> Message<'a> {
             }
         };
 
-        let ordered = grid.reorder_for_ndarray(decoded)?;
+        grid.reorder_for_ndarray(decoded)
+    }
+
+    pub fn read_data_as_f64(&self) -> Result<ArrayD<f64>> {
+        let ordered = self.read_flat_data_as_f64()?;
         ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
             .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
     }
@@ -553,15 +573,20 @@ fn count_bitmap_present_points(bitmap: Option<&[u8]>, num_grid_points: usize) ->
         return Ok(0);
     };
 
-    let mut present = 0usize;
-    for bit_index in 0..num_grid_points {
-        let byte = payload
-            .get(bit_index / 8)
-            .copied()
-            .ok_or(Error::MissingBitmap)?;
-        if ((byte >> (7 - (bit_index % 8))) & 1) != 0 {
-            present += 1;
-        }
+    let full_bytes = num_grid_points / 8;
+    let remaining_bits = num_grid_points % 8;
+    let required_bytes = full_bytes + usize::from(remaining_bits > 0);
+    if payload.len() < required_bytes {
+        return Err(Error::MissingBitmap);
+    }
+
+    let mut present = payload[..full_bytes]
+        .iter()
+        .map(|byte| byte.count_ones() as usize)
+        .sum();
+    if remaining_bits > 0 {
+        let mask = u8::MAX << (8 - remaining_bits);
+        present += (payload[full_bytes] & mask).count_ones() as usize;
     }
 
     Ok(present)

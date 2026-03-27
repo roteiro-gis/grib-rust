@@ -1,6 +1,6 @@
 //! GRIB Edition 1 parsing.
 
-use crate::data::{decode_field, DataRepresentation, SimplePackingParams};
+use crate::data::{decode_payload, DataRepresentation, SimplePackingParams};
 use crate::error::{Error, Result};
 use crate::grid::{GridDefinition, LatLonGrid};
 use crate::metadata::{Parameter, ReferenceTime};
@@ -189,7 +189,13 @@ pub fn bitmap_payload(section_bytes: &[u8]) -> Result<Option<&[u8]>> {
     if indicator == 0 {
         Ok(Some(&section_bytes[6..]))
     } else {
-        Err(Error::UnsupportedBitmapIndicator(u8::MAX))
+        Err(Error::UnsupportedBitmapIndicator(
+            if indicator <= u16::from(u8::MAX) {
+                indicator as u8
+            } else {
+                u8::MAX
+            },
+        ))
     }
 }
 
@@ -199,10 +205,12 @@ pub fn decode_simple_field(
     bitmap_section: Option<&[u8]>,
     num_grid_points: usize,
 ) -> Result<Vec<f64>> {
-    let mut wrapped = Vec::with_capacity(data_section.len() + 1);
-    wrapped.extend_from_slice(&[0, 0, 0, 0, 7]);
-    wrapped.extend_from_slice(data_section);
-    decode_field(&wrapped, representation, bitmap_section, num_grid_points)
+    decode_payload(
+        data_section,
+        representation,
+        bitmap_section,
+        num_grid_points,
+    )
 }
 
 pub fn parse_message_sections(message_bytes: &[u8]) -> Result<Grib1Sections> {
@@ -359,7 +367,8 @@ fn ibm_f32(bytes: [u8; 4]) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ibm_f32, parse_message_sections};
+    use super::{bitmap_payload, ibm_f32, parse_message_sections};
+    use crate::error::Error;
 
     #[test]
     fn decodes_zero_ibm_float() {
@@ -409,5 +418,11 @@ mod tests {
         message.extend_from_slice(b"7777");
 
         assert!(parse_message_sections(&message).is_err());
+    }
+
+    #[test]
+    fn reports_small_predefined_bitmap_indicator() {
+        let err = bitmap_payload(&[0, 0, 6, 0, 0, 5]).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedBitmapIndicator(5)));
     }
 }

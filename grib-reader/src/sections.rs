@@ -35,6 +35,11 @@ pub fn scan_sections(msg_bytes: &[u8]) -> Result<Vec<SectionRef>> {
 
     while pos < msg_bytes.len() {
         if pos + 4 <= msg_bytes.len() && &msg_bytes[pos..pos + 4] == b"7777" {
+            if pos != msg_bytes.len() - 4 {
+                return Err(Error::InvalidMessage(
+                    "end section 7777 encountered before message end".into(),
+                ));
+            }
             sections.push(SectionRef {
                 number: 8,
                 offset: pos,
@@ -171,6 +176,8 @@ pub fn index_fields(msg_bytes: &[u8]) -> Result<Vec<FieldSections>> {
 
 #[cfg(test)]
 mod tests {
+    use crate::error::Error;
+
     use super::{index_fields, scan_sections};
 
     fn section(number: u8, payload_len: usize) -> Vec<u8> {
@@ -215,5 +222,16 @@ mod tests {
         assert_eq!(fields.len(), 2);
         assert_eq!(fields[0].grid.number, 3);
         assert_eq!(fields[1].product.number, 4);
+    }
+
+    #[test]
+    fn rejects_early_end_section_before_message_end() {
+        let mut data = vec![0u8; 16];
+        data.extend_from_slice(&section(1, 16));
+        data.extend_from_slice(b"7777");
+        data.extend_from_slice(&[0, 0, 0, 0]);
+
+        let err = scan_sections(&data).unwrap_err();
+        assert!(matches!(err, Error::InvalidMessage(_)));
     }
 }
