@@ -965,4 +965,37 @@ mod tests {
             unpack_complex(&[0x00, 0x0A, 0x00, 0x0D, 0x00, 0x03, 0x00, 0x10], &params).unwrap();
         assert_eq!(values, vec![10.0, 13.0, 19.0, 29.0]);
     }
+
+    #[test]
+    fn unpacks_complex_packing_with_spatial_differencing_and_missing_values() {
+        let params = ComplexPackingParams {
+            encoded_values: 4,
+            reference_value: 0.0,
+            binary_scale: 0,
+            decimal_scale: 0,
+            group_reference_bits: 1,
+            original_field_type: 0,
+            group_splitting_method: 1,
+            missing_value_management: 1,
+            primary_missing_substitute: u32::MAX,
+            secondary_missing_substitute: u32::MAX,
+            num_groups: 1,
+            group_width_reference: 2,
+            group_width_bits: 0,
+            group_length_reference: 4,
+            group_length_increment: 1,
+            true_length_last_group: 4,
+            scaled_group_length_bits: 0,
+            spatial_differencing: Some(SpatialDifferencingParams {
+                order: 1,
+                descriptor_octets: 2,
+            }),
+        };
+
+        let values = unpack_complex(&[0x00, 0x0A, 0x00, 0x03, 0x00, 0x32], &params).unwrap();
+        assert_eq!(values[0], 10.0);
+        assert!(values[1].is_nan());
+        assert_eq!(values[2], 13.0);
+        assert_eq!(values[3], 18.0);
+    }
 }
