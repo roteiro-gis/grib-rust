@@ -3,8 +3,10 @@ mod common;
 use std::io::Write;
 
 use common::{
-    build_grib1_message, build_grib1_message_with_bitmap, build_grib2_message,
+    build_grib1_message, build_grib1_message_with_bitmap, build_grib2_complex_packing_message,
+    build_grib2_complex_packing_message_with_missing, build_grib2_message,
     build_grib2_message_with_forecast, build_grib2_multifield_message,
+    build_grib2_spatial_differencing_message,
 };
 use grib_reader::{GribFile, OpenOptions};
 
@@ -131,4 +133,52 @@ fn open_grib1_bitmap_field_ignores_padding_bits() {
     assert_eq!(decoded[0], 9.0);
     assert!(decoded[1].is_nan());
     assert_eq!(decoded[2], 7.0);
+}
+
+#[test]
+fn open_grib2_complex_packing_field_and_decode() {
+    let opened = GribFile::from_bytes(build_grib2_complex_packing_message()).unwrap();
+    let decoded = opened
+        .message(0)
+        .unwrap()
+        .read_data_as_f64()
+        .unwrap()
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+
+    assert_eq!(decoded, vec![3.0, 4.0, 5.0, 9.0]);
+}
+
+#[test]
+fn open_grib2_complex_packing_field_with_missing_values() {
+    let opened = GribFile::from_bytes(build_grib2_complex_packing_message_with_missing()).unwrap();
+    let decoded = opened
+        .message(0)
+        .unwrap()
+        .read_data_as_f64()
+        .unwrap()
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+
+    assert_eq!(decoded[0], 7.0);
+    assert!(decoded[1].is_nan());
+    assert_eq!(decoded[2], 9.0);
+    assert!(decoded[3].is_nan());
+}
+
+#[test]
+fn open_grib2_spatial_differencing_field_and_decode() {
+    let opened = GribFile::from_bytes(build_grib2_spatial_differencing_message()).unwrap();
+    let decoded = opened
+        .message(0)
+        .unwrap()
+        .read_data_as_f64()
+        .unwrap()
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+
+    assert_eq!(decoded, vec![10.0, 12.0, 15.0, 19.0]);
 }

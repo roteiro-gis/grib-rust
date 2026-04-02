@@ -10,6 +10,120 @@ pub fn build_grib2_message(values: &[u8]) -> Vec<u8> {
     ])
 }
 
+pub fn build_grib2_complex_packing_message() -> Vec<u8> {
+    let mut payload = BitPacker::new();
+    for group_reference in [3u64, 5] {
+        payload.push(group_reference, 3);
+    }
+    payload.align_to_byte();
+    for group_width_delta in [1u64, 3] {
+        payload.push(group_width_delta, 2);
+    }
+    payload.align_to_byte();
+    for (value, bits) in [(0u64, 1usize), (1, 1), (0, 3), (4, 3)] {
+        payload.push(value, bits);
+    }
+
+    assemble_grib2_message(&[
+        build_identification(),
+        build_grid(2, 2, 0),
+        build_product(0, 0),
+        build_complex_representation(ComplexRepresentationSpec {
+            encoded_values: 4,
+            template: 2,
+            group_reference_bits: 3,
+            missing_value_management: 0,
+            num_groups: 2,
+            group_width_reference: 0,
+            group_width_bits: 2,
+            group_length_reference: 2,
+            group_length_increment: 1,
+            true_length_last_group: 2,
+            scaled_group_length_bits: 0,
+            spatial_order: None,
+            descriptor_octets: None,
+        }),
+        build_data(&payload.finish()),
+    ])
+}
+
+pub fn build_grib2_complex_packing_message_with_missing() -> Vec<u8> {
+    let mut payload = BitPacker::new();
+    for group_reference in [7u64, 9] {
+        payload.push(group_reference, 4);
+    }
+    payload.align_to_byte();
+    for group_width_delta in [2u64, 1] {
+        payload.push(group_width_delta, 2);
+    }
+    payload.align_to_byte();
+    for (value, bits) in [(0u64, 2usize), (3, 2), (0, 1), (1, 1)] {
+        payload.push(value, bits);
+    }
+
+    assemble_grib2_message(&[
+        build_identification(),
+        build_grid(2, 2, 0),
+        build_product(0, 0),
+        build_complex_representation(ComplexRepresentationSpec {
+            encoded_values: 4,
+            template: 2,
+            group_reference_bits: 4,
+            missing_value_management: 1,
+            num_groups: 2,
+            group_width_reference: 0,
+            group_width_bits: 2,
+            group_length_reference: 2,
+            group_length_increment: 1,
+            true_length_last_group: 2,
+            scaled_group_length_bits: 0,
+            spatial_order: None,
+            descriptor_octets: None,
+        }),
+        build_data(&payload.finish()),
+    ])
+}
+
+pub fn build_grib2_spatial_differencing_message() -> Vec<u8> {
+    let mut payload = BitPacker::new();
+    for descriptor in [10u64, 2] {
+        payload.push(descriptor, 16);
+    }
+    for group_reference in [0u64, 1] {
+        payload.push(group_reference, 2);
+    }
+    payload.align_to_byte();
+    for group_width_delta in [0u64, 1] {
+        payload.push(group_width_delta, 1);
+    }
+    payload.align_to_byte();
+    for (value, bits) in [(0u64, 1usize), (1, 1)] {
+        payload.push(value, bits);
+    }
+
+    assemble_grib2_message(&[
+        build_identification(),
+        build_grid(2, 2, 0),
+        build_product(0, 0),
+        build_complex_representation(ComplexRepresentationSpec {
+            encoded_values: 4,
+            template: 3,
+            group_reference_bits: 2,
+            missing_value_management: 0,
+            num_groups: 2,
+            group_width_reference: 0,
+            group_width_bits: 1,
+            group_length_reference: 2,
+            group_length_increment: 1,
+            true_length_last_group: 2,
+            scaled_group_length_bits: 0,
+            spatial_order: Some(1),
+            descriptor_octets: Some(2),
+        }),
+        build_data(&payload.finish()),
+    ])
+}
+
 pub fn build_grib2_message_with_forecast(values: &[u8], forecast_time: u32) -> Vec<u8> {
     assemble_grib2_message(&[
         build_identification(),
@@ -200,6 +314,34 @@ fn build_simple_representation(encoded_values: usize, bits_per_value: u8) -> Vec
     section
 }
 
+fn build_complex_representation(spec: ComplexRepresentationSpec) -> Vec<u8> {
+    let has_spatial = spec.template == 3;
+    let mut section = vec![0u8; if has_spatial { 49 } else { 47 }];
+    let len = section.len() as u32;
+    section[..4].copy_from_slice(&len.to_be_bytes());
+    section[4] = 5;
+    section[5..9].copy_from_slice(&(spec.encoded_values as u32).to_be_bytes());
+    section[9..11].copy_from_slice(&(spec.template as u16).to_be_bytes());
+    section[11..15].copy_from_slice(&0f32.to_be_bytes());
+    section[19] = spec.group_reference_bits;
+    section[21] = 1;
+    section[22] = spec.missing_value_management;
+    section[23..27].copy_from_slice(&u32::MAX.to_be_bytes());
+    section[27..31].copy_from_slice(&u32::MAX.to_be_bytes());
+    section[31..35].copy_from_slice(&(spec.num_groups as u32).to_be_bytes());
+    section[35] = spec.group_width_reference;
+    section[36] = spec.group_width_bits;
+    section[37..41].copy_from_slice(&spec.group_length_reference.to_be_bytes());
+    section[41] = spec.group_length_increment;
+    section[42..46].copy_from_slice(&spec.true_length_last_group.to_be_bytes());
+    section[46] = spec.scaled_group_length_bits;
+    if has_spatial {
+        section[47] = spec.spatial_order.unwrap();
+        section[48] = spec.descriptor_octets.unwrap();
+    }
+    section
+}
+
 fn build_grid(ni: u32, nj: u32, scanning_mode: u8) -> Vec<u8> {
     let mut section = vec![0u8; 72];
     section[..4].copy_from_slice(&(72u32).to_be_bytes());
@@ -234,4 +376,65 @@ fn assemble_grib2_message(sections: &[Vec<u8>]) -> Vec<u8> {
     }
     message.extend_from_slice(b"7777");
     message
+}
+
+struct ComplexRepresentationSpec {
+    encoded_values: usize,
+    template: u8,
+    group_reference_bits: u8,
+    missing_value_management: u8,
+    num_groups: usize,
+    group_width_reference: u8,
+    group_width_bits: u8,
+    group_length_reference: u32,
+    group_length_increment: u8,
+    true_length_last_group: u32,
+    scaled_group_length_bits: u8,
+    spatial_order: Option<u8>,
+    descriptor_octets: Option<u8>,
+}
+
+struct BitPacker {
+    bytes: Vec<u8>,
+    current: u8,
+    used_bits: u8,
+}
+
+impl BitPacker {
+    fn new() -> Self {
+        Self {
+            bytes: Vec::new(),
+            current: 0,
+            used_bits: 0,
+        }
+    }
+
+    fn push(&mut self, value: u64, bit_count: usize) {
+        for shift in (0..bit_count).rev() {
+            let bit = ((value >> shift) & 1) as u8;
+            self.current = (self.current << 1) | bit;
+            self.used_bits += 1;
+            if self.used_bits == 8 {
+                self.bytes.push(self.current);
+                self.current = 0;
+                self.used_bits = 0;
+            }
+        }
+    }
+
+    fn align_to_byte(&mut self) {
+        if self.used_bits == 0 {
+            return;
+        }
+
+        self.current <<= 8 - self.used_bits;
+        self.bytes.push(self.current);
+        self.current = 0;
+        self.used_bits = 0;
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        self.align_to_byte();
+        self.bytes
+    }
 }

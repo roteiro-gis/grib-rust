@@ -31,6 +31,12 @@ pub enum Error {
     #[error("unsupported data representation template: {0}")]
     UnsupportedDataTemplate(u16),
 
+    #[error("unsupported complex packing group splitting method: {0}")]
+    UnsupportedGroupSplittingMethod(u8),
+
+    #[error("unsupported complex packing missing value management: {0}")]
+    UnsupportedMissingValueManagement(u8),
+
     #[error("unsupported product definition template: {0}")]
     UnsupportedProductTemplate(u16),
 
@@ -42,6 +48,9 @@ pub enum Error {
 
     #[error("unsupported scanning mode: 0b{0:08b}")]
     UnsupportedScanningMode(u8),
+
+    #[error("unsupported spatial differencing order: {0}")]
+    UnsupportedSpatialDifferencingOrder(u8),
 
     #[error("data truncated at offset {offset}")]
     Truncated { offset: u64 },
