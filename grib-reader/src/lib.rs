@@ -1,7 +1,8 @@
 //! Pure-Rust GRIB file reader.
 //!
 //! The current implementation supports the production-critical baseline for both
-//! GRIB1 and GRIB2: regular latitude/longitude grids with simple packing.
+//! GRIB1 and GRIB2: regular latitude/longitude grids, simple packing, and
+//! GRIB2 complex packing with general group splitting.
 //!
 //! # Example
 //!

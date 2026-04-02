@@ -62,6 +62,7 @@ println!("recoverable messages: {}", tolerant.message_count());
 - Logical field indexing for multi-field GRIB2 messages
 - Regular latitude/longitude grids for GRIB1 and GRIB2
 - Simple packing for GRIB1 and GRIB2
+- GRIB2 complex packing with general group splitting, including spatial differencing
 - WMO parameter table lookups (Code Table 4.2)
 - Typed metadata access for reference time, parameter identity, product metadata, grid geometry, and lat/lon coordinates
 - Forecast valid-time helpers from reference time + lead time
@@ -74,7 +75,7 @@ println!("recoverable messages: {}", tolerant.message_count());
 ## Not Yet Supported
 
 - Non-lat/lon grid templates
-- Complex packing and more advanced multi-packing templates
+- Row-by-row complex packing and more advanced multi-packing templates
 - JPEG2000 and PNG-packed GRIB2 fields
 - GRIB1 predefined bitmaps
 
