@@ -78,7 +78,8 @@ impl ProductDefinition {
 
     pub fn forecast_time(&self) -> Option<u32> {
         match self.time_range_indicator {
-            0 | 1 | 10 => Some(self.p1 as u32),
+            0 | 1 => Some(self.p1 as u32),
+            10 => Some(u16::from_be_bytes([self.p1, self.p2]) as u32),
             _ => None,
         }
     }
@@ -367,8 +368,9 @@ fn ibm_f32(bytes: [u8; 4]) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{bitmap_payload, ibm_f32, parse_message_sections};
+    use super::{bitmap_payload, ibm_f32, parse_message_sections, ProductDefinition};
     use crate::error::Error;
+    use crate::metadata::ReferenceTime;
 
     #[test]
     fn decodes_zero_ibm_float() {
@@ -424,5 +426,39 @@ mod tests {
     fn reports_small_predefined_bitmap_indicator() {
         let err = bitmap_payload(&[0, 0, 6, 0, 0, 5]).unwrap_err();
         assert!(matches!(err, Error::UnsupportedBitmapIndicator(5)));
+    }
+
+    #[test]
+    fn decodes_indicator_ten_forecast_time_as_u16() {
+        let product = ProductDefinition {
+            table_version: 2,
+            center_id: 7,
+            generating_process_id: 255,
+            grid_id: 0,
+            has_grid_definition: true,
+            has_bitmap: false,
+            parameter_number: 11,
+            level_type: 100,
+            level_value: 850,
+            reference_time: ReferenceTime {
+                year: 2026,
+                month: 3,
+                day: 20,
+                hour: 12,
+                minute: 0,
+                second: 0,
+            },
+            forecast_time_unit: 1,
+            p1: 0x01,
+            p2: 0x2c,
+            time_range_indicator: 10,
+            average_count: 0,
+            missing_count: 0,
+            century: 21,
+            subcenter_id: 0,
+            decimal_scale: 0,
+        };
+
+        assert_eq!(product.forecast_time(), Some(300));
     }
 }

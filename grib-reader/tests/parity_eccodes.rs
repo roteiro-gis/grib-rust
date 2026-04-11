@@ -11,11 +11,11 @@ use common::{
 use grib_reader::GribFile;
 
 #[test]
+#[ignore = "requires GRIB_READER_ECCODES_HELPER"]
 fn generated_fixtures_match_eccodes_when_configured() {
-    let Some(helper) = helper_path() else {
-        eprintln!("skipping ecCodes parity test; GRIB_READER_ECCODES_HELPER is not set");
-        return;
-    };
+    let helper = helper_path().unwrap_or_else(|| {
+        panic!("GRIB_READER_ECCODES_HELPER must be set to run ecCodes parity tests")
+    });
 
     let dir = tempfile::tempdir().unwrap();
     let fixtures = [
@@ -58,11 +58,11 @@ fn generated_fixtures_match_eccodes_when_configured() {
 }
 
 #[test]
+#[ignore = "requires GRIB_READER_ECCODES_HELPER"]
 fn corpus_samples_match_eccodes_when_configured() {
-    let Some(helper) = helper_path() else {
-        eprintln!("skipping ecCodes parity test; GRIB_READER_ECCODES_HELPER is not set");
-        return;
-    };
+    let helper = helper_path().unwrap_or_else(|| {
+        panic!("GRIB_READER_ECCODES_HELPER must be set to run ecCodes parity tests")
+    });
 
     for path in collect_parity_samples() {
         assert_matches_reference(&helper, &path);
