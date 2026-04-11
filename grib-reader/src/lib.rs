@@ -67,7 +67,9 @@ const GRIB_MAGIC: &[u8; 4] = b"GRIB";
 pub struct OpenOptions {
     /// When `true`, the first malformed GRIB candidate aborts opening.
     ///
-    /// When `false`, malformed candidates are skipped and scanning continues.
+    /// When `false`, candidate offsets with invalid framing are skipped and
+    /// scanning continues. Once a candidate has a valid indicator, message
+    /// length, and end marker, any indexing or decoding error is returned.
     pub strict: bool,
 }
 
@@ -407,23 +409,34 @@ fn scan_messages(data: &[u8], options: OpenOptions) -> Result<Vec<MessageIndex>>
             continue;
         }
 
-        match try_index_message(data, pos) {
-            Ok((indexed, next_pos)) => {
-                messages.extend(indexed);
-                pos = next_pos;
-            }
-            Err(err) if !options.strict => {
+        let (indicator, next_pos) = match locate_message(data, pos) {
+            Ok(located) => located,
+            Err(err) if !options.strict && is_recoverable_candidate_error(&err) => {
                 pos += 4;
-                let _ = err;
+                continue;
             }
             Err(err) => return Err(err),
-        }
+        };
+
+        let message_bytes = &data[pos..next_pos];
+        let indexed = match indicator.edition {
+            1 => index_grib1_message(message_bytes, pos)?,
+            2 => index_grib2_message(message_bytes, pos, &indicator)?,
+            other => return Err(Error::UnsupportedEdition(other)),
+        };
+
+        messages.extend(indexed);
+        pos = next_pos;
     }
 
     Ok(messages)
 }
 
-fn try_index_message(data: &[u8], pos: usize) -> Result<(Vec<MessageIndex>, usize)> {
+fn is_recoverable_candidate_error(err: &Error) -> bool {
+    matches!(err, Error::InvalidMessage(_) | Error::Truncated { .. })
+}
+
+fn locate_message(data: &[u8], pos: usize) -> Result<(Indicator, usize)> {
     let indicator = Indicator::parse(&data[pos..]).ok_or_else(|| {
         Error::InvalidMessage(format!("failed to parse indicator at byte offset {pos}"))
     })?;
@@ -445,14 +458,7 @@ fn try_index_message(data: &[u8], pos: usize) -> Result<(Vec<MessageIndex>, usiz
         )));
     }
 
-    let message_bytes = &data[pos..end];
-    let indexed = match indicator.edition {
-        1 => index_grib1_message(message_bytes, pos)?,
-        2 => index_grib2_message(message_bytes, pos, &indicator)?,
-        other => return Err(Error::UnsupportedEdition(other)),
-    };
-
-    Ok((indexed, end))
+    Ok((indicator, end))
 }
 
 fn index_grib1_message(message_bytes: &[u8], offset: usize) -> Result<Vec<MessageIndex>> {

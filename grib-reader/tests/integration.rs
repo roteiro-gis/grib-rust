@@ -8,7 +8,7 @@ use common::{
     build_grib2_message_with_forecast, build_grib2_multifield_message,
     build_grib2_spatial_differencing_message,
 };
-use grib_reader::{GribFile, OpenOptions};
+use grib_reader::{Error, GribFile, OpenOptions};
 
 #[test]
 fn open_grib2_from_file_and_decode() {
@@ -81,6 +81,28 @@ fn computes_valid_time_from_forecast_lead() {
 }
 
 #[test]
+fn computes_grib1_indicator_ten_valid_time_from_u16_lead() {
+    let mut bytes = build_grib1_message(&[5, 6, 7, 8]);
+    let pds_offset = 8;
+    bytes[pds_offset + 18] = 0x01;
+    bytes[pds_offset + 19] = 0x2c;
+    bytes[pds_offset + 20] = 10;
+
+    let opened = GribFile::from_bytes(bytes).unwrap();
+    let field = opened.message(0).unwrap();
+    let valid = field.valid_time().unwrap();
+
+    assert_eq!(field.forecast_time_unit(), Some(1));
+    assert_eq!(field.forecast_time(), Some(300));
+    assert_eq!(valid.year, 2026);
+    assert_eq!(valid.month, 4);
+    assert_eq!(valid.day, 2);
+    assert_eq!(valid.hour, 0);
+    assert_eq!(valid.minute, 0);
+    assert_eq!(valid.second, 0);
+}
+
+#[test]
 fn iterates_multifield_grib2_message() {
     let opened = GribFile::from_bytes(build_grib2_multifield_message()).unwrap();
     let names = opened
@@ -109,6 +131,21 @@ fn tolerant_open_skips_malformed_candidates() {
             .collect::<Vec<_>>(),
         vec![9.0, 8.0, 7.0, 6.0]
     );
+}
+
+#[test]
+fn tolerant_open_still_reports_unsupported_messages() {
+    let mut bytes = build_grib2_message(&[1, 2, 3, 4]);
+    let product_offset = 16 + 21 + 72;
+    bytes[product_offset + 7..product_offset + 9].copy_from_slice(&8u16.to_be_bytes());
+    bytes.extend_from_slice(&build_grib2_message(&[9, 8, 7, 6]));
+
+    let err = match GribFile::from_bytes_with_options(bytes, OpenOptions { strict: false }) {
+        Ok(_) => panic!("expected unsupported product template error"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(err, Error::UnsupportedProductTemplate(8)));
 }
 
 #[test]

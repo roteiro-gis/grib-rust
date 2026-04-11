@@ -102,23 +102,10 @@ impl ProductDefinition {
         let parameter_category = section_bytes[9];
         let parameter_number = section_bytes[10];
 
-        let generating_process = section_bytes.get(11).copied();
-        let forecast_time_unit = section_bytes.get(17).copied();
-        let forecast_time = (section_bytes.len() >= 22)
-            .then(|| u32::from_be_bytes(section_bytes[18..22].try_into().unwrap()));
-        let first_surface = parse_surface(section_bytes, 22);
-        let second_surface = parse_surface(section_bytes, 28);
-
-        Ok(Self {
-            template,
-            parameter_category,
-            parameter_number,
-            generating_process,
-            forecast_time_unit,
-            forecast_time,
-            first_surface,
-            second_surface,
-        })
+        match template {
+            0 => parse_template_zero(section_bytes, parameter_category, parameter_number),
+            other => Err(Error::UnsupportedProductTemplate(other)),
+        }
     }
 
     pub fn parameter_name(&self, discipline: u8) -> &'static str {
@@ -130,26 +117,57 @@ impl ProductDefinition {
     }
 }
 
-fn parse_surface(section_bytes: &[u8], offset: usize) -> Option<FixedSurface> {
-    if section_bytes.len() < offset + 6 {
-        return None;
-    }
+fn parse_template_zero(
+    section_bytes: &[u8],
+    parameter_category: u8,
+    parameter_number: u8,
+) -> Result<ProductDefinition> {
+    require_len(section_bytes, 34, "template 4.0")?;
 
-    let surface_type = section_bytes[offset];
+    Ok(ProductDefinition {
+        template: 0,
+        parameter_category,
+        parameter_number,
+        generating_process: Some(section_bytes[11]),
+        forecast_time_unit: Some(section_bytes[17]),
+        forecast_time: Some(u32::from_be_bytes(
+            section_bytes[18..22].try_into().unwrap(),
+        )),
+        first_surface: parse_surface(&section_bytes[22..28]),
+        second_surface: parse_surface(&section_bytes[28..34]),
+    })
+}
+
+fn require_len(section_bytes: &[u8], min_len: usize, context: &str) -> Result<()> {
+    if section_bytes.len() < min_len {
+        return Err(Error::InvalidSection {
+            section: 4,
+            reason: format!(
+                "{context} requires at least {min_len} bytes, got {}",
+                section_bytes.len()
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn parse_surface(section_bytes: &[u8]) -> Option<FixedSurface> {
+    let surface_type = section_bytes[0];
     if surface_type == 255 {
         return None;
     }
 
     Some(FixedSurface {
         surface_type,
-        scale_factor: grib_i8(section_bytes[offset + 1]),
-        scaled_value: grib_i32(&section_bytes[offset + 2..offset + 6])?,
+        scale_factor: grib_i8(section_bytes[1]),
+        scaled_value: grib_i32(&section_bytes[2..6])?,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Identification, ProductDefinition};
+    use crate::error::Error;
 
     #[test]
     fn parses_identification_section() {
@@ -197,5 +215,31 @@ mod tests {
         assert_eq!(product.parameter_number, 3);
         assert_eq!(product.forecast_time, Some(6));
         assert_eq!(product.first_surface.unwrap().scaled_value_f64(), 850.0);
+    }
+
+    #[test]
+    fn rejects_unsupported_product_definition_templates() {
+        let mut section = vec![0u8; 34];
+        section[..4].copy_from_slice(&(34u32).to_be_bytes());
+        section[4] = 4;
+        section[7..9].copy_from_slice(&8u16.to_be_bytes());
+        section[9] = 2;
+        section[10] = 3;
+
+        let err = ProductDefinition::parse(&section).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedProductTemplate(8)));
+    }
+
+    #[test]
+    fn rejects_truncated_template_zero_sections() {
+        let mut section = vec![0u8; 33];
+        section[..4].copy_from_slice(&(33u32).to_be_bytes());
+        section[4] = 4;
+        section[7..9].copy_from_slice(&0u16.to_be_bytes());
+        section[9] = 2;
+        section[10] = 3;
+
+        let err = ProductDefinition::parse(&section).unwrap_err();
+        assert!(matches!(err, Error::InvalidSection { section: 4, .. }));
     }
 }
