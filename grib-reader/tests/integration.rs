@@ -36,6 +36,15 @@ fn open_grib2_from_file_and_decode() {
             .collect::<Vec<_>>(),
         vec![1.0, 2.0, 3.0, 4.0]
     );
+    assert_eq!(
+        field
+            .read_data_as_f32()
+            .unwrap()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![1.0_f32, 2.0, 3.0, 4.0]
+    );
 }
 
 #[test]
@@ -61,6 +70,20 @@ fn open_grib1_from_file_and_decode() {
             .collect::<Vec<_>>(),
         vec![5.0, 6.0, 7.0, 8.0]
     );
+}
+
+#[test]
+fn decode_into_reuses_caller_buffers_for_f32_and_f64() {
+    let opened = GribFile::from_bytes(build_grib2_message(&[1, 2, 3, 4])).unwrap();
+    let field = opened.message(0).unwrap();
+
+    let mut as_f32 = [0.0_f32; 4];
+    field.decode_into(&mut as_f32).unwrap();
+    assert_eq!(as_f32, [1.0, 2.0, 3.0, 4.0]);
+
+    let mut as_f64 = [0.0_f64; 4];
+    field.decode_into(&mut as_f64).unwrap();
+    assert_eq!(as_f64, [1.0, 2.0, 3.0, 4.0]);
 }
 
 #[test]

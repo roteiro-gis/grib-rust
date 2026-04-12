@@ -25,6 +25,10 @@ fn main() -> io::Result<()> {
     let minimal_grib1 = fixtures::build_grib1_message(&[5, 6, 7, 8]);
     let multifield_grib2 = fixtures::build_grib2_multifield_message();
     let bitmap_grib1 = fixtures::build_grib1_bitmap_message();
+    let forecast_grib2 = fixtures::build_grib2_message_with_forecast(&[1, 2, 3, 4], 18);
+    let complex_grib2 = fixtures::build_grib2_complex_packing_message();
+    let complex_missing_grib2 = fixtures::build_grib2_complex_packing_message_with_missing();
+    let spatial_grib2 = fixtures::build_grib2_spatial_differencing_message();
     let tolerant_mixed = fixtures::build_bitmap_prefixed_stream();
     let truncated_grib2 = fixtures::build_truncated_grib2_message();
 
@@ -32,13 +36,40 @@ fn main() -> io::Result<()> {
     write_if_changed(&bootstrap_dir.join("minimal.grib1"), &minimal_grib1)?;
     write_if_changed(&bootstrap_dir.join("multifield.grib2"), &multifield_grib2)?;
     write_if_changed(&bootstrap_dir.join("bitmap.grib1"), &bitmap_grib1)?;
+    write_if_changed(&bootstrap_dir.join("forecast.grib2"), &forecast_grib2)?;
+    write_if_changed(&bootstrap_dir.join("complex.grib2"), &complex_grib2)?;
+    write_if_changed(
+        &bootstrap_dir.join("complex-missing.grib2"),
+        &complex_missing_grib2,
+    )?;
+    write_if_changed(
+        &bootstrap_dir.join("spatial-differencing.grib2"),
+        &spatial_grib2,
+    )?;
 
     write_if_changed(&open_dir.join("minimal.grib2"), &minimal_grib2)?;
     write_if_changed(&open_dir.join("minimal.grib1"), &minimal_grib1)?;
     write_if_changed(&open_dir.join("multifield.grib2"), &multifield_grib2)?;
     write_if_changed(&open_dir.join("bitmap.grib1"), &bitmap_grib1)?;
+    write_if_changed(&open_dir.join("forecast.grib2"), &forecast_grib2)?;
+    write_if_changed(&open_dir.join("complex.grib2"), &complex_grib2)?;
+    write_if_changed(
+        &open_dir.join("complex-missing.grib2"),
+        &complex_missing_grib2,
+    )?;
+    write_if_changed(&open_dir.join("spatial-differencing.grib2"), &spatial_grib2)?;
 
     write_if_changed(&tolerant_dir.join("minimal.grib2"), &minimal_grib2)?;
+    write_if_changed(&tolerant_dir.join("forecast.grib2"), &forecast_grib2)?;
+    write_if_changed(&tolerant_dir.join("complex.grib2"), &complex_grib2)?;
+    write_if_changed(
+        &tolerant_dir.join("complex-missing.grib2"),
+        &complex_missing_grib2,
+    )?;
+    write_if_changed(
+        &tolerant_dir.join("spatial-differencing.grib2"),
+        &spatial_grib2,
+    )?;
     write_if_changed(&tolerant_dir.join("mixed-prefix.bin"), &tolerant_mixed)?;
     write_if_changed(&tolerant_dir.join("truncated.grib2"), &truncated_grib2)?;
 
@@ -46,6 +77,16 @@ fn main() -> io::Result<()> {
     write_if_changed(&sections_dir.join("minimal.grib1"), &minimal_grib1)?;
     write_if_changed(&sections_dir.join("multifield.grib2"), &multifield_grib2)?;
     write_if_changed(&sections_dir.join("bitmap.grib1"), &bitmap_grib1)?;
+    write_if_changed(&sections_dir.join("forecast.grib2"), &forecast_grib2)?;
+    write_if_changed(&sections_dir.join("complex.grib2"), &complex_grib2)?;
+    write_if_changed(
+        &sections_dir.join("complex-missing.grib2"),
+        &complex_missing_grib2,
+    )?;
+    write_if_changed(
+        &sections_dir.join("spatial-differencing.grib2"),
+        &spatial_grib2,
+    )?;
 
     let interop_samples = collect_grib_samples(&interop_dir);
     for sample in interop_samples {

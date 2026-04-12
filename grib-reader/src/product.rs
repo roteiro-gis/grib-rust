@@ -73,12 +73,23 @@ impl FixedSurface {
 /// Section 4: Product Definition Section.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProductDefinition {
-    pub template: u16,
     pub parameter_category: u8,
     pub parameter_number: u8,
-    pub generating_process: Option<u8>,
-    pub forecast_time_unit: Option<u8>,
-    pub forecast_time: Option<u32>,
+    pub template: ProductDefinitionTemplate,
+}
+
+/// Typed GRIB2 Product Definition templates.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProductDefinitionTemplate {
+    AnalysisOrForecast(AnalysisOrForecastTemplate),
+}
+
+/// Product Definition Template 4.0: analysis or forecast at a horizontal level.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnalysisOrForecastTemplate {
+    pub generating_process: u8,
+    pub forecast_time_unit: u8,
+    pub forecast_time: u32,
     pub first_surface: Option<FixedSurface>,
     pub second_surface: Option<FixedSurface>,
 }
@@ -102,10 +113,11 @@ impl ProductDefinition {
         let parameter_category = section_bytes[9];
         let parameter_number = section_bytes[10];
 
-        match template {
-            0 => parse_template_zero(section_bytes, parameter_category, parameter_number),
-            other => Err(Error::UnsupportedProductTemplate(other)),
-        }
+        Ok(Self {
+            parameter_category,
+            parameter_number,
+            template: ProductDefinitionTemplate::parse(template, section_bytes)?,
+        })
     }
 
     pub fn parameter_name(&self, discipline: u8) -> &'static str {
@@ -115,27 +127,81 @@ impl ProductDefinition {
     pub fn parameter_description(&self, discipline: u8) -> &'static str {
         parameter::parameter_description(discipline, self.parameter_category, self.parameter_number)
     }
+
+    pub fn template_number(&self) -> u16 {
+        self.template.number()
+    }
+
+    pub fn generating_process(&self) -> Option<u8> {
+        match &self.template {
+            ProductDefinitionTemplate::AnalysisOrForecast(template) => {
+                Some(template.generating_process)
+            }
+        }
+    }
+
+    pub fn forecast_time_unit(&self) -> Option<u8> {
+        match &self.template {
+            ProductDefinitionTemplate::AnalysisOrForecast(template) => {
+                Some(template.forecast_time_unit)
+            }
+        }
+    }
+
+    pub fn forecast_time(&self) -> Option<u32> {
+        match &self.template {
+            ProductDefinitionTemplate::AnalysisOrForecast(template) => Some(template.forecast_time),
+        }
+    }
+
+    pub fn first_surface(&self) -> Option<&FixedSurface> {
+        match &self.template {
+            ProductDefinitionTemplate::AnalysisOrForecast(template) => {
+                template.first_surface.as_ref()
+            }
+        }
+    }
+
+    pub fn second_surface(&self) -> Option<&FixedSurface> {
+        match &self.template {
+            ProductDefinitionTemplate::AnalysisOrForecast(template) => {
+                template.second_surface.as_ref()
+            }
+        }
+    }
 }
 
-fn parse_template_zero(
-    section_bytes: &[u8],
-    parameter_category: u8,
-    parameter_number: u8,
-) -> Result<ProductDefinition> {
-    require_len(section_bytes, 34, "template 4.0")?;
+impl ProductDefinitionTemplate {
+    pub fn parse(template: u16, section_bytes: &[u8]) -> Result<Self> {
+        match template {
+            0 => Ok(Self::AnalysisOrForecast(AnalysisOrForecastTemplate::parse(
+                section_bytes,
+            )?)),
+            other => Err(Error::UnsupportedProductTemplate(other)),
+        }
+    }
 
-    Ok(ProductDefinition {
-        template: 0,
-        parameter_category,
-        parameter_number,
-        generating_process: Some(section_bytes[11]),
-        forecast_time_unit: Some(section_bytes[17]),
-        forecast_time: Some(u32::from_be_bytes(
-            section_bytes[18..22].try_into().unwrap(),
-        )),
-        first_surface: parse_surface(&section_bytes[22..28]),
-        second_surface: parse_surface(&section_bytes[28..34]),
-    })
+    pub const fn number(&self) -> u16 {
+        match self {
+            Self::AnalysisOrForecast(_) => 0,
+        }
+    }
+}
+
+impl AnalysisOrForecastTemplate {
+    const MINIMUM_LENGTH: usize = 34;
+
+    fn parse(section_bytes: &[u8]) -> Result<Self> {
+        require_len(section_bytes, Self::MINIMUM_LENGTH, "template 4.0")?;
+
+        Ok(Self {
+            generating_process: section_bytes[11],
+            forecast_time_unit: section_bytes[17],
+            forecast_time: u32::from_be_bytes(section_bytes[18..22].try_into().unwrap()),
+            first_surface: parse_surface(&section_bytes[22..28]),
+            second_surface: parse_surface(&section_bytes[28..34]),
+        })
+    }
 }
 
 fn require_len(section_bytes: &[u8], min_len: usize, context: &str) -> Result<()> {
@@ -166,7 +232,9 @@ fn parse_surface(section_bytes: &[u8]) -> Option<FixedSurface> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Identification, ProductDefinition};
+    use super::{
+        AnalysisOrForecastTemplate, Identification, ProductDefinition, ProductDefinitionTemplate,
+    };
     use crate::error::Error;
 
     #[test]
@@ -208,13 +276,24 @@ mod tests {
         section[22] = 103;
         section[23] = 0;
         section[24..28].copy_from_slice(&850u32.to_be_bytes());
+        section[28] = 255;
 
         let product = ProductDefinition::parse(&section).unwrap();
-        assert_eq!(product.template, 0);
         assert_eq!(product.parameter_category, 2);
         assert_eq!(product.parameter_number, 3);
-        assert_eq!(product.forecast_time, Some(6));
-        assert_eq!(product.first_surface.unwrap().scaled_value_f64(), 850.0);
+        assert_eq!(product.template_number(), 0);
+        assert_eq!(product.forecast_time(), Some(6));
+        assert_eq!(product.first_surface().unwrap().scaled_value_f64(), 850.0);
+        assert_eq!(
+            product.template,
+            ProductDefinitionTemplate::AnalysisOrForecast(AnalysisOrForecastTemplate {
+                generating_process: 2,
+                forecast_time_unit: 1,
+                forecast_time: 6,
+                first_surface: product.first_surface().cloned(),
+                second_surface: None,
+            })
+        );
     }
 
     #[test]

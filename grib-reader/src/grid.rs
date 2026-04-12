@@ -88,7 +88,12 @@ impl LatLonGrid {
             .collect()
     }
 
-    pub fn reorder_for_ndarray(&self, values: Vec<f64>) -> Result<Vec<f64>> {
+    pub fn reorder_for_ndarray<T>(&self, mut values: Vec<T>) -> Result<Vec<T>> {
+        self.reorder_for_ndarray_in_place(&mut values)?;
+        Ok(values)
+    }
+
+    pub fn reorder_for_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
         let ni = self.ni as usize;
         let nj = self.nj as usize;
         if values.len() != ni * nj {
@@ -102,7 +107,6 @@ impl LatLonGrid {
             return Err(Error::UnsupportedScanningMode(self.scanning_mode));
         }
 
-        let mut ordered = values;
         if self.adjacent_rows_alternate_direction() {
             for row in 0..nj {
                 let reverse = if self.i_scans_positive() {
@@ -111,12 +115,12 @@ impl LatLonGrid {
                     row % 2 == 0
                 };
                 if reverse {
-                    ordered[row * ni..(row + 1) * ni].reverse();
+                    values[row * ni..(row + 1) * ni].reverse();
                 }
             }
         }
 
-        Ok(ordered)
+        Ok(())
     }
 
     fn i_scans_positive(&self) -> bool {
