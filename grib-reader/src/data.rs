@@ -415,19 +415,35 @@ fn unpack_complex_into<T: DecodeSample>(
         .transpose()?
         .map(SpatialRestoreState::new);
 
-    let groups = read_group_specs(&mut reader, params)?;
+    let layout = GroupReaderLayout::new(reader.bit_offset, params)?;
+    let mut reference_reader = BitReader::with_offset(data_bytes, layout.reference_offset);
+    let mut width_reader = BitReader::with_offset(data_bytes, layout.width_offset);
+    let mut length_reader = BitReader::with_offset(data_bytes, layout.length_offset);
+    let mut value_reader = BitReader::with_offset(data_bytes, layout.value_offset);
     let binary_factor = 2.0_f64.powi(params.binary_scale as i32);
     let decimal_factor = 10.0_f64.powi(-(params.decimal_scale as i32));
     let reference = params.reference_value as f64;
+    let mut actual_total = 0usize;
 
-    for group in groups {
-        if group.width == 0 {
+    for group_index in 0..params.num_groups {
+        let group_reference = reference_reader.read(params.group_reference_bits as usize)?;
+        let width_delta = width_reader.read(params.group_width_bits as usize)?;
+        let group_width = usize::from(params.group_width_reference)
+            .checked_add(width_delta as usize)
+            .ok_or_else(|| Error::Other("group width overflow".into()))?;
+        let group_length = read_group_length(&mut length_reader, params, group_index)?;
+
+        actual_total = actual_total
+            .checked_add(group_length)
+            .ok_or_else(|| Error::Other("group length overflow".into()))?;
+
+        if group_width == 0 {
             let raw_value = decode_constant_group_value(
-                group.reference,
+                group_reference,
                 params.group_reference_bits as usize,
                 params.missing_value_management,
             )?;
-            for _ in 0..group.length {
+            for _ in 0..group_length {
                 let value = spatial
                     .as_mut()
                     .map_or(Ok(raw_value), |state| state.restore(raw_value))?;
@@ -441,18 +457,18 @@ fn unpack_complex_into<T: DecodeSample>(
             continue;
         }
 
-        if group.width > u64::BITS as usize {
-            return Err(Error::UnsupportedPackingWidth(group.width as u8));
+        if group_width > u64::BITS as usize {
+            return Err(Error::UnsupportedPackingWidth(group_width as u8));
         }
 
-        let group_reference = i64::try_from(group.reference)
+        let group_reference = i64::try_from(group_reference)
             .map_err(|_| Error::Other("group reference exceeds i64 range".into()))?;
-        for _ in 0..group.length {
-            let packed = reader.read(group.width)?;
+        for _ in 0..group_length {
+            let packed = value_reader.read(group_width)?;
             let value = decode_group_value(
                 group_reference,
                 packed,
-                group.width,
+                group_width,
                 params.missing_value_management,
             )?;
             let value = spatial
@@ -465,6 +481,13 @@ fn unpack_complex_into<T: DecodeSample>(
                 value,
             ))?;
         }
+    }
+
+    if actual_total != params.encoded_values {
+        return Err(Error::DataLengthMismatch {
+            expected: params.encoded_values,
+            actual: actual_total,
+        });
     }
 
     if output.values_written() != params.encoded_values {
@@ -481,68 +504,29 @@ fn unpack_complex_into<T: DecodeSample>(
     Ok(())
 }
 
-fn read_group_specs(
+fn read_group_length(
     reader: &mut BitReader<'_>,
     params: &ComplexPackingParams,
-) -> Result<Vec<GroupSpec>> {
-    if params.group_reference_bits as usize > u64::BITS as usize {
-        return Err(Error::UnsupportedPackingWidth(params.group_reference_bits));
-    }
-    if params.group_width_bits as usize > u64::BITS as usize {
-        return Err(Error::UnsupportedPackingWidth(params.group_width_bits));
-    }
+    group_index: usize,
+) -> Result<usize> {
     if params.scaled_group_length_bits as usize > u64::BITS as usize {
         return Err(Error::UnsupportedPackingWidth(
             params.scaled_group_length_bits,
         ));
     }
 
-    let mut groups = Vec::with_capacity(params.num_groups);
-    for _ in 0..params.num_groups {
-        groups.push(GroupSpec {
-            reference: reader.read(params.group_reference_bits as usize)?,
-            width: 0,
-            length: 0,
-        });
-    }
-    reader.align_to_byte();
-
-    for group in &mut groups {
-        let width_delta = reader.read(params.group_width_bits as usize)?;
-        group.width = usize::from(params.group_width_reference)
-            .checked_add(width_delta as usize)
-            .ok_or_else(|| Error::Other("group width overflow".into()))?;
-    }
-    reader.align_to_byte();
-
-    let mut actual_total = 0usize;
-    for (index, group) in groups.iter_mut().enumerate() {
-        group.length = if index + 1 == params.num_groups {
-            params.true_length_last_group as usize
-        } else {
-            let scaled = reader
-                .read(params.scaled_group_length_bits as usize)?
-                .checked_mul(u64::from(params.group_length_increment))
-                .ok_or_else(|| Error::Other("group length overflow".into()))?;
-            let length = u64::from(params.group_length_reference)
-                .checked_add(scaled)
-                .ok_or_else(|| Error::Other("group length overflow".into()))?;
-            usize::try_from(length).map_err(|_| Error::Other("group length overflow".into()))?
-        };
-        actual_total = actual_total
-            .checked_add(group.length)
-            .ok_or_else(|| Error::Other("group length overflow".into()))?;
-    }
-    reader.align_to_byte();
-
-    if actual_total != params.encoded_values {
-        return Err(Error::DataLengthMismatch {
-            expected: params.encoded_values,
-            actual: actual_total,
-        });
+    if group_index + 1 == params.num_groups {
+        return Ok(params.true_length_last_group as usize);
     }
 
-    Ok(groups)
+    let scaled = reader
+        .read(params.scaled_group_length_bits as usize)?
+        .checked_mul(u64::from(params.group_length_increment))
+        .ok_or_else(|| Error::Other("group length overflow".into()))?;
+    let length = u64::from(params.group_length_reference)
+        .checked_add(scaled)
+        .ok_or_else(|| Error::Other("group length overflow".into()))?;
+    usize::try_from(length).map_err(|_| Error::Other("group length overflow".into()))
 }
 
 fn read_spatial_descriptors(
@@ -707,6 +691,71 @@ fn bitmap_bit(bitmap_payload: &[u8], index: usize) -> Result<bool> {
     Ok(((byte >> (7 - bit_index)) & 1) != 0)
 }
 
+struct GroupReaderLayout {
+    reference_offset: usize,
+    width_offset: usize,
+    length_offset: usize,
+    value_offset: usize,
+}
+
+impl GroupReaderLayout {
+    fn new(start_bit_offset: usize, params: &ComplexPackingParams) -> Result<Self> {
+        if params.group_reference_bits as usize > u64::BITS as usize {
+            return Err(Error::UnsupportedPackingWidth(params.group_reference_bits));
+        }
+        if params.group_width_bits as usize > u64::BITS as usize {
+            return Err(Error::UnsupportedPackingWidth(params.group_width_bits));
+        }
+        if params.scaled_group_length_bits as usize > u64::BITS as usize {
+            return Err(Error::UnsupportedPackingWidth(
+                params.scaled_group_length_bits,
+            ));
+        }
+
+        let reference_offset = start_bit_offset;
+        let width_offset = align_bit_offset(add_group_bits(
+            reference_offset,
+            params.num_groups,
+            params.group_reference_bits as usize,
+        )?)?;
+        let length_offset = align_bit_offset(add_group_bits(
+            width_offset,
+            params.num_groups,
+            params.group_width_bits as usize,
+        )?)?;
+        let value_offset = align_bit_offset(add_group_bits(
+            length_offset,
+            params.num_groups,
+            params.scaled_group_length_bits as usize,
+        )?)?;
+
+        Ok(Self {
+            reference_offset,
+            width_offset,
+            length_offset,
+            value_offset,
+        })
+    }
+}
+
+fn add_group_bits(start_bit_offset: usize, count: usize, bits_per_group: usize) -> Result<usize> {
+    count
+        .checked_mul(bits_per_group)
+        .and_then(|total_bits| start_bit_offset.checked_add(total_bits))
+        .ok_or_else(|| Error::Other("bit offset overflow".into()))
+}
+
+fn align_bit_offset(bit_offset: usize) -> Result<usize> {
+    let remainder = bit_offset % 8;
+    if remainder == 0 {
+        Ok(bit_offset)
+    } else {
+        bit_offset
+            .checked_add(8 - remainder)
+            .ok_or_else(|| Error::Other("bit offset overflow".into()))
+    }
+}
+
 struct OutputCursor<'a, T> {
     output: &'a mut [T],
     bitmap: Option<&'a [u8]>,
@@ -798,6 +847,10 @@ impl<'a> BitReader<'a> {
         }
     }
 
+    fn with_offset(data: &'a [u8], bit_offset: usize) -> Self {
+        Self { data, bit_offset }
+    }
+
     fn read(&mut self, bit_count: usize) -> Result<u64> {
         if bit_count == 0 {
             return Ok(0);
@@ -844,10 +897,6 @@ impl<'a> BitReader<'a> {
             .map_err(|_| Error::Other("signed value exceeds i64 range".into()))?;
         Ok(-magnitude)
     }
-
-    fn align_to_byte(&mut self) {
-        self.bit_offset = self.bit_offset.next_multiple_of(8);
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -856,13 +905,6 @@ struct SpatialDescriptors {
     first_value: i64,
     second_value: Option<i64>,
     overall_minimum: i64,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct GroupSpec {
-    reference: u64,
-    width: usize,
-    length: usize,
 }
 
 #[derive(Debug, Clone)]
