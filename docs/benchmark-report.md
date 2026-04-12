@@ -2,9 +2,9 @@
 
 Date: 2026-03-21
 
-This report summarizes the current Dockerized parity and comparison benchmark
-suite for `grib-rust` against ecCodes. It captures the current parity status
-and the aggregate decode performance of the current benchmark corpus.
+This report summarizes a Dockerized parity and comparison benchmark run for
+`grib-rust` against ecCodes. It captures one historical parity run and the
+aggregate decode performance of the corpus that existed for that run.
 
 ## System Under Test
 
@@ -39,20 +39,24 @@ Commands used for this report:
 Notes:
 
 - The parity run passed both ecCodes integration tests.
-- The current parity corpus contains 4 checked-in GRIB sample files across the
-  bootstrap and interoperability sample directories.
+- The recorded timing below was taken before the bootstrap corpus expansion and
+  reflects a 4-file checked-in GRIB sample set.
+- The current checked-in bootstrap corpus now contains 8 generated samples and
+  should be re-benchmarked before treating any throughput number here as
+  current or representative.
 - The comparison bench validates message counts, decoded value counts, and
   checksum parity before timing.
-- Criterion measures aggregate elapsed time for repeated decode of the full current sample set.
+- Criterion measures aggregate elapsed time for repeated decode of the full
+  sample set used in the run.
 
-## Current Results
+## Historical Results
 
 ### Parity
 
 - `generated_fixtures_match_eccodes_when_configured`: passed
 - `corpus_samples_match_eccodes_when_configured`: passed
 
-### Summary
+### Historical Summary
 
 | workload | grib-rust | ecCodes | result |
 | --- | ---: | ---: | --- |
@@ -60,16 +64,15 @@ Notes:
 
 ## Interpretation
 
-- On the current 4-file corpus, `grib-rust` is ahead of ecCodes in aggregate
-  decode time on this host.
+- On the 4-file corpus used in this run, `grib-rust` was ahead of ecCodes in
+  aggregate decode time on this host.
 - The benchmark is checksum-guarded and corpus-driven, so it is a stronger
   signal than a pure microbenchmark with no correctness check.
-- Because the corpus is still small, this result is best read as a statement
-  about the current control path and sample shape, not every GRIB workload.
+- Because that corpus was still small, this result is best read as a statement
+  about that sample set and control path, not every GRIB workload.
 
 ## Limits
 
 - This report reflects one machine.
-- The benchmark corpus is small and should be expanded if broader throughput
-  claims are needed.
+- Any current performance claim should be regenerated after corpus changes.
 - Docker improves reproducibility here, but the results remain host-specific.

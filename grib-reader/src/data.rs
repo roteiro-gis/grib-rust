@@ -55,6 +55,32 @@ pub struct SpatialDifferencingParams {
     pub descriptor_octets: u8,
 }
 
+/// Numeric target type for decoded field values.
+pub trait DecodeSample: Copy + Sized {
+    fn from_f64(value: f64) -> Self;
+    fn nan() -> Self;
+}
+
+impl DecodeSample for f32 {
+    fn from_f64(value: f64) -> Self {
+        value as f32
+    }
+
+    fn nan() -> Self {
+        f32::NAN
+    }
+}
+
+impl DecodeSample for f64 {
+    fn from_f64(value: f64) -> Self {
+        value
+    }
+
+    fn nan() -> Self {
+        f64::NAN
+    }
+}
+
 impl DataRepresentation {
     pub fn parse(section_bytes: &[u8]) -> Result<Self> {
         if section_bytes.len() < 11 {
@@ -110,45 +136,87 @@ pub fn decode_field(
     )
 }
 
+/// Decode Section 7 payload into a caller-provided buffer, applying Section 6
+/// bitmap when present.
+pub fn decode_field_into<T: DecodeSample>(
+    data_section: &[u8],
+    representation: &DataRepresentation,
+    bitmap_section: Option<&[u8]>,
+    num_grid_points: usize,
+    out: &mut [T],
+) -> Result<()> {
+    if data_section.len() < 5 || data_section[4] != 7 {
+        return Err(Error::InvalidSection {
+            section: data_section.get(4).copied().unwrap_or(7),
+            reason: "not a data section".into(),
+        });
+    }
+
+    decode_payload_into(
+        &data_section[5..],
+        representation,
+        bitmap_section,
+        num_grid_points,
+        out,
+    )
+}
+
 pub(crate) fn decode_payload(
     payload: &[u8],
     representation: &DataRepresentation,
     bitmap_section: Option<&[u8]>,
     num_grid_points: usize,
 ) -> Result<Vec<f64>> {
+    let mut values = vec![0.0; num_grid_points];
+    decode_payload_into(
+        payload,
+        representation,
+        bitmap_section,
+        num_grid_points,
+        &mut values,
+    )?;
+    Ok(values)
+}
+
+pub(crate) fn decode_payload_into<T: DecodeSample>(
+    payload: &[u8],
+    representation: &DataRepresentation,
+    bitmap_section: Option<&[u8]>,
+    num_grid_points: usize,
+    out: &mut [T],
+) -> Result<()> {
+    if out.len() != num_grid_points {
+        return Err(Error::DataLengthMismatch {
+            expected: num_grid_points,
+            actual: out.len(),
+        });
+    }
+
+    let expected_values = match representation {
+        DataRepresentation::SimplePacking(params) => params.encoded_values,
+        DataRepresentation::ComplexPacking(params) => params.encoded_values,
+        DataRepresentation::Unsupported(template) => {
+            return Err(Error::UnsupportedDataTemplate(*template));
+        }
+    };
+    if bitmap_section.is_none() && expected_values != num_grid_points {
+        return Err(Error::DataLengthMismatch {
+            expected: num_grid_points,
+            actual: expected_values,
+        });
+    }
+
+    let mut output = OutputCursor::new(out, bitmap_section);
     match representation {
         DataRepresentation::SimplePacking(params) => {
-            let unpacked = unpack_simple(payload, params, params.encoded_values)?;
-            match bitmap_section {
-                Some(bitmap) => apply_bitmap(bitmap, unpacked, num_grid_points),
-                None => {
-                    if params.encoded_values != num_grid_points {
-                        return Err(Error::DataLengthMismatch {
-                            expected: num_grid_points,
-                            actual: params.encoded_values,
-                        });
-                    }
-                    Ok(unpacked)
-                }
-            }
+            unpack_simple_into(payload, params, expected_values, &mut output)?
         }
         DataRepresentation::ComplexPacking(params) => {
-            let unpacked = unpack_complex(payload, params)?;
-            match bitmap_section {
-                Some(bitmap) => apply_bitmap(bitmap, unpacked, num_grid_points),
-                None => {
-                    if params.encoded_values != num_grid_points {
-                        return Err(Error::DataLengthMismatch {
-                            expected: num_grid_points,
-                            actual: params.encoded_values,
-                        });
-                    }
-                    Ok(unpacked)
-                }
-            }
+            unpack_complex_into(payload, params, &mut output)?
         }
-        DataRepresentation::Unsupported(template) => Err(Error::UnsupportedDataTemplate(*template)),
+        DataRepresentation::Unsupported(_) => unreachable!(),
     }
+    output.finish()
 }
 
 /// Parse bitmap presence from Section 6.
@@ -269,9 +337,26 @@ pub fn unpack_simple(
     params: &SimplePackingParams,
     num_values: usize,
 ) -> Result<Vec<f64>> {
+    let mut values = vec![0.0; num_values];
+    let mut output = OutputCursor::new(&mut values, None);
+    unpack_simple_into(data_bytes, params, num_values, &mut output)?;
+    output.finish()?;
+    Ok(values)
+}
+
+fn unpack_simple_into<T: DecodeSample>(
+    data_bytes: &[u8],
+    params: &SimplePackingParams,
+    num_values: usize,
+    output: &mut OutputCursor<'_, T>,
+) -> Result<()> {
     let bits = params.bits_per_value as usize;
     if bits == 0 {
-        return Ok(vec![params.reference_value as f64; num_values]);
+        let constant = scaled_simple_value::<T>(params.reference_value as f64, 0, params);
+        for _ in 0..num_values {
+            output.push_present(constant)?;
+        }
+        return Ok(());
     }
     if bits > u64::BITS as usize {
         return Err(Error::UnsupportedPackingWidth(params.bits_per_value));
@@ -291,36 +376,31 @@ pub fn unpack_simple(
     let decimal_factor = 10.0_f64.powi(-(params.decimal_scale as i32));
     let reference = params.reference_value as f64;
     let mut reader = BitReader::new(data_bytes);
-    let mut values = Vec::with_capacity(num_values);
 
     for _ in 0..num_values {
         let packed = reader.read(bits)?;
-        values.push(reference + (packed as f64) * binary_factor * decimal_factor);
+        output.push_present(T::from_f64(
+            reference + (packed as f64) * binary_factor * decimal_factor,
+        ))?;
     }
 
+    Ok(())
+}
+
+#[cfg(test)]
+fn unpack_complex(data_bytes: &[u8], params: &ComplexPackingParams) -> Result<Vec<f64>> {
+    let mut values = vec![0.0; params.encoded_values];
+    let mut output = OutputCursor::new(&mut values, None);
+    unpack_complex_into(data_bytes, params, &mut output)?;
+    output.finish()?;
     Ok(values)
 }
 
-fn unpack_complex(data_bytes: &[u8], params: &ComplexPackingParams) -> Result<Vec<f64>> {
-    let restored = unpack_complex_scaled_values(data_bytes, params)?;
-
-    let binary_factor = 2.0_f64.powi(params.binary_scale as i32);
-    let decimal_factor = 10.0_f64.powi(-(params.decimal_scale as i32));
-    let reference = params.reference_value as f64;
-
-    Ok(restored
-        .into_iter()
-        .map(|value| match value {
-            Some(value) => reference + (value as f64) * binary_factor * decimal_factor,
-            None => f64::NAN,
-        })
-        .collect())
-}
-
-fn unpack_complex_scaled_values(
+fn unpack_complex_into<T: DecodeSample>(
     data_bytes: &[u8],
     params: &ComplexPackingParams,
-) -> Result<Vec<Option<i64>>> {
+    output: &mut OutputCursor<'_, T>,
+) -> Result<()> {
     if params.num_groups == 0 {
         return Err(Error::InvalidSection {
             section: 5,
@@ -329,45 +409,51 @@ fn unpack_complex_scaled_values(
     }
 
     let mut reader = BitReader::new(data_bytes);
-    let spatial_descriptors = params
+    let mut spatial = params
         .spatial_differencing
         .map(|spatial| read_spatial_descriptors(&mut reader, spatial))
-        .transpose()?;
+        .transpose()?
+        .map(SpatialRestoreState::new);
 
-    let group_references = read_bits_array(
-        &mut reader,
-        params.num_groups,
-        params.group_reference_bits as usize,
-    )?;
-    reader.align_to_byte();
+    let layout = GroupReaderLayout::new(reader.bit_offset, params)?;
+    let mut reference_reader = BitReader::with_offset(data_bytes, layout.reference_offset);
+    let mut width_reader = BitReader::with_offset(data_bytes, layout.width_offset);
+    let mut length_reader = BitReader::with_offset(data_bytes, layout.length_offset);
+    let mut value_reader = BitReader::with_offset(data_bytes, layout.value_offset);
+    let binary_factor = 2.0_f64.powi(params.binary_scale as i32);
+    let decimal_factor = 10.0_f64.powi(-(params.decimal_scale as i32));
+    let reference = params.reference_value as f64;
+    let mut actual_total = 0usize;
 
-    let group_width_deltas = read_bits_array(
-        &mut reader,
-        params.num_groups,
-        params.group_width_bits as usize,
-    )?;
-    reader.align_to_byte();
-
-    let group_lengths = build_group_lengths(&mut reader, params)?;
-    reader.align_to_byte();
-
-    let mut decoded = Vec::with_capacity(params.encoded_values);
-    for ((group_reference, group_width_delta), group_length) in group_references
-        .into_iter()
-        .zip(group_width_deltas)
-        .zip(group_lengths)
-    {
+    for group_index in 0..params.num_groups {
+        let group_reference = reference_reader.read(params.group_reference_bits as usize)?;
+        let width_delta = width_reader.read(params.group_width_bits as usize)?;
         let group_width = usize::from(params.group_width_reference)
-            .checked_add(group_width_delta as usize)
+            .checked_add(width_delta as usize)
             .ok_or_else(|| Error::Other("group width overflow".into()))?;
+        let group_length = read_group_length(&mut length_reader, params, group_index)?;
+
+        actual_total = actual_total
+            .checked_add(group_length)
+            .ok_or_else(|| Error::Other("group length overflow".into()))?;
 
         if group_width == 0 {
-            let value = decode_constant_group_value(
+            let raw_value = decode_constant_group_value(
                 group_reference,
                 params.group_reference_bits as usize,
                 params.missing_value_management,
             )?;
-            decoded.resize(decoded.len() + group_length, value);
+            for _ in 0..group_length {
+                let value = spatial
+                    .as_mut()
+                    .map_or(Ok(raw_value), |state| state.restore(raw_value))?;
+                output.push_present(scale_complex_value(
+                    reference,
+                    binary_factor,
+                    decimal_factor,
+                    value,
+                ))?;
+            }
             continue;
         }
 
@@ -378,29 +464,69 @@ fn unpack_complex_scaled_values(
         let group_reference = i64::try_from(group_reference)
             .map_err(|_| Error::Other("group reference exceeds i64 range".into()))?;
         for _ in 0..group_length {
-            let packed = reader.read(group_width)?;
+            let packed = value_reader.read(group_width)?;
             let value = decode_group_value(
                 group_reference,
                 packed,
                 group_width,
                 params.missing_value_management,
             )?;
-            decoded.push(value);
+            let value = spatial
+                .as_mut()
+                .map_or(Ok(value), |state| state.restore(value))?;
+            output.push_present(scale_complex_value(
+                reference,
+                binary_factor,
+                decimal_factor,
+                value,
+            ))?;
         }
     }
 
-    if decoded.len() != params.encoded_values {
+    if actual_total != params.encoded_values {
         return Err(Error::DataLengthMismatch {
             expected: params.encoded_values,
-            actual: decoded.len(),
+            actual: actual_total,
         });
     }
 
-    if let Some(spatial) = spatial_descriptors {
-        apply_spatial_descriptors(decoded, spatial)
-    } else {
-        Ok(decoded)
+    if output.values_written() != params.encoded_values {
+        return Err(Error::DataLengthMismatch {
+            expected: params.encoded_values,
+            actual: output.values_written(),
+        });
     }
+
+    if let Some(spatial) = spatial {
+        spatial.finish()?;
+    }
+
+    Ok(())
+}
+
+fn read_group_length(
+    reader: &mut BitReader<'_>,
+    params: &ComplexPackingParams,
+    group_index: usize,
+) -> Result<usize> {
+    if params.scaled_group_length_bits as usize > u64::BITS as usize {
+        return Err(Error::UnsupportedPackingWidth(
+            params.scaled_group_length_bits,
+        ));
+    }
+
+    if group_index + 1 == params.num_groups {
+        return Ok(params.true_length_last_group as usize);
+    }
+
+    let scaled = reader
+        .read(params.scaled_group_length_bits as usize)?
+        .checked_mul(u64::from(params.group_length_increment))
+        .ok_or_else(|| Error::Other("group length overflow".into()))?;
+    let length = u64::from(params.group_length_reference)
+        .checked_add(scaled)
+        .ok_or_else(|| Error::Other("group length overflow".into()))?;
+    usize::try_from(length).map_err(|_| Error::Other("group length overflow".into()))
 }
 
 fn read_spatial_descriptors(
@@ -421,66 +547,23 @@ fn read_spatial_descriptors(
         ));
     }
 
-    let mut initial_values = Vec::with_capacity(params.order as usize);
-    for _ in 0..params.order {
-        initial_values.push(reader.read_signed(bit_count)?);
+    let first_value = reader.read_signed(bit_count)?;
+    let second_value = if params.order == 2 {
+        Some(reader.read_signed(bit_count)?)
+    } else {
+        None
+    };
+    for _ in usize::from(params.order.min(2))..params.order as usize {
+        let _ = reader.read_signed(bit_count)?;
     }
     let overall_minimum = reader.read_signed(bit_count)?;
 
     Ok(SpatialDescriptors {
         order: params.order,
-        initial_values,
+        first_value,
+        second_value,
         overall_minimum,
     })
-}
-
-fn build_group_lengths(
-    reader: &mut BitReader<'_>,
-    params: &ComplexPackingParams,
-) -> Result<Vec<usize>> {
-    let scaled_lengths = read_bits_array(
-        reader,
-        params.num_groups,
-        params.scaled_group_length_bits as usize,
-    )?;
-
-    let mut lengths = Vec::with_capacity(params.num_groups);
-    for (index, scaled) in scaled_lengths.into_iter().enumerate() {
-        let length = if index + 1 == params.num_groups {
-            params.true_length_last_group as usize
-        } else {
-            let scaled = scaled
-                .checked_mul(u64::from(params.group_length_increment))
-                .ok_or_else(|| Error::Other("group length overflow".into()))?;
-            let length = u64::from(params.group_length_reference)
-                .checked_add(scaled)
-                .ok_or_else(|| Error::Other("group length overflow".into()))?;
-            usize::try_from(length).map_err(|_| Error::Other("group length overflow".into()))?
-        };
-        lengths.push(length);
-    }
-
-    let actual_total = lengths.iter().sum::<usize>();
-    if actual_total != params.encoded_values {
-        return Err(Error::DataLengthMismatch {
-            expected: params.encoded_values,
-            actual: actual_total,
-        });
-    }
-
-    Ok(lengths)
-}
-
-fn read_bits_array(reader: &mut BitReader<'_>, count: usize, bit_count: usize) -> Result<Vec<u64>> {
-    if bit_count > u64::BITS as usize {
-        return Err(Error::UnsupportedPackingWidth(bit_count as u8));
-    }
-
-    let mut values = Vec::with_capacity(count);
-    for _ in 0..count {
-        values.push(reader.read(bit_count)?);
-    }
-    Ok(values)
 }
 
 fn decode_constant_group_value(
@@ -535,125 +618,6 @@ fn decode_group_value(
     Ok(Some(value))
 }
 
-fn apply_spatial_descriptors(
-    values: Vec<Option<i64>>,
-    descriptors: SpatialDescriptors,
-) -> Result<Vec<Option<i64>>> {
-    match descriptors.order {
-        1 => restore_first_order_spatial_differencing(values, descriptors),
-        2 => restore_second_order_spatial_differencing(values, descriptors),
-        other => Err(Error::UnsupportedSpatialDifferencingOrder(other)),
-    }
-}
-
-fn restore_first_order_spatial_differencing(
-    values: Vec<Option<i64>>,
-    descriptors: SpatialDescriptors,
-) -> Result<Vec<Option<i64>>> {
-    let Some(&first_value) = descriptors.initial_values.first() else {
-        return Err(Error::InvalidSection {
-            section: 5,
-            reason: "missing first-order spatial differencing descriptor".into(),
-        });
-    };
-
-    let mut restored = Vec::with_capacity(values.len());
-    let mut previous = None;
-    let mut non_missing_seen = 0usize;
-
-    for value in values {
-        match value {
-            Some(value) => {
-                let restored_value = if non_missing_seen == 0 {
-                    first_value
-                } else {
-                    let delta = value
-                        .checked_add(descriptors.overall_minimum)
-                        .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
-                    previous
-                        .and_then(|previous: i64| previous.checked_add(delta))
-                        .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?
-                };
-                previous = Some(restored_value);
-                non_missing_seen += 1;
-                restored.push(Some(restored_value));
-            }
-            None => restored.push(None),
-        }
-    }
-
-    if non_missing_seen == 0 {
-        return Err(Error::DataLengthMismatch {
-            expected: 1,
-            actual: 0,
-        });
-    }
-
-    Ok(restored)
-}
-
-fn restore_second_order_spatial_differencing(
-    values: Vec<Option<i64>>,
-    descriptors: SpatialDescriptors,
-) -> Result<Vec<Option<i64>>> {
-    if descriptors.initial_values.len() < 2 {
-        return Err(Error::InvalidSection {
-            section: 5,
-            reason: "missing second-order spatial differencing descriptors".into(),
-        });
-    }
-
-    let first_value = descriptors.initial_values[0];
-    let second_value = descriptors.initial_values[1];
-    let mut restored = Vec::with_capacity(values.len());
-    let mut previous: Option<i64> = None;
-    let mut previous_difference: Option<i64> = None;
-    let mut non_missing_seen = 0usize;
-
-    for value in values {
-        match value {
-            Some(value) => {
-                let restored_value = match non_missing_seen {
-                    0 => first_value,
-                    1 => {
-                        previous_difference = second_value.checked_sub(first_value);
-                        second_value
-                    }
-                    _ => {
-                        let second_difference = value
-                            .checked_add(descriptors.overall_minimum)
-                            .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
-                        let difference = previous_difference
-                            .and_then(|previous_difference| {
-                                previous_difference.checked_add(second_difference)
-                            })
-                            .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
-                        let next = previous
-                            .and_then(|previous: i64| previous.checked_add(difference))
-                            .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
-                        previous_difference = Some(difference);
-                        next
-                    }
-                };
-
-                previous = Some(restored_value);
-                non_missing_seen += 1;
-                restored.push(Some(restored_value));
-            }
-            None => restored.push(None),
-        }
-    }
-
-    if non_missing_seen < 2 {
-        return Err(Error::DataLengthMismatch {
-            expected: 2,
-            actual: non_missing_seen,
-        });
-    }
-
-    Ok(restored)
-}
-
 fn is_missing_code(
     value: u64,
     bit_width: usize,
@@ -695,33 +659,26 @@ fn missing_code(bit_width: usize, kind: MissingKind) -> Result<Option<u64>> {
     Ok(Some(code))
 }
 
-fn apply_bitmap(
-    bitmap_payload: &[u8],
-    packed_values: Vec<f64>,
-    num_grid_points: usize,
-) -> Result<Vec<f64>> {
-    let mut decoded = Vec::with_capacity(num_grid_points);
-    let mut packed_iter = packed_values.into_iter();
-    let mut present_points = 0usize;
-
-    for bit_index in 0..num_grid_points {
-        if bitmap_bit(bitmap_payload, bit_index)? {
-            present_points += 1;
-            decoded.push(packed_iter.next().ok_or(Error::MissingBitmap)?);
-        } else {
-            decoded.push(f64::NAN);
-        }
+fn scale_complex_value<T: DecodeSample>(
+    reference: f64,
+    binary_factor: f64,
+    decimal_factor: f64,
+    value: Option<i64>,
+) -> T {
+    match value {
+        Some(value) => T::from_f64(reference + (value as f64) * binary_factor * decimal_factor),
+        None => T::nan(),
     }
+}
 
-    let extra_values = packed_iter.count();
-    if extra_values > 0 {
-        return Err(Error::DataLengthMismatch {
-            expected: present_points,
-            actual: present_points + extra_values,
-        });
-    }
-
-    Ok(decoded)
+fn scaled_simple_value<T: DecodeSample>(
+    reference: f64,
+    packed: u64,
+    params: &SimplePackingParams,
+) -> T {
+    let binary_factor = 2.0_f64.powi(params.binary_scale as i32);
+    let decimal_factor = 10.0_f64.powi(-(params.decimal_scale as i32));
+    T::from_f64(reference + (packed as f64) * binary_factor * decimal_factor)
 }
 
 fn bitmap_bit(bitmap_payload: &[u8], index: usize) -> Result<bool> {
@@ -732,6 +689,149 @@ fn bitmap_bit(bitmap_payload: &[u8], index: usize) -> Result<bool> {
         .copied()
         .ok_or(Error::MissingBitmap)?;
     Ok(((byte >> (7 - bit_index)) & 1) != 0)
+}
+
+struct GroupReaderLayout {
+    reference_offset: usize,
+    width_offset: usize,
+    length_offset: usize,
+    value_offset: usize,
+}
+
+impl GroupReaderLayout {
+    fn new(start_bit_offset: usize, params: &ComplexPackingParams) -> Result<Self> {
+        if params.group_reference_bits as usize > u64::BITS as usize {
+            return Err(Error::UnsupportedPackingWidth(params.group_reference_bits));
+        }
+        if params.group_width_bits as usize > u64::BITS as usize {
+            return Err(Error::UnsupportedPackingWidth(params.group_width_bits));
+        }
+        if params.scaled_group_length_bits as usize > u64::BITS as usize {
+            return Err(Error::UnsupportedPackingWidth(
+                params.scaled_group_length_bits,
+            ));
+        }
+
+        let reference_offset = start_bit_offset;
+        let width_offset = align_bit_offset(add_group_bits(
+            reference_offset,
+            params.num_groups,
+            params.group_reference_bits as usize,
+        )?)?;
+        let length_offset = align_bit_offset(add_group_bits(
+            width_offset,
+            params.num_groups,
+            params.group_width_bits as usize,
+        )?)?;
+        let value_offset = align_bit_offset(add_group_bits(
+            length_offset,
+            params.num_groups,
+            params.scaled_group_length_bits as usize,
+        )?)?;
+
+        Ok(Self {
+            reference_offset,
+            width_offset,
+            length_offset,
+            value_offset,
+        })
+    }
+}
+
+fn add_group_bits(start_bit_offset: usize, count: usize, bits_per_group: usize) -> Result<usize> {
+    count
+        .checked_mul(bits_per_group)
+        .and_then(|total_bits| start_bit_offset.checked_add(total_bits))
+        .ok_or_else(|| Error::Other("bit offset overflow".into()))
+}
+
+fn align_bit_offset(bit_offset: usize) -> Result<usize> {
+    let remainder = bit_offset % 8;
+    if remainder == 0 {
+        Ok(bit_offset)
+    } else {
+        bit_offset
+            .checked_add(8 - remainder)
+            .ok_or_else(|| Error::Other("bit offset overflow".into()))
+    }
+}
+
+struct OutputCursor<'a, T> {
+    output: &'a mut [T],
+    bitmap: Option<&'a [u8]>,
+    next_index: usize,
+    values_written: usize,
+}
+
+impl<'a, T: DecodeSample> OutputCursor<'a, T> {
+    fn new(output: &'a mut [T], bitmap: Option<&'a [u8]>) -> Self {
+        Self {
+            output,
+            bitmap,
+            next_index: 0,
+            values_written: 0,
+        }
+    }
+
+    fn push_present(&mut self, value: T) -> Result<()> {
+        match self.bitmap {
+            Some(bitmap) => {
+                while self.next_index < self.output.len() {
+                    if bitmap_bit(bitmap, self.next_index)? {
+                        self.output[self.next_index] = value;
+                        self.next_index += 1;
+                        self.values_written += 1;
+                        return Ok(());
+                    }
+
+                    self.output[self.next_index] = T::nan();
+                    self.next_index += 1;
+                }
+
+                Err(Error::DataLengthMismatch {
+                    expected: self.values_written,
+                    actual: self.values_written + 1,
+                })
+            }
+            None => {
+                if self.next_index >= self.output.len() {
+                    return Err(Error::DataLengthMismatch {
+                        expected: self.output.len(),
+                        actual: self.next_index + 1,
+                    });
+                }
+
+                self.output[self.next_index] = value;
+                self.next_index += 1;
+                self.values_written += 1;
+                Ok(())
+            }
+        }
+    }
+
+    fn finish(mut self) -> Result<()> {
+        if let Some(bitmap) = self.bitmap {
+            while self.next_index < self.output.len() {
+                if bitmap_bit(bitmap, self.next_index)? {
+                    return Err(Error::MissingBitmap);
+                }
+                self.output[self.next_index] = T::nan();
+                self.next_index += 1;
+            }
+        }
+
+        if self.next_index != self.output.len() {
+            return Err(Error::DataLengthMismatch {
+                expected: self.output.len(),
+                actual: self.next_index,
+            });
+        }
+
+        Ok(())
+    }
+    fn values_written(&self) -> usize {
+        self.values_written
+    }
 }
 
 struct BitReader<'a> {
@@ -745,6 +845,10 @@ impl<'a> BitReader<'a> {
             data,
             bit_offset: 0,
         }
+    }
+
+    fn with_offset(data: &'a [u8], bit_offset: usize) -> Self {
+        Self { data, bit_offset }
     }
 
     fn read(&mut self, bit_count: usize) -> Result<u64> {
@@ -793,17 +897,110 @@ impl<'a> BitReader<'a> {
             .map_err(|_| Error::Other("signed value exceeds i64 range".into()))?;
         Ok(-magnitude)
     }
-
-    fn align_to_byte(&mut self) {
-        self.bit_offset = self.bit_offset.next_multiple_of(8);
-    }
 }
 
 #[derive(Debug, Clone)]
 struct SpatialDescriptors {
     order: u8,
-    initial_values: Vec<i64>,
+    first_value: i64,
+    second_value: Option<i64>,
     overall_minimum: i64,
+}
+
+#[derive(Debug, Clone)]
+struct SpatialRestoreState {
+    descriptors: SpatialDescriptors,
+    previous: Option<i64>,
+    previous_difference: Option<i64>,
+    non_missing_seen: usize,
+}
+
+impl SpatialRestoreState {
+    fn new(descriptors: SpatialDescriptors) -> Self {
+        Self {
+            descriptors,
+            previous: None,
+            previous_difference: None,
+            non_missing_seen: 0,
+        }
+    }
+
+    fn restore(&mut self, value: Option<i64>) -> Result<Option<i64>> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+
+        let restored = match self.descriptors.order {
+            1 => self.restore_first_order(value)?,
+            2 => self.restore_second_order(value)?,
+            other => return Err(Error::UnsupportedSpatialDifferencingOrder(other)),
+        };
+
+        self.previous = Some(restored);
+        self.non_missing_seen += 1;
+        Ok(Some(restored))
+    }
+
+    fn finish(self) -> Result<()> {
+        let expected = match self.descriptors.order {
+            1 => 1,
+            2 => 2,
+            other => return Err(Error::UnsupportedSpatialDifferencingOrder(other)),
+        };
+        if self.non_missing_seen < expected {
+            return Err(Error::DataLengthMismatch {
+                expected,
+                actual: self.non_missing_seen,
+            });
+        }
+        Ok(())
+    }
+
+    fn restore_first_order(&mut self, value: i64) -> Result<i64> {
+        if self.non_missing_seen == 0 {
+            return Ok(self.descriptors.first_value);
+        }
+
+        let delta = value
+            .checked_add(self.descriptors.overall_minimum)
+            .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
+        self.previous
+            .and_then(|previous| previous.checked_add(delta))
+            .ok_or_else(|| Error::Other("spatial differencing overflow".into()))
+    }
+
+    fn restore_second_order(&mut self, value: i64) -> Result<i64> {
+        match self.non_missing_seen {
+            0 => Ok(self.descriptors.first_value),
+            1 => {
+                let second_value = self.descriptors.second_value.ok_or(Error::InvalidSection {
+                    section: 5,
+                    reason: "missing second-order spatial differencing descriptors".into(),
+                })?;
+                self.previous_difference = second_value.checked_sub(self.descriptors.first_value);
+                self.previous_difference
+                    .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
+                Ok(second_value)
+            }
+            _ => {
+                let second_difference = value
+                    .checked_add(self.descriptors.overall_minimum)
+                    .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
+                let difference = self
+                    .previous_difference
+                    .and_then(|previous_difference| {
+                        previous_difference.checked_add(second_difference)
+                    })
+                    .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
+                let next = self
+                    .previous
+                    .and_then(|previous| previous.checked_add(difference))
+                    .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
+                self.previous_difference = Some(difference);
+                Ok(next)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

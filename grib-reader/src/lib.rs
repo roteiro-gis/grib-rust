@@ -42,16 +42,23 @@ pub mod product;
 pub mod sections;
 mod util;
 
+pub use data::DecodeSample;
 pub use error::{Error, Result};
 pub use metadata::{Parameter, ReferenceTime};
-pub use product::{FixedSurface, Identification, ProductDefinition};
+pub use product::{
+    AnalysisOrForecastTemplate, FixedSurface, Identification, ProductDefinition,
+    ProductDefinitionTemplate,
+};
 
 use std::path::Path;
 
 use memmap2::Mmap;
 use ndarray::{ArrayD, IxDyn};
 
-use crate::data::{bitmap_payload as grib2_bitmap_payload, decode_field, DataRepresentation};
+use crate::data::{
+    bitmap_payload as grib2_bitmap_payload, decode_field_into, decode_payload_into,
+    DataRepresentation,
+};
 use crate::grib1::{BinaryDataSection, GridDescription};
 use crate::grid::GridDefinition;
 use crate::indicator::Indicator;
@@ -222,6 +229,23 @@ impl GribFile {
                 .collect()
         }
     }
+
+    /// Decode every field in the file as `f32`.
+    pub fn read_all_data_as_f32(&self) -> Result<Vec<ArrayD<f32>>> {
+        #[cfg(feature = "rayon")]
+        {
+            (0..self.message_count())
+                .into_par_iter()
+                .map(|index| self.message(index)?.read_data_as_f32())
+                .collect()
+        }
+        #[cfg(not(feature = "rayon"))]
+        {
+            (0..self.message_count())
+                .map(|index| self.message(index)?.read_data_as_f32())
+                .collect()
+        }
+    }
 }
 
 /// A single logical GRIB field.
@@ -319,7 +343,7 @@ impl<'a> Message<'a> {
         }
     }
 
-    pub fn read_flat_data_as_f64(&self) -> Result<Vec<f64>> {
+    pub fn decode_into<T: DecodeSample>(&self, out: &mut [T]) -> Result<()> {
         let grid = match &self.metadata.grid {
             GridDefinition::LatLon(grid) => grid,
             GridDefinition::Unsupported(template) => {
@@ -327,18 +351,19 @@ impl<'a> Message<'a> {
             }
         };
 
-        let decoded = match self.decode_plan {
+        match self.decode_plan {
             DecodePlan::Grib2(field) => {
                 let data_section = section_bytes(self.bytes, field.data);
                 let bitmap_section = match field.bitmap {
                     Some(section) => grib2_bitmap_payload(section_bytes(self.bytes, section))?,
                     None => None,
                 };
-                decode_field(
+                decode_field_into(
                     data_section,
                     &self.metadata.data_representation,
                     bitmap_section,
                     self.metadata.grid.num_points(),
+                    out,
                 )?
             }
             DecodePlan::Grib1 { bitmap, data } => {
@@ -353,20 +378,39 @@ impl<'a> Message<'a> {
                         reason: format!("expected at least 11 bytes, got {}", data_section.len()),
                     });
                 }
-                grib1::decode_simple_field(
+                decode_payload_into(
                     &data_section[11..],
                     &self.metadata.data_representation,
                     bitmap_section,
                     self.metadata.grid.num_points(),
+                    out,
                 )?
             }
-        };
+        }
 
-        grid.reorder_for_ndarray(decoded)
+        grid.reorder_for_ndarray_in_place(out)
+    }
+
+    pub fn read_flat_data_as_f64(&self) -> Result<Vec<f64>> {
+        let mut decoded = vec![0.0; self.metadata.grid.num_points()];
+        self.decode_into(&mut decoded)?;
+        Ok(decoded)
+    }
+
+    pub fn read_flat_data_as_f32(&self) -> Result<Vec<f32>> {
+        let mut decoded = vec![0.0_f32; self.metadata.grid.num_points()];
+        self.decode_into(&mut decoded)?;
+        Ok(decoded)
     }
 
     pub fn read_data_as_f64(&self) -> Result<ArrayD<f64>> {
         let ordered = self.read_flat_data_as_f64()?;
+        ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
+            .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
+    }
+
+    pub fn read_data_as_f32(&self) -> Result<ArrayD<f32>> {
+        let ordered = self.read_flat_data_as_f32()?;
         ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
             .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
     }
@@ -560,8 +604,8 @@ fn index_grib2_message(
                 parameter,
                 grid,
                 data_representation,
-                forecast_time_unit: product.forecast_time_unit,
-                forecast_time: product.forecast_time,
+                forecast_time_unit: product.forecast_time_unit(),
+                forecast_time: product.forecast_time(),
                 message_offset: offset as u64,
                 message_length: message_bytes.len() as u64,
                 field_index_in_message,

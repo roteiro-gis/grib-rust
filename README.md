@@ -43,8 +43,11 @@ for msg in file.messages() {
 }
 
 let field = file.message(0)?;
-let flat = field.read_flat_data_as_f64()?;
+let flat = field.read_flat_data_as_f32()?;
 println!("decoded values: {}", flat.len());
+
+let mut reused = vec![0.0_f64; field.grid_shape().0 * field.grid_shape().1];
+field.decode_into(&mut reused)?;
 
 let data = field.read_data_as_f64()?;
 println!("ndarray shape: {:?}", data.shape());
@@ -69,7 +72,7 @@ println!("recoverable messages: {}", tolerant.message_count());
 - `OpenOptions` for strict or tolerant scanning
 - Bitmap application with missing values surfaced as `NaN`
 - Parallel field decoding via Rayon
-- Output: flat `Vec<f64>` or `ndarray::ArrayD<f64>`
+- Output: caller-owned `&mut [f32]`/`&mut [f64]`, flat `Vec<f32>`/`Vec<f64>`, or `ndarray::ArrayD<f32>`/`ArrayD<f64>`
 - Memory-mapped I/O or owned byte buffers
 
 ## Not Yet Supported
@@ -132,7 +135,9 @@ git push origin v<version>
 
 - `./scripts/run-reference-parity.sh` runs the Dockerized ecCodes parity suite.
 - For reference comparisons and current benchmark results against ecCodes, see
-  [docs/benchmark-report.md](docs/benchmark-report.md).
+  [docs/benchmark-report.md](docs/benchmark-report.md). Re-run the benchmark
+  scripts after corpus changes before using those numbers as current throughput
+  claims.
 
 ## License
 
