@@ -1,5 +1,92 @@
 //! Edition-independent field metadata.
 
+/// Semantic forecast-time units shared across GRIB editions.
+///
+/// Raw unit codes are edition-specific. In particular, GRIB1 code `13` means
+/// quarter-hour while GRIB2 code `13` means second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForecastTimeUnit {
+    Minute,
+    Hour,
+    Day,
+    Month,
+    Year,
+    Decade,
+    Normal,
+    Century,
+    ThreeHours,
+    SixHours,
+    TwelveHours,
+    QuarterHour,
+    HalfHour,
+    Second,
+}
+
+impl ForecastTimeUnit {
+    pub fn from_grib1_code(code: u8) -> Option<Self> {
+        Some(match code {
+            0 => Self::Minute,
+            1 => Self::Hour,
+            2 => Self::Day,
+            3 => Self::Month,
+            4 => Self::Year,
+            5 => Self::Decade,
+            6 => Self::Normal,
+            7 => Self::Century,
+            10 => Self::ThreeHours,
+            11 => Self::SixHours,
+            12 => Self::TwelveHours,
+            13 => Self::QuarterHour,
+            14 => Self::HalfHour,
+            254 => Self::Second,
+            _ => return None,
+        })
+    }
+
+    pub fn from_grib2_code(code: u8) -> Option<Self> {
+        Some(match code {
+            0 => Self::Minute,
+            1 => Self::Hour,
+            2 => Self::Day,
+            3 => Self::Month,
+            4 => Self::Year,
+            5 => Self::Decade,
+            6 => Self::Normal,
+            7 => Self::Century,
+            10 => Self::ThreeHours,
+            11 => Self::SixHours,
+            12 => Self::TwelveHours,
+            13 => Self::Second,
+            _ => return None,
+        })
+    }
+
+    pub fn from_edition_and_code(edition: u8, code: u8) -> Option<Self> {
+        match edition {
+            1 => Self::from_grib1_code(code),
+            2 => Self::from_grib2_code(code),
+            _ => None,
+        }
+    }
+
+    fn seconds_per_unit(self) -> Option<i64> {
+        Some(match self {
+            Self::Minute => 60,
+            Self::Hour => 60 * 60,
+            Self::Day => 24 * 60 * 60,
+            Self::ThreeHours => 3 * 60 * 60,
+            Self::SixHours => 6 * 60 * 60,
+            Self::TwelveHours => 12 * 60 * 60,
+            Self::QuarterHour => 15 * 60,
+            Self::HalfHour => 30 * 60,
+            Self::Second => 1,
+            Self::Month | Self::Year | Self::Decade | Self::Normal | Self::Century => {
+                return None;
+            }
+        })
+    }
+}
+
 /// Common reference time representation for GRIB fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReferenceTime {
@@ -12,25 +99,41 @@ pub struct ReferenceTime {
 }
 
 impl ReferenceTime {
-    /// Add a GRIB forecast lead using fixed-width Code Table 4.4 units.
+    /// Add a GRIB forecast lead using a semantic forecast-time unit.
     ///
-    /// Returns `None` for unsupported calendar-dependent units or invalid
-    /// timestamps.
-    pub fn checked_add_forecast_time(&self, unit: u8, value: u32) -> Option<Self> {
-        let seconds_per_unit = match unit {
-            0 => 60,
-            1 => 60 * 60,
-            2 => 24 * 60 * 60,
-            10 => 3 * 60 * 60,
-            11 => 6 * 60 * 60,
-            12 => 12 * 60 * 60,
-            13 => 1,
-            _ => return None,
-        };
-
+    /// Returns `None` for calendar-dependent units or invalid timestamps.
+    pub fn checked_add_forecast_time_unit(
+        &self,
+        unit: ForecastTimeUnit,
+        value: u32,
+    ) -> Option<Self> {
+        let seconds_per_unit = unit.seconds_per_unit()?;
         let base = self.seconds_since_epoch()?;
         let delta = i64::from(value).checked_mul(seconds_per_unit)?;
         Self::from_seconds_since_epoch(base.checked_add(delta)?)
+    }
+
+    /// Add a GRIB forecast lead using raw GRIB edition and unit-code values.
+    ///
+    /// Returns `None` for unsupported edition/code pairs, calendar-dependent
+    /// units, or invalid timestamps.
+    pub fn checked_add_forecast_time_by_edition(
+        &self,
+        edition: u8,
+        unit: u8,
+        value: u32,
+    ) -> Option<Self> {
+        let unit = ForecastTimeUnit::from_edition_and_code(edition, unit)?;
+        self.checked_add_forecast_time_unit(unit, value)
+    }
+
+    /// Add a GRIB forecast lead using raw GRIB2 Code Table 4.4 units.
+    ///
+    /// Returns `None` for unsupported unit codes, calendar-dependent units, or
+    /// invalid timestamps.
+    pub fn checked_add_forecast_time(&self, unit: u8, value: u32) -> Option<Self> {
+        let unit = ForecastTimeUnit::from_grib2_code(unit)?;
+        self.checked_add_forecast_time_unit(unit, value)
     }
 
     fn seconds_since_epoch(&self) -> Option<i64> {
@@ -164,7 +267,7 @@ fn civil_from_days(days_since_epoch: i64) -> Option<(u16, u8, u8)> {
 
 #[cfg(test)]
 mod tests {
-    use super::ReferenceTime;
+    use super::{ForecastTimeUnit, ReferenceTime};
 
     #[test]
     fn adds_forecast_hours_across_day_boundary() {
@@ -230,5 +333,73 @@ mod tests {
         }
         .checked_add_forecast_time(3, 1)
         .is_none());
+    }
+
+    #[test]
+    fn decodes_edition_specific_forecast_units() {
+        assert_eq!(
+            ForecastTimeUnit::from_grib1_code(13),
+            Some(ForecastTimeUnit::QuarterHour)
+        );
+        assert_eq!(
+            ForecastTimeUnit::from_grib2_code(13),
+            Some(ForecastTimeUnit::Second)
+        );
+        assert_eq!(
+            ForecastTimeUnit::from_grib1_code(254),
+            Some(ForecastTimeUnit::Second)
+        );
+    }
+
+    #[test]
+    fn adds_grib1_quarter_hours_by_edition() {
+        let valid = ReferenceTime {
+            year: 2026,
+            month: 3,
+            day: 20,
+            hour: 12,
+            minute: 0,
+            second: 0,
+        }
+        .checked_add_forecast_time_by_edition(1, 13, 2)
+        .unwrap();
+
+        assert_eq!(
+            valid,
+            ReferenceTime {
+                year: 2026,
+                month: 3,
+                day: 20,
+                hour: 12,
+                minute: 30,
+                second: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn adds_semantic_second_units() {
+        let valid = ReferenceTime {
+            year: 2026,
+            month: 3,
+            day: 20,
+            hour: 12,
+            minute: 0,
+            second: 0,
+        }
+        .checked_add_forecast_time_unit(ForecastTimeUnit::Second, 30)
+        .unwrap();
+
+        assert_eq!(
+            valid,
+            ReferenceTime {
+                year: 2026,
+                month: 3,
+                day: 20,
+                hour: 12,
+                minute: 0,
+                second: 30,
+            }
+        );
     }
 }

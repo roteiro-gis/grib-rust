@@ -44,7 +44,7 @@ mod util;
 
 pub use data::DecodeSample;
 pub use error::{Error, Result};
-pub use metadata::{Parameter, ReferenceTime};
+pub use metadata::{ForecastTimeUnit, Parameter, ReferenceTime};
 pub use product::{
     AnalysisOrForecastTemplate, FixedSurface, Identification, ProductDefinition,
     ProductDefinitionTemplate,
@@ -56,8 +56,8 @@ use memmap2::Mmap;
 use ndarray::{ArrayD, IxDyn};
 
 use crate::data::{
-    bitmap_payload as grib2_bitmap_payload, decode_field_into, decode_payload_into,
-    DataRepresentation,
+    bitmap_payload as grib2_bitmap_payload, count_bitmap_present_points, decode_field_into,
+    decode_payload_into, DataRepresentation,
 };
 use crate::grib1::{BinaryDataSection, GridDescription};
 use crate::grid::GridDefinition;
@@ -313,6 +313,11 @@ impl<'a> Message<'a> {
         self.metadata.forecast_time_unit
     }
 
+    pub fn forecast_time_unit_kind(&self) -> Option<ForecastTimeUnit> {
+        let unit = self.metadata.forecast_time_unit?;
+        ForecastTimeUnit::from_edition_and_code(self.metadata.edition, unit)
+    }
+
     pub fn forecast_time(&self) -> Option<u32> {
         self.metadata.forecast_time
     }
@@ -322,7 +327,7 @@ impl<'a> Message<'a> {
         let lead = self.metadata.forecast_time?;
         self.metadata
             .reference_time
-            .checked_add_forecast_time(unit, lead)
+            .checked_add_forecast_time_by_edition(self.metadata.edition, unit, lead)
     }
 
     pub fn grid_shape(&self) -> (usize, usize) {
@@ -516,10 +521,11 @@ fn index_grib1_message(message_bytes: &[u8], offset: usize) -> Result<Vec<Messag
     let grid = grid_description.grid;
 
     let bitmap_present_count = match sections.bitmap {
-        Some(bitmap) => count_bitmap_present_points(
-            grib1::bitmap_payload(section_bytes(message_bytes, bitmap))?,
-            grid.num_points(),
-        )?,
+        Some(bitmap) => {
+            let bitmap_payload = grib1::bitmap_payload(section_bytes(message_bytes, bitmap))?
+                .ok_or(Error::MissingBitmap)?;
+            count_bitmap_present_points(bitmap_payload, grid.num_points())?
+        }
         None => grid.num_points(),
     };
 
@@ -617,30 +623,6 @@ fn index_grib2_message(
     }
 
     Ok(messages)
-}
-
-fn count_bitmap_present_points(bitmap: Option<&[u8]>, num_grid_points: usize) -> Result<usize> {
-    let Some(payload) = bitmap else {
-        return Ok(0);
-    };
-
-    let full_bytes = num_grid_points / 8;
-    let remaining_bits = num_grid_points % 8;
-    let required_bytes = full_bytes + usize::from(remaining_bits > 0);
-    if payload.len() < required_bytes {
-        return Err(Error::MissingBitmap);
-    }
-
-    let mut present = payload[..full_bytes]
-        .iter()
-        .map(|byte| byte.count_ones() as usize)
-        .sum();
-    if remaining_bits > 0 {
-        let mask = u8::MAX << (8 - remaining_bits);
-        present += (payload[full_bytes] & mask).count_ones() as usize;
-    }
-
-    Ok(present)
 }
 
 #[cfg(test)]

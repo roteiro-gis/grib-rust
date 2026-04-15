@@ -8,7 +8,7 @@ use common::{
     build_grib2_message_with_forecast, build_grib2_multifield_message,
     build_grib2_spatial_differencing_message,
 };
-use grib_reader::{Error, GribFile, OpenOptions};
+use grib_reader::{Error, ForecastTimeUnit, GribFile, OpenOptions};
 
 #[test]
 fn open_grib2_from_file_and_decode() {
@@ -87,6 +87,30 @@ fn decode_into_reuses_caller_buffers_for_f32_and_f64() {
 }
 
 #[test]
+fn open_grib2_simple_field_applies_decimal_scale_to_reference_and_values() {
+    let mut bytes = build_grib2_message(&[0, 10, 20, 30]);
+    let section5_offset = 16 + 21 + 72 + 34;
+    bytes[section5_offset + 11..section5_offset + 15].copy_from_slice(&10f32.to_be_bytes());
+    bytes[section5_offset + 15..section5_offset + 17].copy_from_slice(&0i16.to_be_bytes());
+    bytes[section5_offset + 17..section5_offset + 19].copy_from_slice(&1i16.to_be_bytes());
+
+    let opened = GribFile::from_bytes(bytes).unwrap();
+    let decoded = opened
+        .message(0)
+        .unwrap()
+        .read_data_as_f64()
+        .unwrap()
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+
+    assert!((decoded[0] - 1.0).abs() < 1e-12);
+    assert!((decoded[1] - 2.0).abs() < 1e-12);
+    assert!((decoded[2] - 3.0).abs() < 1e-12);
+    assert!((decoded[3] - 4.0).abs() < 1e-12);
+}
+
+#[test]
 fn computes_valid_time_from_forecast_lead() {
     let opened =
         GribFile::from_bytes(build_grib2_message_with_forecast(&[1, 2, 3, 4], 18)).unwrap();
@@ -94,6 +118,10 @@ fn computes_valid_time_from_forecast_lead() {
     let valid = field.valid_time().unwrap();
 
     assert_eq!(field.forecast_time_unit(), Some(1));
+    assert_eq!(
+        field.forecast_time_unit_kind(),
+        Some(ForecastTimeUnit::Hour)
+    );
     assert_eq!(field.forecast_time(), Some(18));
     assert_eq!(valid.year, 2026);
     assert_eq!(valid.month, 3);
@@ -116,6 +144,10 @@ fn computes_grib1_indicator_ten_valid_time_from_u16_lead() {
     let valid = field.valid_time().unwrap();
 
     assert_eq!(field.forecast_time_unit(), Some(1));
+    assert_eq!(
+        field.forecast_time_unit_kind(),
+        Some(ForecastTimeUnit::Hour)
+    );
     assert_eq!(field.forecast_time(), Some(300));
     assert_eq!(valid.year, 2026);
     assert_eq!(valid.month, 4);
@@ -123,6 +155,50 @@ fn computes_grib1_indicator_ten_valid_time_from_u16_lead() {
     assert_eq!(valid.hour, 0);
     assert_eq!(valid.minute, 0);
     assert_eq!(valid.second, 0);
+}
+
+#[test]
+fn computes_grib1_quarter_hour_valid_time() {
+    let mut bytes = build_grib1_message(&[5, 6, 7, 8]);
+    let pds_offset = 8;
+    bytes[pds_offset + 17] = 13;
+    bytes[pds_offset + 18] = 2;
+    bytes[pds_offset + 20] = 0;
+
+    let opened = GribFile::from_bytes(bytes).unwrap();
+    let field = opened.message(0).unwrap();
+    let valid = field.valid_time().unwrap();
+
+    assert_eq!(field.forecast_time_unit(), Some(13));
+    assert_eq!(
+        field.forecast_time_unit_kind(),
+        Some(ForecastTimeUnit::QuarterHour)
+    );
+    assert_eq!(field.forecast_time(), Some(2));
+    assert_eq!(valid.hour, 12);
+    assert_eq!(valid.minute, 30);
+    assert_eq!(valid.second, 0);
+}
+
+#[test]
+fn computes_grib2_second_valid_time() {
+    let mut bytes = build_grib2_message_with_forecast(&[1, 2, 3, 4], 30);
+    let product_offset = 16 + 21 + 72;
+    bytes[product_offset + 17] = 13;
+
+    let opened = GribFile::from_bytes(bytes).unwrap();
+    let field = opened.message(0).unwrap();
+    let valid = field.valid_time().unwrap();
+
+    assert_eq!(field.forecast_time_unit(), Some(13));
+    assert_eq!(
+        field.forecast_time_unit_kind(),
+        Some(ForecastTimeUnit::Second)
+    );
+    assert_eq!(field.forecast_time(), Some(30));
+    assert_eq!(valid.hour, 12);
+    assert_eq!(valid.minute, 0);
+    assert_eq!(valid.second, 30);
 }
 
 #[test]
