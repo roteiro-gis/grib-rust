@@ -1,6 +1,10 @@
 name: Reference Compat
 
 on:
+  push:
+    tags:
+      - "v*"
+      - "grib-reader-v*"
   workflow_dispatch:
     inputs:
       run_benchmarks:

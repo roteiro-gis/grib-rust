@@ -68,7 +68,7 @@ println!("recoverable messages: {}", tolerant.message_count());
 - GRIB2 complex packing with general group splitting, including spatial differencing
 - WMO parameter table lookups (Code Table 4.2)
 - Typed metadata access for reference time, parameter identity, product metadata, grid geometry, and lat/lon coordinates
-- Forecast valid-time helpers from reference time + lead time
+- Forecast valid-time helpers for supported fixed-width GRIB1/GRIB2 time units
 - `OpenOptions` for strict or tolerant scanning
 - Bitmap application with missing values surfaced as `NaN`
 - Parallel field decoding via Rayon
@@ -83,6 +83,8 @@ println!("recoverable messages: {}", tolerant.message_count());
 - GRIB1 predefined bitmaps
 
 Unsupported cases fail explicitly with typed errors.
+Calendar-dependent forecast units such as months and years are exposed through
+raw metadata but currently return `None` from `valid_time()`.
 
 ## Feature flags
 
@@ -101,6 +103,8 @@ cargo test --all-features
 cargo test --no-default-features
 cargo check --manifest-path grib-reader/fuzz/Cargo.toml --bins
 cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins -- -D warnings
+cargo package -p grib-reader --locked
+cargo publish -p grib-reader --dry-run --locked
 ```
 
 Reference compatibility checks are intentionally outside default PR CI:
@@ -116,8 +120,9 @@ git switch main
 git pull --ff-only
 git merge <release-branch>
 
-cargo package -p grib-reader
-cargo publish -p grib-reader
+cargo package -p grib-reader --locked
+cargo publish -p grib-reader --dry-run --locked
+cargo publish -p grib-reader --locked
 
 git tag v<version>
 git push origin main

@@ -57,3 +57,9 @@ jobs:
 
       - name: Lint fuzz targets
         run: cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins -- -D warnings
+
+      - name: Verify crate packaging
+        run: cargo package -p grib-reader --locked
+
+      - name: Verify publish dry run
+        run: cargo publish -p grib-reader --dry-run --locked

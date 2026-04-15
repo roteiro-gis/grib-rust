@@ -199,11 +199,23 @@ pub(crate) fn decode_payload_into<T: DecodeSample>(
             return Err(Error::UnsupportedDataTemplate(*template));
         }
     };
-    if bitmap_section.is_none() && expected_values != num_grid_points {
-        return Err(Error::DataLengthMismatch {
-            expected: num_grid_points,
-            actual: expected_values,
-        });
+    match bitmap_section {
+        Some(bitmap_payload) => {
+            let present_values = count_bitmap_present_points(bitmap_payload, num_grid_points)?;
+            if expected_values != present_values {
+                return Err(Error::DataLengthMismatch {
+                    expected: present_values,
+                    actual: expected_values,
+                });
+            }
+        }
+        None if expected_values != num_grid_points => {
+            return Err(Error::DataLengthMismatch {
+                expected: num_grid_points,
+                actual: expected_values,
+            });
+        }
+        None => {}
     }
 
     let mut output = OutputCursor::new(out, bitmap_section);
@@ -239,6 +251,32 @@ pub fn bitmap_payload(section_bytes: &[u8]) -> Result<Option<&[u8]>> {
         0 => Ok(Some(&section_bytes[6..])),
         indicator => Err(Error::UnsupportedBitmapIndicator(indicator)),
     }
+}
+
+pub(crate) fn count_bitmap_present_points(
+    bitmap_payload: &[u8],
+    num_grid_points: usize,
+) -> Result<usize> {
+    let full_bytes = num_grid_points / 8;
+    let remaining_bits = num_grid_points % 8;
+    let required_bytes = full_bytes + usize::from(remaining_bits > 0);
+    if bitmap_payload.len() < required_bytes {
+        return Err(Error::DataLengthMismatch {
+            expected: required_bytes,
+            actual: bitmap_payload.len(),
+        });
+    }
+
+    let mut present = bitmap_payload[..full_bytes]
+        .iter()
+        .map(|byte| byte.count_ones() as usize)
+        .sum();
+    if remaining_bits > 0 {
+        let mask = u8::MAX << (8 - remaining_bits);
+        present += (bitmap_payload[full_bytes] & mask).count_ones() as usize;
+    }
+
+    Ok(present)
 }
 
 fn parse_simple_packing(data: &[u8]) -> Result<DataRepresentation> {
@@ -351,8 +389,16 @@ fn unpack_simple_into<T: DecodeSample>(
     output: &mut OutputCursor<'_, T>,
 ) -> Result<()> {
     let bits = params.bits_per_value as usize;
+    let binary_factor = 2.0_f64.powi(params.binary_scale as i32);
+    let decimal_factor = 10.0_f64.powi(-(params.decimal_scale as i32));
+    let reference = params.reference_value as f64;
     if bits == 0 {
-        let constant = scaled_simple_value::<T>(params.reference_value as f64, 0, params);
+        let constant = T::from_f64(scale_decoded_value(
+            reference,
+            0.0,
+            binary_factor,
+            decimal_factor,
+        ));
         for _ in 0..num_values {
             output.push_present(constant)?;
         }
@@ -372,16 +418,16 @@ fn unpack_simple_into<T: DecodeSample>(
         });
     }
 
-    let binary_factor = 2.0_f64.powi(params.binary_scale as i32);
-    let decimal_factor = 10.0_f64.powi(-(params.decimal_scale as i32));
-    let reference = params.reference_value as f64;
     let mut reader = BitReader::new(data_bytes);
 
     for _ in 0..num_values {
         let packed = reader.read(bits)?;
-        output.push_present(T::from_f64(
-            reference + (packed as f64) * binary_factor * decimal_factor,
-        ))?;
+        output.push_present(T::from_f64(scale_decoded_value(
+            reference,
+            packed as f64,
+            binary_factor,
+            decimal_factor,
+        )))?;
     }
 
     Ok(())
@@ -666,19 +712,23 @@ fn scale_complex_value<T: DecodeSample>(
     value: Option<i64>,
 ) -> T {
     match value {
-        Some(value) => T::from_f64(reference + (value as f64) * binary_factor * decimal_factor),
+        Some(value) => T::from_f64(scale_decoded_value(
+            reference,
+            value as f64,
+            binary_factor,
+            decimal_factor,
+        )),
         None => T::nan(),
     }
 }
 
-fn scaled_simple_value<T: DecodeSample>(
+fn scale_decoded_value(
     reference: f64,
-    packed: u64,
-    params: &SimplePackingParams,
-) -> T {
-    let binary_factor = 2.0_f64.powi(params.binary_scale as i32);
-    let decimal_factor = 10.0_f64.powi(-(params.decimal_scale as i32));
-    T::from_f64(reference + (packed as f64) * binary_factor * decimal_factor)
+    packed_delta: f64,
+    binary_factor: f64,
+    decimal_factor: f64,
+) -> f64 {
+    (reference + packed_delta * binary_factor) * decimal_factor
 }
 
 fn bitmap_bit(bitmap_payload: &[u8], index: usize) -> Result<bool> {
@@ -687,7 +737,10 @@ fn bitmap_bit(bitmap_payload: &[u8], index: usize) -> Result<bool> {
     let byte = bitmap_payload
         .get(byte_index)
         .copied()
-        .ok_or(Error::MissingBitmap)?;
+        .ok_or(Error::DataLengthMismatch {
+            expected: byte_index + 1,
+            actual: bitmap_payload.len(),
+        })?;
     Ok(((byte >> (7 - bit_index)) & 1) != 0)
 }
 
@@ -788,8 +841,9 @@ impl<'a, T: DecodeSample> OutputCursor<'a, T> {
                     self.next_index += 1;
                 }
 
+                let expected = count_bitmap_present_points(bitmap, self.output.len())?;
                 Err(Error::DataLengthMismatch {
-                    expected: self.values_written,
+                    expected,
                     actual: self.values_written + 1,
                 })
             }
@@ -813,7 +867,10 @@ impl<'a, T: DecodeSample> OutputCursor<'a, T> {
         if let Some(bitmap) = self.bitmap {
             while self.next_index < self.output.len() {
                 if bitmap_bit(bitmap, self.next_index)? {
-                    return Err(Error::MissingBitmap);
+                    return Err(Error::DataLengthMismatch {
+                        expected: count_bitmap_present_points(bitmap, self.output.len())?,
+                        actual: self.values_written,
+                    });
                 }
                 self.output[self.next_index] = T::nan();
                 self.next_index += 1;
@@ -1012,8 +1069,8 @@ enum MissingKind {
 #[cfg(test)]
 mod tests {
     use super::{
-        bitmap_payload, decode_field, unpack_complex, unpack_simple, ComplexPackingParams,
-        DataRepresentation, SimplePackingParams, SpatialDifferencingParams,
+        bitmap_payload, count_bitmap_present_points, decode_field, unpack_complex, unpack_simple,
+        ComplexPackingParams, DataRepresentation, SimplePackingParams, SpatialDifferencingParams,
     };
     use crate::error::Error;
 
@@ -1043,6 +1100,22 @@ mod tests {
         };
         let values = unpack_simple(&[0, 1, 2, 3, 4], &params, 5).unwrap();
         assert_eq!(values, vec![0.0, 1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn unpack_simple_applies_decimal_scale_to_reference_and_values() {
+        let params = SimplePackingParams {
+            encoded_values: 2,
+            reference_value: 10.0,
+            binary_scale: 0,
+            decimal_scale: 1,
+            bits_per_value: 8,
+            original_field_type: 0,
+        };
+
+        let values = unpack_simple(&[0, 20], &params, 2).unwrap();
+        assert!((values[0] - 1.0).abs() < 1e-12);
+        assert!((values[1] - 3.0).abs() < 1e-12);
     }
 
     #[test]
@@ -1103,6 +1176,36 @@ mod tests {
     }
 
     #[test]
+    fn rejects_bitmap_present_count_mismatch() {
+        let data_section = [0, 0, 0, 7, 7, 10, 20];
+        let bitmap_section = [0, 0, 0, 7, 6, 0, 0b1011_0000];
+        let representation = DataRepresentation::SimplePacking(SimplePackingParams {
+            encoded_values: 2,
+            reference_value: 0.0,
+            binary_scale: 0,
+            decimal_scale: 0,
+            bits_per_value: 8,
+            original_field_type: 0,
+        });
+
+        let bitmap = bitmap_payload(&bitmap_section).unwrap();
+        let err = decode_field(&data_section, &representation, bitmap, 4).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::DataLengthMismatch {
+                expected: 3,
+                actual: 2,
+            }
+        ));
+    }
+
+    #[test]
+    fn counts_bitmap_present_points_with_partial_bytes() {
+        let present = count_bitmap_present_points(&[0b1011_1111], 3).unwrap();
+        assert_eq!(present, 2);
+    }
+
+    #[test]
     fn unpacks_complex_packing_with_explicit_missing() {
         let params = ComplexPackingParams {
             encoded_values: 4,
@@ -1130,6 +1233,34 @@ mod tests {
         assert!(values[1].is_nan());
         assert_eq!(values[2], 9.0);
         assert!(values[3].is_nan());
+    }
+
+    #[test]
+    fn unpacks_complex_packing_applies_decimal_scale_to_reference_and_values() {
+        let params = ComplexPackingParams {
+            encoded_values: 2,
+            reference_value: 10.0,
+            binary_scale: 0,
+            decimal_scale: 1,
+            group_reference_bits: 4,
+            original_field_type: 0,
+            group_splitting_method: 1,
+            missing_value_management: 0,
+            primary_missing_substitute: u32::MAX,
+            secondary_missing_substitute: u32::MAX,
+            num_groups: 1,
+            group_width_reference: 4,
+            group_width_bits: 0,
+            group_length_reference: 2,
+            group_length_increment: 1,
+            true_length_last_group: 2,
+            scaled_group_length_bits: 0,
+            spatial_differencing: None,
+        };
+
+        let values = unpack_complex(&[0x10, 0x02], &params).unwrap();
+        assert!((values[0] - 1.1).abs() < 1e-12);
+        assert!((values[1] - 1.3).abs() < 1e-12);
     }
 
     #[test]
