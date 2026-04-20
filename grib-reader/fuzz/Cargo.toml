@@ -11,7 +11,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+grib-core = { path = "../../grib-core" }
 grib-reader = { path = ".." }
+grib-writer = { path = "../../grib-writer" }
 
 [[bin]]
 name = "fuzz_grib_open"
@@ -30,6 +32,13 @@ bench = false
 [[bin]]
 name = "fuzz_grib_sections"
 path = "fuzz_targets/fuzz_grib_sections.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_grib_writer_inputs"
+path = "fuzz_targets/fuzz_grib_writer_inputs.rs"
 test = false
 doc = false
 bench = false

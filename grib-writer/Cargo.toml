@@ -15,7 +15,12 @@ categories = ["science", "encoding"]
 grib-core = { path = "../grib-core", version = "0.3.0" }
 
 [dev-dependencies]
+criterion = "0.5"
 grib-reader = { path = "../grib-reader" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
+
+[[bench]]
+name = "encode"
+harness = false
