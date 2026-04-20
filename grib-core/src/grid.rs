@@ -89,11 +89,42 @@ impl LatLonGrid {
     }
 
     pub fn reorder_for_ndarray<T>(&self, mut values: Vec<T>) -> Result<Vec<T>> {
-        self.reorder_for_ndarray_in_place(&mut values)?;
+        self.reorder_grib_scan_to_ndarray_in_place(&mut values)?;
         Ok(values)
     }
 
     pub fn reorder_for_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
+        self.reorder_grib_scan_to_ndarray_in_place(values)
+    }
+
+    pub fn reorder_grib_scan_to_ndarray<T>(&self, mut values: Vec<T>) -> Result<Vec<T>> {
+        self.reorder_grib_scan_to_ndarray_in_place(&mut values)?;
+        Ok(values)
+    }
+
+    pub fn reorder_grib_scan_to_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
+        self.transform_supported_scan_order_in_place(values)
+    }
+
+    pub fn reorder_ndarray_to_grib_scan<T>(&self, mut values: Vec<T>) -> Result<Vec<T>> {
+        self.reorder_ndarray_to_grib_scan_in_place(&mut values)?;
+        Ok(values)
+    }
+
+    pub fn reorder_ndarray_to_grib_scan_in_place<T>(&self, values: &mut [T]) -> Result<()> {
+        self.transform_supported_scan_order_in_place(values)
+    }
+
+    pub fn validate_supported_scan_order(&self) -> Result<()> {
+        if self.i_points_are_consecutive() {
+            Ok(())
+        } else {
+            Err(Error::UnsupportedScanningMode(self.scanning_mode))
+        }
+    }
+
+    fn transform_supported_scan_order_in_place<T>(&self, values: &mut [T]) -> Result<()> {
+        self.validate_supported_scan_order()?;
         let ni = self.ni as usize;
         let nj = self.nj as usize;
         if values.len() != ni * nj {
@@ -103,21 +134,8 @@ impl LatLonGrid {
             });
         }
 
-        if !self.i_points_are_consecutive() {
-            return Err(Error::UnsupportedScanningMode(self.scanning_mode));
-        }
-
         if self.adjacent_rows_alternate_direction() {
-            for row in 0..nj {
-                let reverse = if self.i_scans_positive() {
-                    row % 2 == 1
-                } else {
-                    row % 2 == 0
-                };
-                if reverse {
-                    values[row * ni..(row + 1) * ni].reverse();
-                }
-            }
+            reverse_alternating_rows(values, ni, nj, self.i_scans_positive());
         }
 
         Ok(())
@@ -137,6 +155,19 @@ impl LatLonGrid {
 
     fn adjacent_rows_alternate_direction(&self) -> bool {
         self.scanning_mode & 0b0001_0000 != 0
+    }
+}
+
+fn reverse_alternating_rows<T>(values: &mut [T], ni: usize, nj: usize, i_scans_positive: bool) {
+    for row in 0..nj {
+        let reverse = if i_scans_positive {
+            row % 2 == 1
+        } else {
+            row % 2 == 0
+        };
+        if reverse {
+            values[row * ni..(row + 1) * ni].reverse();
+        }
     }
 }
 
@@ -218,5 +249,75 @@ mod tests {
             .reorder_for_ndarray(vec![1.0, 2.0, 3.0, 6.0, 5.0, 4.0])
             .unwrap();
         assert_eq!(ordered, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn converts_ndarray_order_to_alternating_scan_order() {
+        let grid = LatLonGrid {
+            ni: 3,
+            nj: 2,
+            lat_first: 0,
+            lon_first: 0,
+            lat_last: 0,
+            lon_last: 0,
+            di: 1,
+            dj: 1,
+            scanning_mode: 0b0001_0000,
+        };
+
+        let scan_order = grid
+            .reorder_ndarray_to_grib_scan(vec![1, 2, 3, 4, 5, 6])
+            .unwrap();
+        assert_eq!(scan_order, vec![1, 2, 3, 6, 5, 4]);
+    }
+
+    #[test]
+    fn preserves_non_alternating_scan_modes_in_current_reader_order() {
+        for scanning_mode in [0b0000_0000, 0b1000_0000, 0b0100_0000, 0b1100_0000] {
+            let grid = LatLonGrid {
+                ni: 3,
+                nj: 2,
+                lat_first: 0,
+                lon_first: 0,
+                lat_last: 0,
+                lon_last: 0,
+                di: 1,
+                dj: 1,
+                scanning_mode,
+            };
+
+            let values = vec![1, 2, 3, 4, 5, 6];
+            assert_eq!(
+                grid.reorder_grib_scan_to_ndarray(values.clone()).unwrap(),
+                values
+            );
+            assert_eq!(
+                grid.reorder_ndarray_to_grib_scan(values.clone()).unwrap(),
+                values
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_j_consecutive_scan_order() {
+        let grid = LatLonGrid {
+            ni: 3,
+            nj: 2,
+            lat_first: 0,
+            lon_first: 0,
+            lat_last: 0,
+            lon_last: 0,
+            di: 1,
+            dj: 1,
+            scanning_mode: 0b0010_0000,
+        };
+
+        let err = grid
+            .reorder_ndarray_to_grib_scan(vec![1, 2, 3, 4, 5, 6])
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::Error::UnsupportedScanningMode(0b0010_0000)
+        ));
     }
 }

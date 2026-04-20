@@ -23,6 +23,16 @@ pub enum PackingStrategy {
     SimpleAuto { decimal_scale: i16 },
 }
 
+/// Order of values supplied to [`Grib2FieldBuilder`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ValueOrder {
+    /// Logical row-major order matching `grib-reader` ndarray output.
+    #[default]
+    LogicalRowMajor,
+    /// Native GRIB scan order; skips the logical-to-scan reordering pass.
+    GribScanOrder,
+}
+
 /// Builder for a single GRIB2 field.
 #[derive(Debug, Clone, Default)]
 pub struct Grib2FieldBuilder {
@@ -33,6 +43,7 @@ pub struct Grib2FieldBuilder {
     packing: Option<PackingStrategy>,
     values: Option<Vec<f64>>,
     bitmap: Option<Vec<bool>>,
+    value_order: ValueOrder,
 }
 
 impl Grib2FieldBuilder {
@@ -78,6 +89,11 @@ impl Grib2FieldBuilder {
         self
     }
 
+    pub fn value_order(mut self, value_order: ValueOrder) -> Self {
+        self.value_order = value_order;
+        self
+    }
+
     pub fn build(self) -> Result<Grib2Field> {
         let identification = self
             .identification
@@ -91,9 +107,10 @@ impl Grib2FieldBuilder {
         let packing = self
             .packing
             .ok_or_else(|| Error::Other("missing GRIB2 packing strategy".into()))?;
-        let values = self
+        let mut values = self
             .values
             .ok_or_else(|| Error::Other("missing GRIB2 field values".into()))?;
+        let mut bitmap = self.bitmap;
 
         validate_supported_grid(&grid)?;
         validate_supported_product(&product)?;
@@ -105,7 +122,7 @@ impl Grib2FieldBuilder {
                 actual: values.len(),
             });
         }
-        if let Some(bitmap) = &self.bitmap {
+        if let Some(bitmap) = &bitmap {
             if bitmap.len() != expected {
                 return Err(Error::DataLengthMismatch {
                     expected,
@@ -114,9 +131,13 @@ impl Grib2FieldBuilder {
             }
         }
 
+        if self.value_order == ValueOrder::LogicalRowMajor {
+            reorder_field_to_grib_scan_order(&grid, &mut values, bitmap.as_deref_mut())?;
+        }
+
         let packed = match packing {
             PackingStrategy::SimpleAuto { decimal_scale } => {
-                pack_simple_auto(&values, self.bitmap.as_deref(), decimal_scale)?
+                pack_simple_auto(&values, bitmap.as_deref(), decimal_scale)?
             }
         };
 
@@ -298,6 +319,23 @@ fn pack_simple_auto(
         bitmap_payload,
         data_payload: writer.into_bytes(),
     })
+}
+
+fn reorder_field_to_grib_scan_order(
+    grid: &GridDefinition,
+    values: &mut [f64],
+    bitmap: Option<&mut [bool]>,
+) -> Result<()> {
+    match grid {
+        GridDefinition::LatLon(grid) => {
+            grid.reorder_ndarray_to_grib_scan_in_place(values)?;
+            if let Some(bitmap) = bitmap {
+                grid.reorder_ndarray_to_grib_scan_in_place(bitmap)?;
+            }
+            Ok(())
+        }
+        GridDefinition::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
+    }
 }
 
 fn present_mask(values: &[f64], explicit_bitmap: Option<&[bool]>) -> Result<Vec<bool>> {
@@ -558,7 +596,7 @@ fn checked_latlon_point_count(grid: &LatLonGrid) -> Result<u32> {
 
 fn validate_supported_grid(grid: &GridDefinition) -> Result<()> {
     match grid {
-        GridDefinition::LatLon(_) => Ok(()),
+        GridDefinition::LatLon(grid) => grid.validate_supported_scan_order(),
         GridDefinition::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
     }
 }
@@ -571,7 +609,7 @@ fn validate_supported_product(product: &ProductDefinition) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Grib2FieldBuilder, GribWriter, PackingStrategy};
+    use super::{Grib2FieldBuilder, GribWriter, PackingStrategy, ValueOrder};
     use std::process::Command;
 
     use grib_core::{
@@ -600,16 +638,39 @@ mod tests {
     }
 
     fn grid() -> GridDefinition {
+        grid_with_shape_and_scanning_mode(2, 2, 0)
+    }
+
+    fn grid_with_scanning_mode(scanning_mode: u8) -> GridDefinition {
+        grid_with_shape_and_scanning_mode(3, 2, scanning_mode)
+    }
+
+    fn grid_with_shape_and_scanning_mode(ni: u32, nj: u32, scanning_mode: u8) -> GridDefinition {
+        let lon_first = -120_000_000;
+        let lat_first = 50_000_000;
+        let di = 1_000_000;
+        let dj = 1_000_000;
+        let i_step = if scanning_mode & 0b1000_0000 == 0 {
+            di as i32
+        } else {
+            -(di as i32)
+        };
+        let j_step = if scanning_mode & 0b0100_0000 != 0 {
+            dj as i32
+        } else {
+            -(dj as i32)
+        };
+
         GridDefinition::LatLon(LatLonGrid {
-            ni: 2,
-            nj: 2,
-            lat_first: 50_000_000,
-            lon_first: -120_000_000,
-            lat_last: 49_000_000,
-            lon_last: -119_000_000,
-            di: 1_000_000,
-            dj: 1_000_000,
-            scanning_mode: 0,
+            ni,
+            nj,
+            lat_first,
+            lon_first,
+            lat_last: lat_first + (nj.saturating_sub(1) as i32) * j_step,
+            lon_last: lon_first + (ni.saturating_sub(1) as i32) * i_step,
+            di,
+            dj,
+            scanning_mode,
         })
     }
 
@@ -778,6 +839,93 @@ mod tests {
             file.message(1).unwrap().read_flat_data_as_f64().unwrap(),
             vec![5.0, 6.0, 7.0, 8.0]
         );
+    }
+
+    #[test]
+    fn roundtrips_logical_row_major_order_for_supported_scan_modes() {
+        let logical = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        for scanning_mode in [
+            0b0000_0000,
+            0b1000_0000,
+            0b0100_0000,
+            0b1100_0000,
+            0b0001_0000,
+            0b1001_0000,
+        ] {
+            let field = Grib2FieldBuilder::new()
+                .identification(identification())
+                .grid(grid_with_scanning_mode(scanning_mode))
+                .product(product(0, 0))
+                .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+                .values(&logical)
+                .build()
+                .unwrap();
+
+            let file = GribFile::from_bytes(write_message([field])).unwrap();
+            assert_eq!(
+                file.message(0).unwrap().read_flat_data_as_f64().unwrap(),
+                logical,
+                "scanning mode {scanning_mode:08b}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_grib_scan_order_fast_path() {
+        let scan_order = [1.0, 2.0, 3.0, 6.0, 5.0, 4.0];
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid_with_scanning_mode(0b0001_0000))
+            .product(product(0, 0))
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&scan_order)
+            .value_order(ValueOrder::GribScanOrder)
+            .build()
+            .unwrap();
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        assert_eq!(
+            file.message(0).unwrap().read_flat_data_as_f64().unwrap(),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        );
+    }
+
+    #[test]
+    fn reorders_explicit_bitmap_with_logical_values() {
+        let values = [1.0, 2.0, 3.0, 4.0, 999.0, 6.0];
+        let bitmap = [true, true, true, true, false, true];
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid_with_scanning_mode(0b0001_0000))
+            .product(product(0, 0))
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&values)
+            .bitmap(&bitmap)
+            .build()
+            .unwrap();
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        let decoded = file.message(0).unwrap().read_flat_data_as_f64().unwrap();
+        assert_eq!(decoded[..4], [1.0, 2.0, 3.0, 4.0]);
+        assert!(decoded[4].is_nan());
+        assert_eq!(decoded[5], 6.0);
+    }
+
+    #[test]
+    fn rejects_unsupported_scan_mode_before_writing() {
+        let err = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid_with_scanning_mode(0b0010_0000))
+            .product(product(0, 0))
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+            .build()
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            grib_core::Error::UnsupportedScanningMode(0b0010_0000)
+        ));
     }
 
     #[test]
