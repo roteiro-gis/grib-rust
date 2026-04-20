@@ -5,8 +5,8 @@
 use std::io::Write;
 
 use grib_core::binary::{
-    encode_wmo_i16, encode_wmo_i32, encode_wmo_i8, write_u16_be, write_u32_be, write_u64_be,
-    write_u8_be,
+    encode_ibm_f32, encode_wmo_i16, encode_wmo_i24, encode_wmo_i32, encode_wmo_i8, write_u16_be,
+    write_u24_be, write_u32_be, write_u64_be, write_u8_be, U24_MAX,
 };
 use grib_core::bit::BitWriter;
 use grib_core::{
@@ -14,16 +14,17 @@ use grib_core::{
     ProductDefinition, ProductDefinitionTemplate, SimplePackingParams,
 };
 
+pub use grib_core::grib1::ProductDefinition as Grib1ProductDefinition;
 pub use grib_core::{Error, Result};
 
 /// Field packing strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackingStrategy {
-    /// GRIB2 Template 5.0 with binary scale 0 and automatic bit-width selection.
+    /// Simple packing with binary scale 0 and automatic bit-width selection.
     SimpleAuto { decimal_scale: i16 },
 }
 
-/// Order of values supplied to [`Grib2FieldBuilder`].
+/// Order of values supplied to field builders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ValueOrder {
     /// Logical row-major order matching `grib-reader` ndarray output.
@@ -31,6 +32,131 @@ pub enum ValueOrder {
     LogicalRowMajor,
     /// Native GRIB scan order; skips the logical-to-scan reordering pass.
     GribScanOrder,
+}
+
+/// Builder for a single GRIB1 message field.
+#[derive(Debug, Clone, Default)]
+pub struct Grib1FieldBuilder {
+    product: Option<Grib1ProductDefinition>,
+    grid: Option<GridDefinition>,
+    packing: Option<PackingStrategy>,
+    values: Option<Vec<f64>>,
+    bitmap: Option<Vec<bool>>,
+    value_order: ValueOrder,
+}
+
+impl Grib1FieldBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn product(mut self, product: Grib1ProductDefinition) -> Self {
+        self.product = Some(product);
+        self
+    }
+
+    pub fn grid(mut self, grid: GridDefinition) -> Self {
+        self.grid = Some(grid);
+        self
+    }
+
+    pub fn packing(mut self, packing: PackingStrategy) -> Self {
+        self.packing = Some(packing);
+        self
+    }
+
+    pub fn values<T>(mut self, values: &[T]) -> Self
+    where
+        T: Copy + Into<f64>,
+    {
+        self.values = Some(values.iter().copied().map(Into::into).collect());
+        self
+    }
+
+    pub fn bitmap(mut self, bitmap: &[bool]) -> Self {
+        self.bitmap = Some(bitmap.to_vec());
+        self
+    }
+
+    pub fn value_order(mut self, value_order: ValueOrder) -> Self {
+        self.value_order = value_order;
+        self
+    }
+
+    pub fn build(self) -> Result<Grib1Field> {
+        let mut product = self
+            .product
+            .ok_or_else(|| Error::Other("missing GRIB1 product definition".into()))?;
+        let grid = self
+            .grid
+            .ok_or_else(|| Error::Other("missing GRIB1 grid definition".into()))?;
+        let packing = self
+            .packing
+            .ok_or_else(|| Error::Other("missing GRIB1 packing strategy".into()))?;
+        let mut values = self
+            .values
+            .ok_or_else(|| Error::Other("missing GRIB1 field values".into()))?;
+        let mut bitmap = self.bitmap;
+
+        validate_supported_grib1_grid(&grid)?;
+
+        let expected = checked_grid_point_count(&grid)?;
+        if values.len() != expected {
+            return Err(Error::DataLengthMismatch {
+                expected,
+                actual: values.len(),
+            });
+        }
+        if let Some(bitmap) = &bitmap {
+            if bitmap.len() != expected {
+                return Err(Error::DataLengthMismatch {
+                    expected,
+                    actual: bitmap.len(),
+                });
+            }
+        }
+
+        if self.value_order == ValueOrder::LogicalRowMajor {
+            reorder_field_to_grib_scan_order(&grid, &mut values, bitmap.as_deref_mut())?;
+        }
+
+        let packed = match packing {
+            PackingStrategy::SimpleAuto { decimal_scale } => {
+                product.decimal_scale = decimal_scale;
+                pack_simple_auto(&values, bitmap.as_deref(), decimal_scale)?
+            }
+        };
+        product.has_grid_definition = true;
+        product.has_bitmap = packed.bitmap_payload.is_some();
+
+        Ok(Grib1Field {
+            product,
+            grid,
+            packed,
+        })
+    }
+}
+
+/// A validated, packed GRIB1 field ready for message serialization.
+#[derive(Debug, Clone)]
+pub struct Grib1Field {
+    product: Grib1ProductDefinition,
+    grid: GridDefinition,
+    packed: PackedField,
+}
+
+impl Grib1Field {
+    pub fn product(&self) -> &Grib1ProductDefinition {
+        &self.product
+    }
+
+    pub fn grid(&self) -> &GridDefinition {
+        &self.grid
+    }
+
+    pub fn data_representation(&self) -> &DataRepresentation {
+        &self.packed.representation
+    }
 }
 
 /// Builder for a single GRIB2 field.
@@ -193,6 +319,28 @@ impl<'a, W: Write> GribWriter<'a, W> {
         Self { out }
     }
 
+    pub fn write_grib1_message(&mut self, field: Grib1Field) -> Result<()> {
+        let mut body = Vec::new();
+        write_grib1_product_section(&mut body, &field.product)?;
+        write_grib1_grid_section(&mut body, &field.grid)?;
+        if let Some(bitmap) = &field.packed.bitmap_payload {
+            write_grib1_bitmap_section(&mut body, bitmap, field.grid.num_points())?;
+        }
+        write_grib1_data_section(&mut body, &field.packed, 0)?;
+
+        let total_len = checked_grib1_u24_length(8usize + body.len() + 4, 0)?;
+        let mut message = Vec::new();
+        message.extend_from_slice(b"GRIB");
+        write_u24_be(&mut message, total_len)?;
+        write_u8_be(&mut message, 1)?;
+        message.extend_from_slice(&body);
+        message.extend_from_slice(b"7777");
+
+        self.out
+            .write_all(&message)
+            .map_err(|err| Error::Io(err, "GRIB writer output".into()))
+    }
+
     pub fn write_grib2_message<I>(&mut self, fields: I) -> Result<()>
     where
         I: IntoIterator<Item = Grib2Field>,
@@ -332,9 +480,9 @@ fn reorder_field_to_grib_scan_order(
 ) -> Result<()> {
     match grid {
         GridDefinition::LatLon(grid) => {
-            grid.reorder_ndarray_to_grib_scan_in_place(values)?;
+            grid.reorder_for_ndarray_in_place(values)?;
             if let Some(bitmap) = bitmap {
-                grid.reorder_ndarray_to_grib_scan_in_place(bitmap)?;
+                grid.reorder_for_ndarray_in_place(bitmap)?;
             }
             Ok(())
         }
@@ -365,7 +513,7 @@ fn present_mask(values: &[f64], explicit_bitmap: Option<&[bool]>) -> Result<Vec<
                     Ok(true)
                 } else {
                     Err(Error::Other(
-                        "infinite values cannot be written as GRIB2 simple-packed data".into(),
+                        "infinite values cannot be written as simple-packed data".into(),
                     ))
                 }
             })
@@ -431,6 +579,204 @@ fn pack_bitmap(present: &[bool]) -> Result<Vec<u8>> {
     }
     writer.align_to_byte()?;
     Ok(writer.into_bytes())
+}
+
+fn write_grib1_product_section(out: &mut Vec<u8>, product: &Grib1ProductDefinition) -> Result<()> {
+    let (year_of_century, century) = grib1_reference_year_fields(product.reference_time.year)?;
+
+    write_u24_be(out, 28)?;
+    write_u8_be(out, product.table_version)?;
+    write_u8_be(out, product.center_id)?;
+    write_u8_be(out, product.generating_process_id)?;
+    write_u8_be(out, product.grid_id)?;
+    let mut flags = 0b1000_0000;
+    if product.has_bitmap {
+        flags |= 0b0100_0000;
+    }
+    write_u8_be(out, flags)?;
+    write_u8_be(out, product.parameter_number)?;
+    write_u8_be(out, product.level_type)?;
+    write_u16_be(out, product.level_value)?;
+    write_u8_be(out, year_of_century)?;
+    write_u8_be(out, product.reference_time.month)?;
+    write_u8_be(out, product.reference_time.day)?;
+    write_u8_be(out, product.reference_time.hour)?;
+    write_u8_be(out, product.reference_time.minute)?;
+    write_u8_be(out, product.forecast_time_unit)?;
+    write_u8_be(out, product.p1)?;
+    write_u8_be(out, product.p2)?;
+    write_u8_be(out, product.time_range_indicator)?;
+    write_u16_be(out, product.average_count)?;
+    write_u8_be(out, product.missing_count)?;
+    write_u8_be(out, century)?;
+    write_u8_be(out, product.subcenter_id)?;
+    out.extend_from_slice(
+        &encode_wmo_i16(product.decimal_scale)
+            .ok_or_else(|| Error::Other("decimal scale does not fit GRIB signed i16".into()))?,
+    );
+    Ok(())
+}
+
+fn write_grib1_grid_section(out: &mut Vec<u8>, grid: &GridDefinition) -> Result<()> {
+    let GridDefinition::LatLon(grid) = grid else {
+        return Err(Error::UnsupportedGridTemplate(match grid {
+            GridDefinition::Unsupported(template) => *template,
+            GridDefinition::LatLon(_) => unreachable!(),
+        }));
+    };
+
+    write_u24_be(out, 32)?;
+    write_u8_be(out, 0)?;
+    write_u8_be(out, 255)?;
+    write_u8_be(out, 0)?;
+    write_u16_be(out, checked_grib1_grid_dimension(grid.ni, "Ni")?)?;
+    write_u16_be(out, checked_grib1_grid_dimension(grid.nj, "Nj")?)?;
+    out.extend_from_slice(&encode_grib1_coordinate(
+        grid.lat_first,
+        "latitude of first grid point",
+    )?);
+    out.extend_from_slice(&encode_grib1_coordinate(
+        grid.lon_first,
+        "longitude of first grid point",
+    )?);
+    write_u8_be(out, 0x80)?;
+    out.extend_from_slice(&encode_grib1_coordinate(
+        grid.lat_last,
+        "latitude of last grid point",
+    )?);
+    out.extend_from_slice(&encode_grib1_coordinate(
+        grid.lon_last,
+        "longitude of last grid point",
+    )?);
+    write_u16_be(
+        out,
+        checked_grib1_increment(grid.di, "i direction increment")?,
+    )?;
+    write_u16_be(
+        out,
+        checked_grib1_increment(grid.dj, "j direction increment")?,
+    )?;
+    write_u8_be(out, grid.scanning_mode)?;
+    out.extend_from_slice(&[0; 4]);
+    Ok(())
+}
+
+fn write_grib1_bitmap_section(
+    out: &mut Vec<u8>,
+    bitmap_payload: &[u8],
+    num_points: usize,
+) -> Result<()> {
+    let length = checked_grib1_u24_length(6usize + bitmap_payload.len(), 3)?;
+    write_u24_be(out, length)?;
+    write_u8_be(out, unused_bits_for_width(num_points, 1)?)?;
+    write_u16_be(out, 0)?;
+    out.extend_from_slice(bitmap_payload);
+    Ok(())
+}
+
+fn write_grib1_data_section(out: &mut Vec<u8>, packed: &PackedField, flags: u8) -> Result<()> {
+    validate_grib1_binary_data_flags(flags)?;
+    let DataRepresentation::SimplePacking(params) = &packed.representation else {
+        return Err(Error::UnsupportedDataTemplate(1004));
+    };
+
+    let length = checked_grib1_u24_length(11usize + packed.data_payload.len(), 4)?;
+    write_u24_be(out, length)?;
+    let unused_bits = unused_bits_for_width(params.encoded_values, params.bits_per_value)?;
+    write_u8_be(out, (flags << 4) | unused_bits)?;
+    out.extend_from_slice(
+        &encode_wmo_i16(params.binary_scale)
+            .ok_or_else(|| Error::Other("binary scale does not fit GRIB signed i16".into()))?,
+    );
+    out.extend_from_slice(
+        &encode_ibm_f32(params.reference_value)
+            .ok_or_else(|| Error::Other("reference value does not fit GRIB1 IBM float".into()))?,
+    );
+    write_u8_be(out, params.bits_per_value)?;
+    out.extend_from_slice(&packed.data_payload);
+    Ok(())
+}
+
+fn validate_grib1_binary_data_flags(flags: u8) -> Result<()> {
+    if flags == 0 {
+        return Ok(());
+    }
+    if flags > 0x0f {
+        return Err(Error::Other(
+            "GRIB1 binary data flags must fit in four bits".into(),
+        ));
+    }
+    let template = if flags & 0b1000 != 0 {
+        1004
+    } else if flags & 0b0100 != 0 {
+        1005
+    } else if flags & 0b0010 != 0 {
+        1006
+    } else {
+        1007
+    };
+    Err(Error::UnsupportedDataTemplate(template))
+}
+
+fn unused_bits_for_width(values: usize, bits_per_value: u8) -> Result<u8> {
+    let bits = values
+        .checked_mul(usize::from(bits_per_value))
+        .ok_or_else(|| Error::Other("packed bit count overflow".into()))?;
+    Ok(((8 - (bits % 8)) % 8) as u8)
+}
+
+fn grib1_reference_year_fields(year: u16) -> Result<(u8, u8)> {
+    if year == 0 {
+        return Err(Error::Other(
+            "GRIB1 reference year 0 cannot be encoded".into(),
+        ));
+    }
+
+    let century = ((year - 1) / 100) + 1;
+    let year_of_century = year - ((century - 1) * 100);
+    Ok((
+        u8::try_from(year_of_century)
+            .map_err(|_| Error::Other("GRIB1 year of century exceeds u8".into()))?,
+        u8::try_from(century).map_err(|_| Error::Other("GRIB1 century exceeds u8".into()))?,
+    ))
+}
+
+fn encode_grib1_coordinate(value: i32, name: &str) -> Result<[u8; 3]> {
+    if value % 1_000 != 0 {
+        return Err(Error::Other(format!(
+            "{name} must be representable in GRIB1 millidegrees"
+        )));
+    }
+    encode_wmo_i24(value / 1_000)
+        .ok_or_else(|| Error::Other(format!("{name} does not fit GRIB signed i24")))
+}
+
+fn checked_grib1_grid_dimension(value: u32, name: &str) -> Result<u16> {
+    u16::try_from(value).map_err(|_| Error::Other(format!("{name} exceeds GRIB1 u16 limit")))
+}
+
+fn checked_grib1_increment(value: u32, name: &str) -> Result<u16> {
+    if value % 1_000 != 0 {
+        return Err(Error::Other(format!(
+            "{name} must be representable in GRIB1 millidegrees"
+        )));
+    }
+    u16::try_from(value / 1_000)
+        .map_err(|_| Error::Other(format!("{name} exceeds GRIB1 u16 millidegree limit")))
+}
+
+fn checked_grib1_u24_length(length: usize, section: u8) -> Result<u32> {
+    let length = u32::try_from(length).map_err(|_| Error::InvalidSection {
+        section,
+        reason: "GRIB1 length exceeds unsigned 24-bit limit".into(),
+    })?;
+    if length > U24_MAX {
+        return Err(Error::InvalidSection {
+            section,
+            reason: format!("GRIB1 length {length} exceeds unsigned 24-bit limit"),
+        });
+    }
+    Ok(length)
 }
 
 fn write_indicator_placeholder(out: &mut Vec<u8>, discipline: u8) -> Result<()> {
@@ -600,9 +946,33 @@ fn checked_latlon_point_count(grid: &LatLonGrid) -> Result<u32> {
 
 fn validate_supported_grid(grid: &GridDefinition) -> Result<()> {
     match grid {
-        GridDefinition::LatLon(grid) => grid.validate_supported_scan_order(),
+        GridDefinition::LatLon(grid) => validate_supported_scan_order(grid),
         GridDefinition::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
     }
+}
+
+fn validate_supported_scan_order(grid: &LatLonGrid) -> Result<()> {
+    if grid.scanning_mode & 0b0010_0000 == 0 {
+        Ok(())
+    } else {
+        Err(Error::UnsupportedScanningMode(grid.scanning_mode))
+    }
+}
+
+fn validate_supported_grib1_grid(grid: &GridDefinition) -> Result<()> {
+    validate_supported_grid(grid)?;
+    let GridDefinition::LatLon(grid) = grid else {
+        return Ok(());
+    };
+    checked_grib1_grid_dimension(grid.ni, "Ni")?;
+    checked_grib1_grid_dimension(grid.nj, "Nj")?;
+    checked_grib1_increment(grid.di, "i direction increment")?;
+    checked_grib1_increment(grid.dj, "j direction increment")?;
+    encode_grib1_coordinate(grid.lat_first, "latitude of first grid point")?;
+    encode_grib1_coordinate(grid.lon_first, "longitude of first grid point")?;
+    encode_grib1_coordinate(grid.lat_last, "latitude of last grid point")?;
+    encode_grib1_coordinate(grid.lon_last, "longitude of last grid point")?;
+    Ok(())
 }
 
 fn validate_supported_product(product: &ProductDefinition) -> Result<()> {
@@ -613,9 +983,14 @@ fn validate_supported_product(product: &ProductDefinition) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Grib2FieldBuilder, GribWriter, PackingStrategy, ValueOrder};
+    use super::{
+        Grib1FieldBuilder, Grib1ProductDefinition, Grib2FieldBuilder, GribWriter, PackingStrategy,
+        ValueOrder,
+    };
     use std::process::Command;
 
+    use grib_core::binary::decode_ibm_f32;
+    use grib_core::metadata::ReferenceTime;
     use grib_core::{
         AnalysisOrForecastTemplate, DataRepresentation, FixedSurface, GridDefinition,
         Identification, LatLonGrid, ProductDefinition, ProductDefinitionTemplate,
@@ -639,6 +1014,37 @@ mod tests {
             reference_second: 0,
             production_status: 0,
             processed_data_type: 1,
+        }
+    }
+
+    fn grib1_product() -> Grib1ProductDefinition {
+        Grib1ProductDefinition {
+            table_version: 2,
+            center_id: 7,
+            generating_process_id: 255,
+            grid_id: 0,
+            has_grid_definition: true,
+            has_bitmap: false,
+            parameter_number: 11,
+            level_type: 100,
+            level_value: 850,
+            reference_time: ReferenceTime {
+                year: 2026,
+                month: 3,
+                day: 20,
+                hour: 12,
+                minute: 0,
+                second: 0,
+            },
+            forecast_time_unit: 1,
+            p1: 6,
+            p2: 0,
+            time_range_indicator: 0,
+            average_count: 0,
+            missing_count: 0,
+            century: 21,
+            subcenter_id: 0,
+            decimal_scale: 0,
         }
     }
 
@@ -705,6 +1111,14 @@ mod tests {
         bytes
     }
 
+    fn write_grib1_message(field: super::Grib1Field) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        GribWriter::new(&mut bytes)
+            .write_grib1_message(field)
+            .unwrap();
+        bytes
+    }
+
     fn section_numbers(bytes: &[u8]) -> Vec<u8> {
         scan_sections(bytes)
             .unwrap()
@@ -726,6 +1140,120 @@ mod tests {
             .values(values)
             .build()
             .unwrap()
+    }
+
+    fn grib1_simple_field(values: &[f64]) -> super::Grib1Field {
+        Grib1FieldBuilder::new()
+            .product(grib1_product())
+            .grid(grid())
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(values)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn writes_simple_grib1_field_readable_by_reader() {
+        let values = [1.0, 2.0, 3.0, 4.0];
+        let bytes = write_grib1_message(grib1_simple_field(&values));
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        assert_eq!(file.edition(), 1);
+        assert_eq!(file.message_count(), 1);
+        assert_eq!(message.parameter_name(), "TMP");
+        assert_eq!(message.grid_shape(), (2, 2));
+        assert_eq!(message.forecast_time(), Some(6));
+        assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+
+    #[test]
+    fn writes_grib1_bitmap_from_nan_values() {
+        let values = [5.0, f64::NAN, 7.0, 8.0];
+        let bytes = write_grib1_message(grib1_simple_field(&values));
+        let bitmap_offset = 8 + 28 + 32;
+        assert_eq!(&bytes[bitmap_offset + 4..bitmap_offset + 6], &[0, 0]);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let decoded = file.message(0).unwrap().read_flat_data_as_f64().unwrap();
+        assert_eq!(decoded[0], 5.0);
+        assert!(decoded[1].is_nan());
+        assert_eq!(decoded[2], 7.0);
+        assert_eq!(decoded[3], 8.0);
+    }
+
+    #[test]
+    fn writes_grib1_bitmap_from_explicit_mask() {
+        let field = Grib1FieldBuilder::new()
+            .product(grib1_product())
+            .grid(grid())
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[5.0, 999.0, 7.0, 8.0])
+            .bitmap(&[true, false, true, true])
+            .build()
+            .unwrap();
+
+        let file = GribFile::from_bytes(write_grib1_message(field)).unwrap();
+        let decoded = file.message(0).unwrap().read_flat_data_as_f64().unwrap();
+        assert_eq!(decoded[0], 5.0);
+        assert!(decoded[1].is_nan());
+        assert_eq!(decoded[2], 7.0);
+        assert_eq!(decoded[3], 8.0);
+    }
+
+    #[test]
+    fn writes_grib1_ibm_float_reference_value() {
+        let bytes = write_grib1_message(grib1_simple_field(&[10.0, 11.0, 12.0, 13.0]));
+        let bds_offset = 8 + 28 + 32;
+        let reference = decode_ibm_f32(bytes[bds_offset + 6..bds_offset + 10].try_into().unwrap());
+        assert_eq!(reference, 10.0);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        assert_eq!(
+            file.message(0).unwrap().read_flat_data_as_f64().unwrap(),
+            vec![10.0, 11.0, 12.0, 13.0]
+        );
+    }
+
+    #[test]
+    fn rejects_grib1_u24_length_overflow() {
+        let err = super::checked_grib1_u24_length(grib_core::binary::U24_MAX as usize + 1, 0)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            grib_core::Error::InvalidSection { section: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_unsupported_grib1_binary_data_flags() {
+        let err = super::validate_grib1_binary_data_flags(0b0001).unwrap_err();
+        assert!(matches!(
+            err,
+            grib_core::Error::UnsupportedDataTemplate(1007)
+        ));
+    }
+
+    #[test]
+    fn rejects_grib1_grid_dimensions_beyond_u16() {
+        let err = Grib1FieldBuilder::new()
+            .product(grib1_product())
+            .grid(GridDefinition::LatLon(LatLonGrid {
+                ni: 65_536,
+                nj: 1,
+                lat_first: 0,
+                lon_first: 0,
+                lat_last: 0,
+                lon_last: 0,
+                di: 1_000,
+                dj: 1_000,
+                scanning_mode: 0,
+            }))
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[1.0])
+            .build()
+            .unwrap_err();
+        assert!(matches!(err, grib_core::Error::Other(message) if message.contains("Ni exceeds")));
     }
 
     #[test]
@@ -1036,6 +1564,47 @@ mod tests {
         edition: u8,
         name: String,
         values: Vec<Option<f64>>,
+    }
+
+    #[test]
+    #[ignore = "requires GRIB_READER_ECCODES_HELPER"]
+    fn generated_grib1_fixture_matches_eccodes_when_configured() {
+        let helper = std::env::var_os("GRIB_READER_ECCODES_HELPER")
+            .expect("GRIB_READER_ECCODES_HELPER must be set");
+        let bytes = write_grib1_message(grib1_simple_field(&[5.0, f64::NAN, 7.0, 8.0]));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("writer-generated.grib1");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let output = Command::new(helper)
+            .arg("dump")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "ecCodes helper failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let reference: ReferenceDump = serde_json::from_slice(&output.stdout).unwrap();
+        let rust = GribFile::from_bytes(bytes).unwrap();
+
+        assert_eq!(reference.messages.len(), 1);
+        assert_eq!(rust.message_count(), reference.messages.len());
+        let message = rust.message(0).unwrap();
+        let actual = message.read_flat_data_as_f64().unwrap();
+        let expected = &reference.messages[0];
+        assert_eq!(message.edition(), expected.edition);
+        assert_eq!(message.parameter_description(), expected.name);
+        assert_eq!(actual.len(), expected.values.len());
+        for (actual, expected) in actual.iter().zip(&expected.values) {
+            match expected {
+                Some(expected) => assert!((actual - expected).abs() <= 1e-6),
+                None => assert!(actual.is_nan()),
+            }
+        }
     }
 
     #[test]
