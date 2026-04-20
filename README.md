@@ -103,8 +103,8 @@ cargo test --all-features
 cargo test --no-default-features
 cargo check --manifest-path grib-reader/fuzz/Cargo.toml --bins
 cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins -- -D warnings
-cargo package -p grib-reader --locked
-cargo publish -p grib-reader --dry-run --locked
+cargo package --workspace --locked
+cargo publish --workspace --dry-run --locked
 ```
 
 Reference compatibility checks are intentionally outside default PR CI:
@@ -120,9 +120,11 @@ git switch main
 git pull --ff-only
 git merge <release-branch>
 
-cargo package -p grib-reader --locked
-cargo publish -p grib-reader --dry-run --locked
+cargo package --workspace --locked
+cargo publish --workspace --dry-run --locked
+cargo publish -p grib-core --locked
 cargo publish -p grib-reader --locked
+cargo publish -p grib-writer --locked
 
 git tag v<version>
 git push origin main
