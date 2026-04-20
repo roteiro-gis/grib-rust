@@ -40,10 +40,14 @@ pub mod metadata;
 pub mod parameter;
 pub mod product;
 pub mod sections;
-mod util;
 
-pub use data::DecodeSample;
+pub use data::{
+    ComplexPackingParams, DataRepresentation, DecodeSample, SimplePackingParams,
+    SpatialDifferencingParams,
+};
 pub use error::{Error, Result};
+pub use grib1::{BinaryDataSection, GridDescription, ProductDefinition as Grib1ProductDefinition};
+pub use grid::{GridDefinition, LatLonGrid};
 pub use metadata::{ForecastTimeUnit, Parameter, ReferenceTime};
 pub use product::{
     AnalysisOrForecastTemplate, FixedSurface, Identification, ProductDefinition,
@@ -57,10 +61,8 @@ use ndarray::{ArrayD, IxDyn};
 
 use crate::data::{
     bitmap_payload as grib2_bitmap_payload, count_bitmap_present_points, decode_field_into,
-    decode_payload_into, DataRepresentation,
+    decode_payload_into,
 };
-use crate::grib1::{BinaryDataSection, GridDescription};
-use crate::grid::GridDefinition;
 use crate::indicator::Indicator;
 use crate::sections::{index_fields, FieldSections, SectionRef};
 

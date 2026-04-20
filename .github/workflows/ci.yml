@@ -59,7 +59,7 @@ jobs:
         run: cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins -- -D warnings
 
       - name: Verify crate packaging
-        run: cargo package -p grib-reader --locked
+        run: cargo package --workspace --locked
 
       - name: Verify publish dry run
-        run: cargo publish -p grib-reader --dry-run --locked
+        run: cargo publish --workspace --dry-run --locked

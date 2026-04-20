@@ -1,0 +1,15 @@
+[package]
+name = "grib-core"
+description = "Shared GRIB data model, primitives, and code tables"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/grib-core"
+keywords = ["grib", "grib2", "weather", "climate"]
+categories = ["science", "encoding", "parser-implementations"]
+
+[dependencies]
+thiserror = { workspace = true }
