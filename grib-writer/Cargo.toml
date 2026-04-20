@@ -12,4 +12,10 @@ keywords = ["grib", "grib2", "weather", "climate", "encoder"]
 categories = ["science", "encoding"]
 
 [dependencies]
-grib-core = { path = "../grib-core", version = "0.2.0" }
+grib-core = { path = "../grib-core", version = "0.3.0" }
+
+[dev-dependencies]
+grib-reader = { path = "../grib-reader", version = "0.3.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
