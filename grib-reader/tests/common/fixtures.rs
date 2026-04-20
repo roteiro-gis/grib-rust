@@ -1,46 +1,23 @@
 #![allow(dead_code)]
 
-use grib_core::grib1::ProductDefinition as Grib1ProductDefinition;
-use grib_core::{
-    AnalysisOrForecastTemplate, FixedSurface, GridDefinition, Identification, LatLonGrid,
-    ProductDefinition, ProductDefinitionTemplate, ReferenceTime,
-};
-use grib_writer::{Grib1FieldBuilder, Grib2FieldBuilder, GribWriter, PackingStrategy};
-
 pub fn build_grib2_message(values: &[u8]) -> Vec<u8> {
     build_grib2_message_with_forecast(values, 0)
 }
 
 pub fn build_grib2_message_with_forecast(values: &[u8], forecast_time: u32) -> Vec<u8> {
-    let field = Grib2FieldBuilder::new()
-        .identification(identification())
-        .grid(latlon_grid(2, 2))
-        .product(grib2_product_with_forecast(0, 0, forecast_time))
-        .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
-        .values(values)
-        .build()
-        .unwrap();
-    write_grib2_message([field])
+    match (values, forecast_time) {
+        ([1, 2, 3, 4], 0) => MINIMAL_GRIB2.to_vec(),
+        ([1, 2, 3, 4], 18) => FORECAST_GRIB2.to_vec(),
+        ([1, 2, 3, 4], 30) => GRIB2_FORECAST_30.to_vec(),
+        ([9, 8, 7, 6], 0) => GRIB2_9876.to_vec(),
+        ([0, 10, 20, 30], 0) => GRIB2_0_10_20_30.to_vec(),
+        ([55, 0, 128, 128], 0) => GRIB2_INTERNAL_MARKER_BASE.to_vec(),
+        _ => panic!("unsupported fixed GRIB2 fixture request: {values:?} forecast={forecast_time}"),
+    }
 }
 
 pub fn build_grib2_multifield_message() -> Vec<u8> {
-    let first = Grib2FieldBuilder::new()
-        .identification(identification())
-        .grid(latlon_grid(2, 2))
-        .product(grib2_product_with_forecast(0, 0, 0))
-        .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
-        .values(&[1u8, 2, 3, 4])
-        .build()
-        .unwrap();
-    let second = Grib2FieldBuilder::new()
-        .identification(identification())
-        .grid(latlon_grid(2, 2))
-        .product(grib2_product_with_forecast(0, 2, 0))
-        .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
-        .values(&[5u8, 6, 7, 8])
-        .build()
-        .unwrap();
-    write_grib2_message([first, second])
+    MULTIFIELD_GRIB2.to_vec()
 }
 
 pub fn build_bitmap_prefixed_stream() -> Vec<u8> {
@@ -59,7 +36,11 @@ pub fn build_grib1_bitmap_message() -> Vec<u8> {
 }
 
 pub fn build_grib1_message(values: &[u8]) -> Vec<u8> {
-    build_grib1_message_with_bitmap(values, 2, 2, None)
+    match values {
+        [1, 2, 3, 4] => GRIB1_1234.to_vec(),
+        [5, 6, 7, 8] => MINIMAL_GRIB1.to_vec(),
+        _ => panic!("unsupported fixed GRIB1 fixture request: {values:?}"),
+    }
 }
 
 pub fn build_grib1_message_with_bitmap(
@@ -68,46 +49,14 @@ pub fn build_grib1_message_with_bitmap(
     nj: u16,
     bitmap_payload: Option<&[u8]>,
 ) -> Vec<u8> {
-    let points = usize::from(ni) * usize::from(nj);
-    let grid = latlon_grid(u32::from(ni), u32::from(nj));
-    let mut builder = Grib1FieldBuilder::new()
-        .product(grib1_product())
-        .grid(grid)
-        .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 });
-
-    let logical_values = match bitmap_payload {
-        Some(payload) => {
-            let bitmap = bitmap_from_payload(payload, points);
-            let mut present = values.iter().copied();
-            let logical = bitmap
-                .iter()
-                .map(|is_present| {
-                    if *is_present {
-                        f64::from(present.next().expect("not enough present values"))
-                    } else {
-                        f64::NAN
-                    }
-                })
-                .collect::<Vec<_>>();
-            assert!(
-                present.next().is_none(),
-                "too many present values for bitmap fixture"
-            );
-            builder = builder.bitmap(&bitmap);
-            logical
-        }
-        None => {
-            assert_eq!(values.len(), points);
-            values.iter().copied().map(f64::from).collect()
-        }
-    };
-
-    let field = builder.values(&logical_values).build().unwrap();
-    let mut bytes = Vec::new();
-    GribWriter::new(&mut bytes)
-        .write_grib1_message(field)
-        .unwrap();
-    bytes
+    match (values, ni, nj, bitmap_payload) {
+        ([9, 7], 3, 1, Some([0b1011_1111])) => GRIB1_BITMAP_WITH_SET_PADDING.to_vec(),
+        ([9, 7], 3, 1, Some([0b1010_0000])) => BITMAP_GRIB1.to_vec(),
+        (_, _, _, None) => build_grib1_message(values),
+        _ => panic!(
+            "unsupported fixed GRIB1 bitmap fixture request: values={values:?} ni={ni} nj={nj} bitmap={bitmap_payload:?}"
+        ),
+    }
 }
 
 pub fn build_grib2_complex_packing_message() -> Vec<u8> {
@@ -122,112 +71,65 @@ pub fn build_grib2_spatial_differencing_message() -> Vec<u8> {
     SPATIAL_DIFFERENCING_MESSAGE.to_vec()
 }
 
-fn write_grib2_message(fields: impl IntoIterator<Item = grib_writer::Grib2Field>) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    GribWriter::new(&mut bytes)
-        .write_grib2_message(fields)
-        .unwrap();
-    bytes
-}
+const MINIMAL_GRIB2: &[u8] = include_bytes!("../corpus/bootstrap/minimal.grib2");
+const FORECAST_GRIB2: &[u8] = include_bytes!("../corpus/bootstrap/forecast.grib2");
+const MULTIFIELD_GRIB2: &[u8] = include_bytes!("../corpus/bootstrap/multifield.grib2");
+const MINIMAL_GRIB1: &[u8] = include_bytes!("../corpus/bootstrap/minimal.grib1");
+const BITMAP_GRIB1: &[u8] = include_bytes!("../corpus/bootstrap/bitmap.grib1");
 
-fn identification() -> Identification {
-    Identification {
-        center_id: 7,
-        subcenter_id: 0,
-        master_table_version: 35,
-        local_table_version: 1,
-        significance_of_reference_time: 1,
-        reference_year: 2026,
-        reference_month: 3,
-        reference_day: 20,
-        reference_hour: 12,
-        reference_minute: 0,
-        reference_second: 0,
-        production_status: 0,
-        processed_data_type: 1,
-    }
-}
+const GRIB1_1234: &[u8] = &[
+    71, 82, 73, 66, 0, 0, 84, 1, 0, 0, 28, 2, 7, 255, 0, 128, 11, 100, 3, 82, 26, 3, 20, 12, 0, 1,
+    0, 0, 0, 0, 0, 0, 21, 0, 0, 0, 0, 0, 32, 0, 255, 0, 0, 2, 0, 2, 0, 195, 80, 129, 212, 192, 128,
+    0, 191, 104, 129, 208, 216, 3, 232, 3, 232, 0, 0, 0, 0, 0, 0, 0, 12, 0, 0, 0, 65, 16, 0, 0, 2,
+    27, 55, 55, 55, 55,
+];
 
-fn grib1_product() -> Grib1ProductDefinition {
-    Grib1ProductDefinition {
-        table_version: 2,
-        center_id: 7,
-        generating_process_id: 255,
-        grid_id: 0,
-        has_grid_definition: true,
-        has_bitmap: false,
-        parameter_number: 11,
-        level_type: 100,
-        level_value: 850,
-        reference_time: ReferenceTime {
-            year: 2026,
-            month: 3,
-            day: 20,
-            hour: 12,
-            minute: 0,
-            second: 0,
-        },
-        forecast_time_unit: 1,
-        p1: 0,
-        p2: 0,
-        time_range_indicator: 0,
-        average_count: 0,
-        missing_count: 0,
-        century: 21,
-        subcenter_id: 0,
-        decimal_scale: 0,
-    }
-}
+const GRIB1_BITMAP_WITH_SET_PADDING: &[u8] = &[
+    71, 82, 73, 66, 0, 0, 91, 1, 0, 0, 28, 2, 7, 255, 0, 192, 11, 100, 3, 82, 26, 3, 20, 12, 0, 1,
+    0, 0, 0, 0, 0, 0, 21, 0, 0, 0, 0, 0, 32, 0, 255, 0, 0, 3, 0, 1, 0, 195, 80, 129, 212, 192, 128,
+    0, 195, 80, 129, 204, 240, 3, 232, 3, 232, 0, 0, 0, 0, 0, 0, 0, 7, 5, 0, 0, 191, 0, 0, 12, 0,
+    0, 0, 65, 112, 0, 0, 2, 128, 55, 55, 55, 55,
+];
 
-fn grib2_product_with_forecast(
-    parameter_category: u8,
-    parameter_number: u8,
-    forecast_time: u32,
-) -> ProductDefinition {
-    ProductDefinition {
-        parameter_category,
-        parameter_number,
-        template: ProductDefinitionTemplate::AnalysisOrForecast(AnalysisOrForecastTemplate {
-            generating_process: 2,
-            forecast_time_unit: 1,
-            forecast_time,
-            first_surface: Some(FixedSurface {
-                surface_type: 103,
-                scale_factor: 0,
-                scaled_value: 850,
-            }),
-            second_surface: None,
-        }),
-    }
-}
+const GRIB2_9876: &[u8] = &[
+    71, 82, 73, 66, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 174, 0, 0, 0, 21, 1, 0, 7, 0, 0, 35, 1, 1, 7,
+    234, 3, 20, 12, 0, 0, 0, 1, 0, 0, 0, 72, 3, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 2, 250, 240, 128, 135,
+    39, 14, 0, 0, 2, 235, 174, 64, 135, 23, 203, 192, 0, 15, 66, 64, 0, 15, 66, 64, 0, 0, 0, 0, 34,
+    4, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 103, 0, 0, 0, 3, 82, 255, 255, 255, 255,
+    255, 255, 0, 0, 0, 21, 5, 0, 0, 0, 4, 0, 0, 64, 192, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 6, 7,
+    228, 55, 55, 55, 55,
+];
 
-fn latlon_grid(ni: u32, nj: u32) -> GridDefinition {
-    let lat_first = 50_000_000;
-    let lon_first = -120_000_000;
-    GridDefinition::LatLon(LatLonGrid {
-        ni,
-        nj,
-        lat_first,
-        lon_first,
-        lat_last: lat_first - (nj.saturating_sub(1) as i32) * 1_000_000,
-        lon_last: lon_first + (ni.saturating_sub(1) as i32) * 1_000_000,
-        di: 1_000_000,
-        dj: 1_000_000,
-        scanning_mode: 0,
-    })
-}
+const GRIB2_0_10_20_30: &[u8] = &[
+    71, 82, 73, 66, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 176, 0, 0, 0, 21, 1, 0, 7, 0, 0, 35, 1, 1, 7,
+    234, 3, 20, 12, 0, 0, 0, 1, 0, 0, 0, 72, 3, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 2, 250, 240, 128, 135,
+    39, 14, 0, 0, 2, 235, 174, 64, 135, 23, 203, 192, 0, 15, 66, 64, 0, 15, 66, 64, 0, 0, 0, 0, 34,
+    4, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 103, 0, 0, 0, 3, 82, 255, 255, 255, 255,
+    255, 255, 0, 0, 0, 21, 5, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 8, 7, 2,
+    169, 224, 55, 55, 55, 55,
+];
 
-fn bitmap_from_payload(payload: &[u8], points: usize) -> Vec<bool> {
-    (0..points)
-        .map(|index| {
-            let byte = payload
-                .get(index / 8)
-                .copied()
-                .expect("bitmap payload too short");
-            byte & (1 << (7 - (index % 8))) != 0
-        })
-        .collect()
-}
+const GRIB2_INTERNAL_MARKER_BASE: &[u8] = &[
+    71, 82, 73, 66, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 177, 0, 0, 0, 21, 1, 0, 7, 0, 0, 35, 1, 1, 7,
+    234, 3, 20, 12, 0, 0, 0, 1, 0, 0, 0, 72, 3, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 2, 250, 240, 128, 135,
+    39, 14, 0, 0, 2, 235, 174, 64, 135, 23, 203, 192, 0, 15, 66, 64, 0, 15, 66, 64, 0, 0, 0, 0, 34,
+    4, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 103, 0, 0, 0, 3, 82, 255, 255, 255, 255,
+    255, 255, 0, 0, 0, 21, 5, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 9, 7, 55, 0,
+    128, 128, 55, 55, 55, 55,
+];
+
+const GRIB2_FORECAST_30: &[u8] = &[
+    71, 82, 73, 66, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 174, 0, 0, 0, 21, 1, 0, 7, 0, 0, 35, 1, 1, 7,
+    234, 3, 20, 12, 0, 0, 0, 1, 0, 0, 0, 72, 3, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 2, 250, 240, 128, 135,
+    39, 14, 0, 0, 2, 235, 174, 64, 135, 23, 203, 192, 0, 15, 66, 64, 0, 15, 66, 64, 0, 0, 0, 0, 34,
+    4, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 1, 0, 0, 0, 30, 103, 0, 0, 0, 3, 82, 255, 255, 255, 255,
+    255, 255, 0, 0, 0, 21, 5, 0, 0, 0, 4, 0, 0, 63, 128, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 6, 7, 27,
+    55, 55, 55, 55,
+];
 
 // Complex packing templates remain fixed reader fixtures until grib-writer
 // supports templates 5.2/5.3; do not reintroduce test-only encoders here.

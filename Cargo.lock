@@ -264,7 +264,6 @@ dependencies = [
  "criterion",
  "flate2",
  "grib-core",
- "grib-writer",
  "memmap2",
  "ndarray",
  "rayon",
