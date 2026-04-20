@@ -1,59 +1,10 @@
-//! Data Representation Section (Section 5) and Data Section (Section 7) decoding.
+//! Data Section (Section 7) decoding.
 
 use crate::error::{Error, Result};
-use crate::util::grib_i16;
-
-/// Data representation template number and parameters.
-#[derive(Debug, Clone, PartialEq)]
-pub enum DataRepresentation {
-    /// Template 5.0: Simple packing.
-    SimplePacking(SimplePackingParams),
-    /// Template 5.2/5.3: Complex packing with optional spatial differencing.
-    ComplexPacking(ComplexPackingParams),
-    /// Unsupported template.
-    Unsupported(u16),
-}
-
-/// Parameters for simple packing (Template 5.0).
-#[derive(Debug, Clone, PartialEq)]
-pub struct SimplePackingParams {
-    pub encoded_values: usize,
-    pub reference_value: f32,
-    pub binary_scale: i16,
-    pub decimal_scale: i16,
-    pub bits_per_value: u8,
-    pub original_field_type: u8,
-}
-
-/// Parameters for complex packing (Templates 5.2 and 5.3).
-#[derive(Debug, Clone, PartialEq)]
-pub struct ComplexPackingParams {
-    pub encoded_values: usize,
-    pub reference_value: f32,
-    pub binary_scale: i16,
-    pub decimal_scale: i16,
-    pub group_reference_bits: u8,
-    pub original_field_type: u8,
-    pub group_splitting_method: u8,
-    pub missing_value_management: u8,
-    pub primary_missing_substitute: u32,
-    pub secondary_missing_substitute: u32,
-    pub num_groups: usize,
-    pub group_width_reference: u8,
-    pub group_width_bits: u8,
-    pub group_length_reference: u32,
-    pub group_length_increment: u8,
-    pub true_length_last_group: u32,
-    pub scaled_group_length_bits: u8,
-    pub spatial_differencing: Option<SpatialDifferencingParams>,
-}
-
-/// Parameters specific to template 5.3 spatial differencing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SpatialDifferencingParams {
-    pub order: u8,
-    pub descriptor_octets: u8,
-}
+use grib_core::bit::BitReader;
+pub use grib_core::data::{
+    ComplexPackingParams, DataRepresentation, SimplePackingParams, SpatialDifferencingParams,
+};
 
 /// Numeric target type for decoded field values.
 pub trait DecodeSample: Copy + Sized {
@@ -78,39 +29,6 @@ impl DecodeSample for f64 {
 
     fn nan() -> Self {
         f64::NAN
-    }
-}
-
-impl DataRepresentation {
-    pub fn parse(section_bytes: &[u8]) -> Result<Self> {
-        if section_bytes.len() < 11 {
-            return Err(Error::InvalidSection {
-                section: 5,
-                reason: format!("expected at least 11 bytes, got {}", section_bytes.len()),
-            });
-        }
-        if section_bytes[4] != 5 {
-            return Err(Error::InvalidSection {
-                section: section_bytes[4],
-                reason: "not a data representation section".into(),
-            });
-        }
-
-        let template = u16::from_be_bytes(section_bytes[9..11].try_into().unwrap());
-        match template {
-            0 => parse_simple_packing(section_bytes),
-            2 => parse_complex_packing(section_bytes, false),
-            3 => parse_complex_packing(section_bytes, true),
-            _ => Ok(Self::Unsupported(template)),
-        }
-    }
-
-    pub fn encoded_values(&self) -> Option<usize> {
-        match self {
-            Self::SimplePacking(params) => Some(params.encoded_values),
-            Self::ComplexPacking(params) => Some(params.encoded_values),
-            Self::Unsupported(_) => None,
-        }
     }
 }
 
@@ -279,96 +197,6 @@ pub(crate) fn count_bitmap_present_points(
     Ok(present)
 }
 
-fn parse_simple_packing(data: &[u8]) -> Result<DataRepresentation> {
-    if data.len() < 21 {
-        return Err(Error::InvalidSection {
-            section: 5,
-            reason: format!("template 5.0 requires 21 bytes, got {}", data.len()),
-        });
-    }
-
-    let encoded_values = u32::from_be_bytes(data[5..9].try_into().unwrap()) as usize;
-    let reference_value = f32::from_be_bytes(data[11..15].try_into().unwrap());
-    let binary_scale = grib_i16(&data[15..17]).unwrap();
-    let decimal_scale = grib_i16(&data[17..19]).unwrap();
-    let bits_per_value = data[19];
-    let original_field_type = data[20];
-
-    Ok(DataRepresentation::SimplePacking(SimplePackingParams {
-        encoded_values,
-        reference_value,
-        binary_scale,
-        decimal_scale,
-        bits_per_value,
-        original_field_type,
-    }))
-}
-
-fn parse_complex_packing(
-    data: &[u8],
-    with_spatial_differencing: bool,
-) -> Result<DataRepresentation> {
-    let required = if with_spatial_differencing { 49 } else { 47 };
-    if data.len() < required {
-        return Err(Error::InvalidSection {
-            section: 5,
-            reason: format!(
-                "template 5.{} requires {required} bytes, got {}",
-                if with_spatial_differencing { 3 } else { 2 },
-                data.len()
-            ),
-        });
-    }
-
-    let group_splitting_method = data[21];
-    if group_splitting_method != 1 {
-        return Err(Error::UnsupportedGroupSplittingMethod(
-            group_splitting_method,
-        ));
-    }
-
-    let missing_value_management = data[22];
-    if missing_value_management > 2 {
-        return Err(Error::UnsupportedMissingValueManagement(
-            missing_value_management,
-        ));
-    }
-
-    let spatial_differencing = if with_spatial_differencing {
-        let order = data[47];
-        if !matches!(order, 1 | 2) {
-            return Err(Error::UnsupportedSpatialDifferencingOrder(order));
-        }
-        Some(SpatialDifferencingParams {
-            order,
-            descriptor_octets: data[48],
-        })
-    } else {
-        None
-    };
-
-    Ok(DataRepresentation::ComplexPacking(ComplexPackingParams {
-        encoded_values: u32::from_be_bytes(data[5..9].try_into().unwrap()) as usize,
-        reference_value: f32::from_be_bytes(data[11..15].try_into().unwrap()),
-        binary_scale: grib_i16(&data[15..17]).unwrap(),
-        decimal_scale: grib_i16(&data[17..19]).unwrap(),
-        group_reference_bits: data[19],
-        original_field_type: data[20],
-        group_splitting_method,
-        missing_value_management,
-        primary_missing_substitute: u32::from_be_bytes(data[23..27].try_into().unwrap()),
-        secondary_missing_substitute: u32::from_be_bytes(data[27..31].try_into().unwrap()),
-        num_groups: u32::from_be_bytes(data[31..35].try_into().unwrap()) as usize,
-        group_width_reference: data[35],
-        group_width_bits: data[36],
-        group_length_reference: u32::from_be_bytes(data[37..41].try_into().unwrap()),
-        group_length_increment: data[41],
-        true_length_last_group: u32::from_be_bytes(data[42..46].try_into().unwrap()),
-        scaled_group_length_bits: data[46],
-        spatial_differencing,
-    }))
-}
-
 /// Unpack simple-packed values.
 pub fn unpack_simple(
     data_bytes: &[u8],
@@ -461,7 +289,7 @@ fn unpack_complex_into<T: DecodeSample>(
         .transpose()?
         .map(SpatialRestoreState::new);
 
-    let layout = GroupReaderLayout::new(reader.bit_offset, params)?;
+    let layout = GroupReaderLayout::new(reader.bit_offset(), params)?;
     let mut reference_reader = BitReader::with_offset(data_bytes, layout.reference_offset);
     let mut width_reader = BitReader::with_offset(data_bytes, layout.width_offset);
     let mut length_reader = BitReader::with_offset(data_bytes, layout.length_offset);
@@ -888,71 +716,6 @@ impl<'a, T: DecodeSample> OutputCursor<'a, T> {
     }
     fn values_written(&self) -> usize {
         self.values_written
-    }
-}
-
-struct BitReader<'a> {
-    data: &'a [u8],
-    bit_offset: usize,
-}
-
-impl<'a> BitReader<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        Self {
-            data,
-            bit_offset: 0,
-        }
-    }
-
-    fn with_offset(data: &'a [u8], bit_offset: usize) -> Self {
-        Self { data, bit_offset }
-    }
-
-    fn read(&mut self, bit_count: usize) -> Result<u64> {
-        if bit_count == 0 {
-            return Ok(0);
-        }
-
-        let mut remaining = bit_count;
-        let mut value = 0u64;
-
-        while remaining > 0 {
-            let byte_index = self.bit_offset / 8;
-            let bit_index = self.bit_offset % 8;
-            let byte = *self.data.get(byte_index).ok_or(Error::Truncated {
-                offset: byte_index as u64,
-            })?;
-            let available = 8 - bit_index;
-            let take = remaining.min(available);
-            let mask = ((1u16 << take) - 1) as u8;
-            let shift = available - take;
-            let bits = (byte >> shift) & mask;
-
-            value = (value << take) | bits as u64;
-            self.bit_offset += take;
-            remaining -= take;
-        }
-
-        Ok(value)
-    }
-
-    fn read_signed(&mut self, bit_count: usize) -> Result<i64> {
-        let value = self.read(bit_count)?;
-        if bit_count == 0 {
-            return Ok(0);
-        }
-
-        let sign_mask = 1u64 << (bit_count - 1);
-        if value & sign_mask == 0 {
-            return i64::try_from(value)
-                .map_err(|_| Error::Other("signed value exceeds i64 range".into()));
-        }
-
-        let magnitude_mask = sign_mask - 1;
-        let magnitude = value & magnitude_mask;
-        let magnitude = i64::try_from(magnitude)
-            .map_err(|_| Error::Other("signed value exceeds i64 range".into()))?;
-        Ok(-magnitude)
     }
 }
 

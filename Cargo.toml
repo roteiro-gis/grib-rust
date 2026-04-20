@@ -1,5 +1,5 @@
 [workspace]
-members = ["grib-reader"]
+members = ["grib-core", "grib-reader", "grib-writer"]
 resolver = "2"
 
 [workspace.package]

@@ -1,0 +1,15 @@
+[package]
+name = "grib-writer"
+description = "Pure-Rust GRIB encoder for weather and climate data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/grib-writer"
+keywords = ["grib", "grib2", "weather", "climate", "encoder"]
+categories = ["science", "encoding"]
+
+[dependencies]
+grib-core = { path = "../grib-core", version = "0.2.0" }

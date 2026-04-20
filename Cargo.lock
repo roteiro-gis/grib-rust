@@ -251,18 +251,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "grib-core"
+version = "0.2.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "grib-reader"
 version = "0.2.0"
 dependencies = [
  "criterion",
  "flate2",
+ "grib-core",
  "memmap2",
  "ndarray",
  "rayon",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror",
+]
+
+[[package]]
+name = "grib-writer"
+version = "0.2.0"
+dependencies = [
+ "grib-core",
 ]
 
 [[package]]
