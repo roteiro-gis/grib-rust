@@ -32,7 +32,7 @@ pub fn build_truncated_grib2_message() -> Vec<u8> {
 }
 
 pub fn build_grib1_bitmap_message() -> Vec<u8> {
-    build_grib1_message_with_bitmap(&[9, 7], 3, 1, Some(&[0b1011_1111]))
+    build_grib1_message_with_bitmap(&[9, 7], 3, 1, Some(&[0b1010_0000]))
 }
 
 pub fn build_grib1_message(values: &[u8]) -> Vec<u8> {
@@ -50,8 +50,12 @@ pub fn build_grib1_message_with_bitmap(
     bitmap_payload: Option<&[u8]>,
 ) -> Vec<u8> {
     match (values, ni, nj, bitmap_payload) {
-        ([9, 7], 3, 1, Some([0b1011_1111])) => GRIB1_BITMAP_WITH_SET_PADDING.to_vec(),
         ([9, 7], 3, 1, Some([0b1010_0000])) => BITMAP_GRIB1.to_vec(),
+        ([9, 7], 3, 1, Some([0b1011_1111])) => {
+            let mut bytes = BITMAP_GRIB1.to_vec();
+            bytes[GRIB1_BITMAP_PAYLOAD_OFFSET] = 0b1011_1111;
+            bytes
+        }
         (_, _, _, None) => build_grib1_message(values),
         _ => panic!(
             "unsupported fixed GRIB1 bitmap fixture request: values={values:?} ni={ni} nj={nj} bitmap={bitmap_payload:?}"
@@ -75,20 +79,19 @@ const MINIMAL_GRIB2: &[u8] = include_bytes!("../corpus/bootstrap/minimal.grib2")
 const FORECAST_GRIB2: &[u8] = include_bytes!("../corpus/bootstrap/forecast.grib2");
 const MULTIFIELD_GRIB2: &[u8] = include_bytes!("../corpus/bootstrap/multifield.grib2");
 const MINIMAL_GRIB1: &[u8] = include_bytes!("../corpus/bootstrap/minimal.grib1");
-const BITMAP_GRIB1: &[u8] = include_bytes!("../corpus/bootstrap/bitmap.grib1");
+const GRIB1_BITMAP_PAYLOAD_OFFSET: usize = 74;
+const BITMAP_GRIB1: &[u8] = &[
+    71, 82, 73, 66, 0, 0, 91, 1, 0, 0, 28, 2, 7, 255, 0, 192, 11, 100, 3, 82, 26, 3, 20, 12, 0, 1,
+    0, 0, 0, 0, 0, 0, 21, 0, 0, 0, 0, 0, 32, 0, 255, 0, 0, 3, 0, 1, 0, 195, 80, 129, 212, 192, 128,
+    0, 195, 80, 129, 204, 240, 3, 232, 3, 232, 0, 0, 0, 0, 0, 0, 0, 7, 5, 0, 0, 160, 0, 0, 12, 4,
+    0, 0, 65, 112, 0, 0, 2, 128, 55, 55, 55, 55,
+];
 
 const GRIB1_1234: &[u8] = &[
     71, 82, 73, 66, 0, 0, 84, 1, 0, 0, 28, 2, 7, 255, 0, 128, 11, 100, 3, 82, 26, 3, 20, 12, 0, 1,
     0, 0, 0, 0, 0, 0, 21, 0, 0, 0, 0, 0, 32, 0, 255, 0, 0, 2, 0, 2, 0, 195, 80, 129, 212, 192, 128,
     0, 191, 104, 129, 208, 216, 3, 232, 3, 232, 0, 0, 0, 0, 0, 0, 0, 12, 0, 0, 0, 65, 16, 0, 0, 2,
     27, 55, 55, 55, 55,
-];
-
-const GRIB1_BITMAP_WITH_SET_PADDING: &[u8] = &[
-    71, 82, 73, 66, 0, 0, 91, 1, 0, 0, 28, 2, 7, 255, 0, 192, 11, 100, 3, 82, 26, 3, 20, 12, 0, 1,
-    0, 0, 0, 0, 0, 0, 21, 0, 0, 0, 0, 0, 32, 0, 255, 0, 0, 3, 0, 1, 0, 195, 80, 129, 212, 192, 128,
-    0, 195, 80, 129, 204, 240, 3, 232, 3, 232, 0, 0, 0, 0, 0, 0, 0, 7, 5, 0, 0, 191, 0, 0, 12, 0,
-    0, 0, 65, 112, 0, 0, 2, 128, 55, 55, 55, 55,
 ];
 
 const GRIB2_9876: &[u8] = &[
