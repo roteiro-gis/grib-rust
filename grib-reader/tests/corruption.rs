@@ -84,8 +84,9 @@ fn rejects_grib2_encoded_value_count_mismatch_without_bitmap() {
 
 #[test]
 fn rejects_internal_end_marker_reached_via_bad_section_length() {
-    let mut message = build_grib2_message(&[55, 55, 55, 55]);
+    let mut message = build_grib2_message(&[55, 0, 128, 128]);
     let section7_offset = 16 + 21 + 72 + 34 + 21;
+    message[section7_offset + 5..section7_offset + 9].copy_from_slice(b"7777");
     message[section7_offset..section7_offset + 4].copy_from_slice(&5u32.to_be_bytes());
 
     let err = expect_err(message);

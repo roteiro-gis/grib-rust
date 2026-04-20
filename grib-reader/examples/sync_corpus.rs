@@ -37,15 +37,9 @@ fn main() -> io::Result<()> {
     write_if_changed(&bootstrap_dir.join("multifield.grib2"), &multifield_grib2)?;
     write_if_changed(&bootstrap_dir.join("bitmap.grib1"), &bitmap_grib1)?;
     write_if_changed(&bootstrap_dir.join("forecast.grib2"), &forecast_grib2)?;
-    write_if_changed(&bootstrap_dir.join("complex.grib2"), &complex_grib2)?;
-    write_if_changed(
-        &bootstrap_dir.join("complex-missing.grib2"),
-        &complex_missing_grib2,
-    )?;
-    write_if_changed(
-        &bootstrap_dir.join("spatial-differencing.grib2"),
-        &spatial_grib2,
-    )?;
+    remove_if_exists(&bootstrap_dir.join("complex.grib2"))?;
+    remove_if_exists(&bootstrap_dir.join("complex-missing.grib2"))?;
+    remove_if_exists(&bootstrap_dir.join("spatial-differencing.grib2"))?;
 
     write_if_changed(&open_dir.join("minimal.grib2"), &minimal_grib2)?;
     write_if_changed(&open_dir.join("minimal.grib1"), &minimal_grib1)?;
@@ -119,6 +113,14 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> io::Result<()> {
         fs::create_dir_all(parent)?;
     }
     fs::write(path, bytes)
+}
+
+fn remove_if_exists(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 fn collect_grib_samples(root: &Path) -> Vec<PathBuf> {
