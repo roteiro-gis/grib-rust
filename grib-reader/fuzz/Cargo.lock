@@ -107,22 +107,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "grib-core"
+version = "0.3.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "grib-reader"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
+ "grib-core",
  "memmap2",
  "ndarray",
  "rayon",
- "thiserror",
 ]
 
 [[package]]
 name = "grib-reader-fuzz"
 version = "0.0.0"
 dependencies = [
+ "grib-core",
  "grib-reader",
+ "grib-writer",
  "libfuzzer-sys",
+]
+
+[[package]]
+name = "grib-writer"
+version = "0.3.0"
+dependencies = [
+ "grib-core",
 ]
 
 [[package]]
