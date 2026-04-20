@@ -4,6 +4,7 @@ use crate::data::{decode_payload, DataRepresentation};
 use crate::error::{Error, Result};
 use crate::sections::SectionRef;
 
+use grib_core::binary::read_u24_be;
 pub use grib_core::grib1::{BinaryDataSection, GridDescription, ProductDefinition};
 
 pub fn bitmap_payload(section_bytes: &[u8]) -> Result<Option<&[u8]>> {
@@ -96,10 +97,6 @@ pub struct Grib1Sections {
     pub data: SectionRef,
 }
 
-fn read_u24(bytes: &[u8]) -> u32 {
-    (u32::from(bytes[0]) << 16) | (u32::from(bytes[1]) << 8) | u32::from(bytes[2])
-}
-
 fn parse_section(
     message_bytes: &[u8],
     offset: usize,
@@ -111,7 +108,9 @@ fn parse_section(
         .ok_or(Error::Truncated {
             offset: offset as u64,
         })?;
-    let length = read_u24(length_bytes) as usize;
+    let length = read_u24_be(length_bytes).ok_or(Error::Truncated {
+        offset: offset as u64,
+    })? as usize;
     if length < 3 {
         return Err(Error::InvalidSection {
             section: number,

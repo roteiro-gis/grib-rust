@@ -1,5 +1,7 @@
 //! Section 0: Indicator Section parsing for GRIB1 and GRIB2.
 
+use grib_core::binary::read_u24_be;
+
 /// Parsed Indicator Section (Section 0).
 #[derive(Debug, Clone)]
 pub struct Indicator {
@@ -21,7 +23,7 @@ impl Indicator {
         let edition = data[7];
         match edition {
             1 => {
-                let length = ((data[4] as u64) << 16) | ((data[5] as u64) << 8) | (data[6] as u64);
+                let length = u64::from(read_u24_be(&data[4..7])?);
                 Some(Self {
                     edition,
                     discipline: 0,

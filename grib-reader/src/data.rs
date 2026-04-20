@@ -1,7 +1,7 @@
 //! Data Section (Section 7) decoding.
 
 use crate::error::{Error, Result};
-use grib_core::bit::BitReader;
+use grib_core::bit::{read_bit, BitReader};
 pub use grib_core::data::{
     ComplexPackingParams, DataRepresentation, SimplePackingParams, SpatialDifferencingParams,
 };
@@ -560,16 +560,10 @@ fn scale_decoded_value(
 }
 
 fn bitmap_bit(bitmap_payload: &[u8], index: usize) -> Result<bool> {
-    let byte_index = index / 8;
-    let bit_index = index % 8;
-    let byte = bitmap_payload
-        .get(byte_index)
-        .copied()
-        .ok_or(Error::DataLengthMismatch {
-            expected: byte_index + 1,
-            actual: bitmap_payload.len(),
-        })?;
-    Ok(((byte >> (7 - bit_index)) & 1) != 0)
+    read_bit(bitmap_payload, index).map_err(|_| Error::DataLengthMismatch {
+        expected: index / 8 + 1,
+        actual: bitmap_payload.len(),
+    })
 }
 
 struct GroupReaderLayout {

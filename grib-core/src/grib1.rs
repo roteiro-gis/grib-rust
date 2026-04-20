@@ -1,5 +1,6 @@
 //! GRIB Edition 1 shared metadata and section models.
 
+use crate::binary::decode_ibm_f32;
 use crate::data::{DataRepresentation, SimplePackingParams};
 use crate::error::{Error, Result};
 use crate::grid::{GridDefinition, LatLonGrid};
@@ -154,7 +155,7 @@ impl BinaryDataSection {
         }
 
         let binary_scale = grib_i16(&section_bytes[4..6]).unwrap();
-        let reference_value = ibm_f32(section_bytes[6..10].try_into().unwrap());
+        let reference_value = decode_ibm_f32(section_bytes[6..10].try_into().unwrap());
         let bits_per_value = section_bytes[10];
         let simple = SimplePackingParams {
             encoded_values,
@@ -224,27 +225,10 @@ fn parse_latlon_grid(section_bytes: &[u8]) -> GridDefinition {
     })
 }
 
-fn ibm_f32(bytes: [u8; 4]) -> f32 {
-    if bytes == [0, 0, 0, 0] {
-        return 0.0;
-    }
-
-    let sign = if bytes[0] & 0x80 == 0 { 1.0 } else { -1.0 };
-    let exponent = i32::from(bytes[0] & 0x7f) - 64;
-    let mantissa = (u32::from(bytes[1]) << 16) | (u32::from(bytes[2]) << 8) | u32::from(bytes[3]);
-    let value = sign * f64::from(mantissa) / 16_777_216.0 * 16f64.powi(exponent);
-    value as f32
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{ibm_f32, ProductDefinition};
+    use super::ProductDefinition;
     use crate::metadata::ReferenceTime;
-
-    #[test]
-    fn decodes_zero_ibm_float() {
-        assert_eq!(ibm_f32([0, 0, 0, 0]), 0.0);
-    }
 
     #[test]
     fn decodes_indicator_ten_forecast_time_as_u16() {

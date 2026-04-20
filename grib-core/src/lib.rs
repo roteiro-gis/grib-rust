@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod binary;
 pub mod bit;
 pub mod data;
 pub mod error;
