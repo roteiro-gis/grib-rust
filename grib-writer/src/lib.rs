@@ -221,8 +221,12 @@ impl<'a, W: Write> GribWriter<'a, W> {
         let mut message = Vec::new();
         write_indicator_placeholder(&mut message, first.discipline)?;
         write_identification_section(&mut message, &first.identification)?;
+        let mut current_grid = None;
         for field in &fields {
-            write_grid_section(&mut message, &field.grid)?;
+            if current_grid != Some(&field.grid) {
+                write_grid_section(&mut message, &field.grid)?;
+                current_grid = Some(&field.grid);
+            }
             write_product_section(&mut message, &field.product)?;
             write_data_representation_section(&mut message, &field.packed)?;
             if let Some(bitmap) = &field.packed.bitmap_payload {
@@ -616,6 +620,7 @@ mod tests {
         AnalysisOrForecastTemplate, DataRepresentation, FixedSurface, GridDefinition,
         Identification, LatLonGrid, ProductDefinition, ProductDefinitionTemplate,
     };
+    use grib_reader::sections::scan_sections;
     use grib_reader::GribFile;
     use serde::Deserialize;
 
@@ -698,6 +703,14 @@ mod tests {
             .write_grib2_message(fields)
             .unwrap();
         bytes
+    }
+
+    fn section_numbers(bytes: &[u8]) -> Vec<u8> {
+        scan_sections(bytes)
+            .unwrap()
+            .iter()
+            .map(|section| section.number)
+            .collect()
     }
 
     fn simple_field(
@@ -831,14 +844,80 @@ mod tests {
         let first = simple_field(&[1.0, 2.0, 3.0, 4.0], 0, 0);
         let second = simple_field(&[5.0, 6.0, 7.0, 8.0], 0, 2);
 
-        let file = GribFile::from_bytes(write_message([first, second])).unwrap();
+        let bytes = write_message([first, second]);
+        assert_eq!(section_numbers(&bytes), vec![1, 3, 4, 5, 7, 4, 5, 7, 8]);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
         assert_eq!(file.message_count(), 2);
         assert_eq!(file.message(0).unwrap().parameter_name(), "TMP");
         assert_eq!(file.message(1).unwrap().parameter_name(), "POT");
+        assert_eq!(file.message(0).unwrap().grid_shape(), (2, 2));
+        assert_eq!(file.message(1).unwrap().grid_shape(), (2, 2));
+        assert_eq!(
+            file.message(0).unwrap().read_flat_data_as_f64().unwrap(),
+            vec![1.0, 2.0, 3.0, 4.0]
+        );
         assert_eq!(
             file.message(1).unwrap().read_flat_data_as_f64().unwrap(),
             vec![5.0, 6.0, 7.0, 8.0]
         );
+    }
+
+    #[test]
+    fn emits_new_grid_section_only_when_grid_changes() {
+        let first = simple_field(&[1.0, 2.0, 3.0, 4.0], 0, 0);
+        let second = simple_field(&[5.0, 6.0, 7.0, 8.0], 0, 2);
+        let third = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid_with_shape_and_scanning_mode(3, 2, 0))
+            .product(product(0, 4))
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[9.0, 10.0, 11.0, 12.0, 13.0, 14.0])
+            .build()
+            .unwrap();
+
+        let bytes = write_message([first, second, third]);
+        assert_eq!(
+            section_numbers(&bytes),
+            vec![1, 3, 4, 5, 7, 4, 5, 7, 3, 4, 5, 7, 8]
+        );
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        assert_eq!(file.message_count(), 3);
+        assert_eq!(file.message(0).unwrap().parameter_name(), "TMP");
+        assert_eq!(file.message(1).unwrap().parameter_name(), "POT");
+        assert_eq!(file.message(2).unwrap().parameter_name(), "TMAX");
+        assert_eq!(file.message(0).unwrap().grid_shape(), (2, 2));
+        assert_eq!(file.message(1).unwrap().grid_shape(), (2, 2));
+        assert_eq!(file.message(2).unwrap().grid_shape(), (3, 2));
+        assert_eq!(
+            file.message(2).unwrap().read_flat_data_as_f64().unwrap(),
+            vec![9.0, 10.0, 11.0, 12.0, 13.0, 14.0]
+        );
+    }
+
+    #[test]
+    fn writes_reused_grid_multifield_message_with_bitmap() {
+        let first = simple_field(&[1.0, 2.0, 3.0, 4.0], 0, 0);
+        let second = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 2))
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[5.0, f64::NAN, 7.0, 8.0])
+            .build()
+            .unwrap();
+
+        let bytes = write_message([first, second]);
+        assert_eq!(section_numbers(&bytes), vec![1, 3, 4, 5, 7, 4, 5, 6, 7, 8]);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        assert_eq!(file.message_count(), 2);
+        let decoded = file.message(1).unwrap().read_flat_data_as_f64().unwrap();
+        assert_eq!(decoded[0], 5.0);
+        assert!(decoded[1].is_nan());
+        assert_eq!(decoded[2], 7.0);
+        assert_eq!(decoded[3], 8.0);
     }
 
     #[test]
@@ -993,6 +1072,7 @@ mod tests {
         let reference: ReferenceDump = serde_json::from_slice(&output.stdout).unwrap();
         let rust = GribFile::from_bytes(bytes).unwrap();
 
+        assert_eq!(reference.messages.len(), 2);
         assert_eq!(rust.message_count(), reference.messages.len());
         for (index, expected) in reference.messages.iter().enumerate() {
             let message = rust.message(index).unwrap();
