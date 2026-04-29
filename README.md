@@ -1,5 +1,12 @@
 # grib-rust
 
+[![grib-core crates.io](https://img.shields.io/crates/v/grib-core.svg)](https://crates.io/crates/grib-core)
+[![grib-core docs.rs](https://docs.rs/grib-core/badge.svg)](https://docs.rs/grib-core)
+[![grib-reader crates.io](https://img.shields.io/crates/v/grib-reader.svg)](https://crates.io/crates/grib-reader)
+[![grib-reader docs.rs](https://docs.rs/grib-reader/badge.svg)](https://docs.rs/grib-reader)
+[![grib-writer crates.io](https://img.shields.io/crates/v/grib-writer.svg)](https://crates.io/crates/grib-writer)
+[![grib-writer docs.rs](https://docs.rs/grib-writer/badge.svg)](https://docs.rs/grib-writer)
+
 Pure-Rust GRIB reader, writer, and shared core primitives for weather and climate data. No C libraries, no build scripts, and no unsafe beyond `memmap2`.
 
 ## Crates
