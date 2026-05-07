@@ -82,14 +82,18 @@ fn generated_grib2_field(
     grid: GridDefinition,
     values: Vec<f64>,
 ) -> grib_writer::Result<Grib2Field> {
+    let decimal_scale = decimal_scale(input);
+    let packing = if input.bool() {
+        PackingStrategy::ComplexAuto { decimal_scale }
+    } else {
+        PackingStrategy::SimpleAuto { decimal_scale }
+    };
     let mut builder = Grib2FieldBuilder::new()
         .discipline(input.u8() % 3)
         .identification(identification)
         .grid(grid)
         .product(product(input))
-        .packing(PackingStrategy::SimpleAuto {
-            decimal_scale: decimal_scale(input),
-        })
+        .packing(packing)
         .values(&values);
 
     if input.bool() {

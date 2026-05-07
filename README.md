@@ -15,7 +15,7 @@ Pure-Rust GRIB reader, writer, and shared core primitives for weather and climat
 |---|---|
 | `grib-core` | Shared GRIB data model, code tables, binary primitives, bit I/O, and validation helpers |
 | `grib-reader` | GRIB1/GRIB2 file opening, message scanning, metadata parsing, and packed data decoding |
-| `grib-writer` | GRIB1/GRIB2 field builders, simple packing, bitmap handling, and message serialization |
+| `grib-writer` | GRIB1/GRIB2 field builders, simple/complex packing, bitmap handling, and message serialization |
 
 ## Reader Usage
 
@@ -147,7 +147,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Parallel field decoding via Rayon
 - Output: caller-owned `&mut [f32]`/`&mut [f64]`, flat `Vec<f32>`/`Vec<f64>`, or `ndarray::ArrayD<f32>`/`ArrayD<f64>`
 - Memory-mapped I/O or owned byte buffers
-- Writer GRIB2 regular lat/lon fields with product template 4.0 and simple packing template 5.0
+- Writer GRIB2 regular lat/lon fields with product template 4.0, simple packing template 5.0, and complex packing template 5.2
 - Writer GRIB2 bitmap section generation from explicit masks or `NaN` values
 - Writer single-message multi-field GRIB2 output with reused grid sections
 - Writer GRIB1 regular lat/lon fields with simple packing and optional bitmap section
@@ -155,7 +155,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 ## Not Yet Supported
 
 - Non-lat/lon grid templates
-- Writer complex packing templates 5.2/5.3 and row-by-row complex packing
+- Writer GRIB2 complex packing template 5.3 spatial differencing and row-by-row complex packing
 - JPEG2000 and PNG-packed GRIB2 fields
 - GRIB1 predefined bitmaps
 
