@@ -10,8 +10,8 @@ use grib_core::binary::{
 };
 use grib_core::bit::BitWriter;
 use grib_core::{
-    DataRepresentation, FixedSurface, GridDefinition, Identification, LatLonGrid,
-    ProductDefinition, ProductDefinitionTemplate, SimplePackingParams,
+    ComplexPackingParams, DataRepresentation, FixedSurface, GridDefinition, Identification,
+    LatLonGrid, ProductDefinition, ProductDefinitionTemplate, SimplePackingParams,
 };
 
 pub use grib_core::grib1::ProductDefinition as Grib1ProductDefinition;
@@ -22,7 +22,11 @@ pub use grib_core::{Error, Result};
 pub enum PackingStrategy {
     /// Simple packing with binary scale 0 and automatic bit-width selection.
     SimpleAuto { decimal_scale: i16 },
+    /// GRIB2 complex packing template 5.2 with fixed-size general groups.
+    ComplexAuto { decimal_scale: i16 },
 }
+
+const COMPLEX_AUTO_GROUP_LEN: usize = 32;
 
 /// Order of values supplied to field builders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -124,6 +128,11 @@ impl Grib1FieldBuilder {
             PackingStrategy::SimpleAuto { decimal_scale } => {
                 product.decimal_scale = decimal_scale;
                 pack_simple_auto(&values, bitmap.as_deref(), decimal_scale)?
+            }
+            PackingStrategy::ComplexAuto { .. } => {
+                return Err(Error::Other(
+                    "GRIB1 writer does not support complex packing".into(),
+                ));
             }
         };
         product.has_grid_definition = true;
@@ -264,6 +273,9 @@ impl Grib2FieldBuilder {
         let packed = match packing {
             PackingStrategy::SimpleAuto { decimal_scale } => {
                 pack_simple_auto(&values, bitmap.as_deref(), decimal_scale)?
+            }
+            PackingStrategy::ComplexAuto { decimal_scale } => {
+                pack_complex_auto(&values, bitmap.as_deref(), decimal_scale)?
             }
         };
 
@@ -414,33 +426,7 @@ fn pack_simple_auto(
         None
     };
 
-    let decimal_factor = 10.0_f64.powi(i32::from(decimal_scale));
-    if !decimal_factor.is_finite() || decimal_factor <= 0.0 {
-        return Err(Error::Other(format!(
-            "invalid decimal scale for simple packing: {decimal_scale}"
-        )));
-    }
-
-    let quantized = values
-        .iter()
-        .zip(&present)
-        .filter_map(|(value, present)| present.then_some(*value))
-        .map(|value| {
-            if !value.is_finite() {
-                return Err(Error::Other(
-                    "present values must be finite for simple packing".into(),
-                ));
-            }
-            let scaled = value * decimal_factor;
-            if !scaled.is_finite() {
-                return Err(Error::Other(
-                    "scaled value overflow during simple packing".into(),
-                ));
-            }
-            Ok(scaled.round())
-        })
-        .collect::<Result<Vec<_>>>()?;
-
+    let quantized = quantize_present_values(values, &present, decimal_scale, "simple packing")?;
     let (reference_value, deltas) = simple_packing_deltas(&quantized)?;
     let max_delta = deltas.iter().copied().max().unwrap_or(0);
     let bits_per_value = if max_delta == 0 {
@@ -471,6 +457,116 @@ fn pack_simple_auto(
         bitmap_payload,
         data_payload: writer.into_bytes(),
     })
+}
+
+fn pack_complex_auto(
+    values: &[f64],
+    explicit_bitmap: Option<&[bool]>,
+    decimal_scale: i16,
+) -> Result<PackedField> {
+    let present = present_mask(values, explicit_bitmap)?;
+    let present_count = present.iter().filter(|present| **present).count();
+    let bitmap_payload = if present.iter().any(|present| !*present) {
+        Some(pack_bitmap(&present)?)
+    } else {
+        None
+    };
+
+    let quantized = quantize_present_values(values, &present, decimal_scale, "complex packing")?;
+    let (reference_value, deltas) = simple_packing_deltas(&quantized)?;
+    let groups = complex_groups(&deltas)?;
+    let max_group_reference = groups
+        .iter()
+        .map(|group| group.reference)
+        .max()
+        .unwrap_or(0);
+    let max_group_width = groups.iter().map(|group| group.width).max().unwrap_or(0);
+    let group_reference_bits = bits_needed(max_group_reference)?;
+    let group_width_bits = bits_needed(u64::from(max_group_width))?;
+    let group_length_reference = complex_group_length_reference(present_count)?;
+    let true_length_last_group = complex_true_length_last_group(present_count)?;
+
+    let mut writer = BitWriter::new();
+    for group in &groups {
+        writer.write(group.reference, usize::from(group_reference_bits))?;
+    }
+    writer.align_to_byte()?;
+    for group in &groups {
+        writer.write(u64::from(group.width), usize::from(group_width_bits))?;
+    }
+    writer.align_to_byte()?;
+    for group in &groups {
+        for value in &group.values {
+            writer.write(
+                value
+                    .checked_sub(group.reference)
+                    .ok_or_else(|| Error::Other("complex group value underflow".into()))?,
+                usize::from(group.width),
+            )?;
+        }
+    }
+    writer.align_to_byte()?;
+
+    let representation = DataRepresentation::ComplexPacking(ComplexPackingParams {
+        encoded_values: present_count,
+        reference_value,
+        binary_scale: 0,
+        decimal_scale,
+        group_reference_bits,
+        original_field_type: 0,
+        group_splitting_method: 1,
+        missing_value_management: 0,
+        primary_missing_substitute: u32::MAX,
+        secondary_missing_substitute: u32::MAX,
+        num_groups: groups.len(),
+        group_width_reference: 0,
+        group_width_bits,
+        group_length_reference,
+        group_length_increment: 1,
+        true_length_last_group,
+        scaled_group_length_bits: 0,
+        spatial_differencing: None,
+    });
+
+    Ok(PackedField {
+        representation,
+        bitmap_payload,
+        data_payload: writer.into_bytes(),
+    })
+}
+
+fn quantize_present_values(
+    values: &[f64],
+    present: &[bool],
+    decimal_scale: i16,
+    packing_name: &str,
+) -> Result<Vec<f64>> {
+    let decimal_factor = 10.0_f64.powi(i32::from(decimal_scale));
+    if !decimal_factor.is_finite() || decimal_factor <= 0.0 {
+        return Err(Error::Other(format!(
+            "invalid decimal scale for {packing_name}: {decimal_scale}"
+        )));
+    }
+
+    values
+        .iter()
+        .zip(present)
+        .filter_map(|(value, present)| present.then_some(*value))
+        .map(|value| {
+            if !value.is_finite() {
+                return Err(Error::Other(format!(
+                    "present values must be finite for {packing_name}"
+                )));
+            }
+            let scaled = value * decimal_factor;
+            if !scaled.is_finite() {
+                return Err(Error::Other(format!(
+                    "scaled value overflow during {packing_name}"
+                )));
+            }
+            Ok(scaled.round())
+        })
+        .collect()
 }
 
 fn reorder_field_to_grib_scan_order(
@@ -513,7 +609,7 @@ fn present_mask(values: &[f64], explicit_bitmap: Option<&[bool]>) -> Result<Vec<
                     Ok(true)
                 } else {
                     Err(Error::Other(
-                        "infinite values cannot be written as simple-packed data".into(),
+                        "infinite values cannot be written as packed data".into(),
                     ))
                 }
             })
@@ -543,6 +639,71 @@ fn simple_packing_deltas(quantized: &[f64]) -> Result<(f32, Vec<u64>)> {
     }
 
     Ok((reference_value, deltas))
+}
+
+#[derive(Debug, Clone)]
+struct ComplexGroup {
+    reference: u64,
+    width: u8,
+    values: Vec<u64>,
+}
+
+fn complex_groups(deltas: &[u64]) -> Result<Vec<ComplexGroup>> {
+    if deltas.is_empty() {
+        return Ok(vec![ComplexGroup {
+            reference: 0,
+            width: 0,
+            values: Vec::new(),
+        }]);
+    }
+
+    let group_len = complex_group_len(deltas.len());
+    let mut groups = Vec::with_capacity(deltas.len().div_ceil(group_len));
+    for chunk in deltas.chunks(group_len) {
+        let reference = chunk.iter().copied().min().unwrap_or(0);
+        let max_value = chunk.iter().copied().max().unwrap_or(reference);
+        if max_value > i64::MAX as u64 {
+            return Err(Error::Other(
+                "complex packing value exceeds i64 decoder range".into(),
+            ));
+        }
+        let width = bits_needed(max_value - reference)?;
+        groups.push(ComplexGroup {
+            reference,
+            width,
+            values: chunk.to_vec(),
+        });
+    }
+    Ok(groups)
+}
+
+fn complex_group_length_reference(value_count: usize) -> Result<u32> {
+    u32::try_from(complex_group_len(value_count))
+        .map_err(|_| Error::Other("complex group length exceeds u32".into()))
+}
+
+fn complex_true_length_last_group(value_count: usize) -> Result<u32> {
+    if value_count == 0 {
+        return Ok(0);
+    }
+
+    let group_len = complex_group_len(value_count);
+    let remainder = value_count % group_len;
+    let length = if remainder == 0 { group_len } else { remainder };
+    u32::try_from(length).map_err(|_| Error::Other("complex group length exceeds u32".into()))
+}
+
+fn complex_group_len(value_count: usize) -> usize {
+    COMPLEX_AUTO_GROUP_LEN.min(value_count)
+}
+
+fn bits_needed(value: u64) -> Result<u8> {
+    let bits = if value == 0 {
+        0
+    } else {
+        u64::BITS - value.leading_zeros()
+    };
+    u8::try_from(bits).map_err(|_| Error::Other("bit width exceeds u8".into()))
 }
 
 fn f32_not_greater_than(value: f64) -> Option<f32> {
@@ -883,10 +1044,21 @@ fn write_surface(out: &mut Vec<u8>, surface: Option<&FixedSurface>) -> Result<()
 }
 
 fn write_data_representation_section(out: &mut Vec<u8>, packed: &PackedField) -> Result<()> {
-    let DataRepresentation::SimplePacking(params) = &packed.representation else {
-        return Err(Error::UnsupportedDataTemplate(0));
-    };
+    match &packed.representation {
+        DataRepresentation::SimplePacking(params) => {
+            write_simple_data_representation_section(out, params)
+        }
+        DataRepresentation::ComplexPacking(params) => {
+            write_complex_data_representation_section(out, params)
+        }
+        DataRepresentation::Unsupported(template) => Err(Error::UnsupportedDataTemplate(*template)),
+    }
+}
 
+fn write_simple_data_representation_section(
+    out: &mut Vec<u8>,
+    params: &SimplePackingParams,
+) -> Result<()> {
     let encoded_values = u32::try_from(params.encoded_values)
         .map_err(|_| Error::Other("encoded value count exceeds u32".into()))?;
     write_u32_be(out, 21)?;
@@ -904,6 +1076,47 @@ fn write_data_representation_section(out: &mut Vec<u8>, packed: &PackedField) ->
     );
     write_u8_be(out, params.bits_per_value)?;
     write_u8_be(out, params.original_field_type)
+}
+
+fn write_complex_data_representation_section(
+    out: &mut Vec<u8>,
+    params: &ComplexPackingParams,
+) -> Result<()> {
+    if params.spatial_differencing.is_some() {
+        return Err(Error::UnsupportedDataTemplate(3));
+    }
+
+    let encoded_values = u32::try_from(params.encoded_values)
+        .map_err(|_| Error::Other("encoded value count exceeds u32".into()))?;
+    let num_groups = u32::try_from(params.num_groups)
+        .map_err(|_| Error::Other("complex group count exceeds u32".into()))?;
+
+    write_u32_be(out, 47)?;
+    write_u8_be(out, 5)?;
+    write_u32_be(out, encoded_values)?;
+    write_u16_be(out, 2)?;
+    out.extend_from_slice(&params.reference_value.to_be_bytes());
+    out.extend_from_slice(
+        &encode_wmo_i16(params.binary_scale)
+            .ok_or_else(|| Error::Other("binary scale does not fit GRIB signed i16".into()))?,
+    );
+    out.extend_from_slice(
+        &encode_wmo_i16(params.decimal_scale)
+            .ok_or_else(|| Error::Other("decimal scale does not fit GRIB signed i16".into()))?,
+    );
+    write_u8_be(out, params.group_reference_bits)?;
+    write_u8_be(out, params.original_field_type)?;
+    write_u8_be(out, params.group_splitting_method)?;
+    write_u8_be(out, params.missing_value_management)?;
+    write_u32_be(out, params.primary_missing_substitute)?;
+    write_u32_be(out, params.secondary_missing_substitute)?;
+    write_u32_be(out, num_groups)?;
+    write_u8_be(out, params.group_width_reference)?;
+    write_u8_be(out, params.group_width_bits)?;
+    write_u32_be(out, params.group_length_reference)?;
+    write_u8_be(out, params.group_length_increment)?;
+    write_u32_be(out, params.true_length_last_group)?;
+    write_u8_be(out, params.scaled_group_length_bits)
 }
 
 fn write_bitmap_section(out: &mut Vec<u8>, bitmap_payload: &[u8]) -> Result<()> {
@@ -1267,6 +1480,128 @@ mod tests {
         assert_eq!(message.grid_shape(), (2, 2));
         assert_eq!(message.forecast_time(), Some(6));
         assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+
+    #[test]
+    fn writes_complex_grib2_field_readable_by_reader() {
+        let values = (0..70)
+            .map(|index| f64::from((index * 37) % 113) - 50.0)
+            .collect::<Vec<_>>();
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid_with_shape_and_scanning_mode(35, 2, 0))
+            .product(product(0, 0))
+            .packing(PackingStrategy::ComplexAuto { decimal_scale: 0 })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        let message = file.message(0).unwrap();
+        match &message.metadata().data_representation {
+            DataRepresentation::ComplexPacking(params) => {
+                assert_eq!(params.num_groups, 3);
+                assert_eq!(params.group_splitting_method, 1);
+                assert_eq!(params.missing_value_management, 0);
+                assert_eq!(params.group_length_reference, 32);
+                assert_eq!(params.true_length_last_group, 6);
+                assert_eq!(params.spatial_differencing, None);
+            }
+            other => panic!("expected complex packing, got {other:?}"),
+        }
+        assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+
+    #[test]
+    fn writes_complex_grib2_decimal_scaled_values() {
+        let values = [1.24, 2.34, -3.46, 4.56];
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 0))
+            .packing(PackingStrategy::ComplexAuto { decimal_scale: 1 })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        let message = file.message(0).unwrap();
+        assert!(matches!(
+            &message.metadata().data_representation,
+            DataRepresentation::ComplexPacking(_)
+        ));
+        let decoded = message.read_flat_data_as_f64().unwrap();
+        for (actual, expected) in decoded.iter().zip(values) {
+            assert!((actual - expected).abs() <= 0.05);
+        }
+    }
+
+    #[test]
+    fn writes_complex_grib2_bitmap_from_nan_values() {
+        let values = [1.0, f64::NAN, 3.0, 4.0];
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 0))
+            .packing(PackingStrategy::ComplexAuto { decimal_scale: 0 })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        let bytes = write_message([field]);
+        assert_eq!(section_numbers(&bytes), vec![1, 3, 4, 5, 6, 7, 8]);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        match &message.metadata().data_representation {
+            DataRepresentation::ComplexPacking(params) => assert_eq!(params.encoded_values, 3),
+            other => panic!("expected complex packing, got {other:?}"),
+        }
+        let decoded = message.read_flat_data_as_f64().unwrap();
+        assert_eq!(decoded[0], 1.0);
+        assert!(decoded[1].is_nan());
+        assert_eq!(decoded[2], 3.0);
+        assert_eq!(decoded[3], 4.0);
+    }
+
+    #[test]
+    fn writes_all_missing_complex_grib2_bitmap_field() {
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 0))
+            .packing(PackingStrategy::ComplexAuto { decimal_scale: 0 })
+            .values(&[f64::NAN; 4])
+            .build()
+            .unwrap();
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        let message = file.message(0).unwrap();
+        match &message.metadata().data_representation {
+            DataRepresentation::ComplexPacking(params) => {
+                assert_eq!(params.encoded_values, 0);
+                assert_eq!(params.num_groups, 1);
+                assert_eq!(params.true_length_last_group, 0);
+            }
+            other => panic!("expected complex packing, got {other:?}"),
+        }
+        let decoded = message.read_flat_data_as_f64().unwrap();
+        assert!(decoded.iter().all(|value| value.is_nan()));
+    }
+
+    #[test]
+    fn rejects_complex_packing_for_grib1() {
+        let err = Grib1FieldBuilder::new()
+            .product(grib1_product())
+            .grid(grid())
+            .packing(PackingStrategy::ComplexAuto { decimal_scale: 0 })
+            .values(&[1.0, 2.0, 3.0, 4.0])
+            .build()
+            .unwrap_err();
+
+        assert!(
+            matches!(err, grib_core::Error::Other(message) if message.contains("GRIB1 writer does not support complex packing"))
+        );
     }
 
     #[test]

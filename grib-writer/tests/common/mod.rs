@@ -199,6 +199,14 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
         .values(&[1.2, 2.3, 3.4, 4.5])
         .build()
         .unwrap();
+    let complex = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(latlon_grid(4, 2, 0))
+        .product(product(0, 0))
+        .packing(PackingStrategy::ComplexAuto { decimal_scale: 1 })
+        .values(&[1.2, f64::NAN, 3.4, 4.5, -2.1, 0.0, 8.8, 9.9])
+        .build()
+        .unwrap();
 
     vec![
         (
@@ -210,6 +218,7 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
             write_grib2_message([simple_grib2_field(&[5.0, f64::NAN, 7.0, 8.0], 0, 0)]),
         ),
         ("writer-decimal.grib2", write_grib2_message([decimal])),
+        ("writer-complex.grib2", write_grib2_message([complex])),
         (
             "writer-multifield.grib2",
             write_grib2_message([
