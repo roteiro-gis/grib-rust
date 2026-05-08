@@ -12,6 +12,7 @@ use grib_core::bit::BitWriter;
 use grib_core::{
     ComplexPackingParams, DataRepresentation, FixedSurface, GridDefinition, Identification,
     LatLonGrid, ProductDefinition, ProductDefinitionTemplate, SimplePackingParams,
+    SpatialDifferencingParams,
 };
 
 pub use grib_core::grib1::ProductDefinition as Grib1ProductDefinition;
@@ -22,8 +23,20 @@ pub use grib_core::{Error, Result};
 pub enum PackingStrategy {
     /// Simple packing with binary scale 0 and automatic bit-width selection.
     SimpleAuto { decimal_scale: i16 },
-    /// GRIB2 complex packing template 5.2 with fixed-size general groups.
-    ComplexAuto { decimal_scale: i16 },
+    /// GRIB2 complex packing with fixed-size general groups.
+    ComplexAuto {
+        decimal_scale: i16,
+        spatial_differencing: Option<SpatialDifferencingOrder>,
+    },
+}
+
+/// Spatial differencing order for GRIB2 complex packing template 5.3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpatialDifferencingOrder {
+    /// First-order spatial differencing.
+    First,
+    /// Second-order spatial differencing.
+    Second,
 }
 
 const COMPLEX_AUTO_GROUP_LEN: usize = 32;
@@ -274,9 +287,15 @@ impl Grib2FieldBuilder {
             PackingStrategy::SimpleAuto { decimal_scale } => {
                 pack_simple_auto(&values, bitmap.as_deref(), decimal_scale)?
             }
-            PackingStrategy::ComplexAuto { decimal_scale } => {
-                pack_complex_auto(&values, bitmap.as_deref(), decimal_scale)?
-            }
+            PackingStrategy::ComplexAuto {
+                decimal_scale,
+                spatial_differencing,
+            } => pack_complex_auto(
+                &values,
+                bitmap.as_deref(),
+                decimal_scale,
+                spatial_differencing,
+            )?,
         };
 
         Ok(Grib2Field {
@@ -463,6 +482,7 @@ fn pack_complex_auto(
     values: &[f64],
     explicit_bitmap: Option<&[bool]>,
     decimal_scale: i16,
+    spatial_differencing: Option<SpatialDifferencingOrder>,
 ) -> Result<PackedField> {
     let present = present_mask(values, explicit_bitmap)?;
     let present_count = present.iter().filter(|present| **present).count();
@@ -474,7 +494,13 @@ fn pack_complex_auto(
 
     let quantized = quantize_present_values(values, &present, decimal_scale, "complex packing")?;
     let (reference_value, deltas) = simple_packing_deltas(&quantized)?;
-    let groups = complex_groups(&deltas)?;
+    let spatial_packing = spatial_differencing
+        .map(|order| spatially_difference_values(&deltas, order))
+        .transpose()?;
+    let packed_values = spatial_packing
+        .as_ref()
+        .map_or(deltas.as_slice(), |spatial| spatial.values.as_slice());
+    let groups = complex_groups(packed_values)?;
     let max_group_reference = groups
         .iter()
         .map(|group| group.reference)
@@ -487,6 +513,9 @@ fn pack_complex_auto(
     let true_length_last_group = complex_true_length_last_group(present_count)?;
 
     let mut writer = BitWriter::new();
+    if let Some(spatial) = &spatial_packing {
+        write_spatial_descriptors(&mut writer, spatial)?;
+    }
     for group in &groups {
         writer.write(group.reference, usize::from(group_reference_bits))?;
     }
@@ -525,7 +554,7 @@ fn pack_complex_auto(
         group_length_increment: 1,
         true_length_last_group,
         scaled_group_length_bits: 0,
-        spatial_differencing: None,
+        spatial_differencing: spatial_packing.as_ref().map(|spatial| spatial.params),
     });
 
     Ok(PackedField {
@@ -567,6 +596,228 @@ fn quantize_present_values(
             Ok(scaled.round())
         })
         .collect()
+}
+
+impl SpatialDifferencingOrder {
+    const fn grib_order(self) -> u8 {
+        match self {
+            Self::First => 1,
+            Self::Second => 2,
+        }
+    }
+
+    const fn min_values(self) -> usize {
+        match self {
+            Self::First => 1,
+            Self::Second => 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SpatialPacking {
+    params: SpatialDifferencingParams,
+    descriptors: SpatialDescriptors,
+    values: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpatialDescriptors {
+    first_value: i64,
+    second_value: Option<i64>,
+    overall_minimum: i64,
+}
+
+fn spatially_difference_values(
+    values: &[u64],
+    order: SpatialDifferencingOrder,
+) -> Result<SpatialPacking> {
+    if values.len() < order.min_values() {
+        return Err(Error::DataLengthMismatch {
+            expected: order.min_values(),
+            actual: values.len(),
+        });
+    }
+
+    let values = values
+        .iter()
+        .copied()
+        .map(|value| {
+            i64::try_from(value)
+                .map_err(|_| Error::Other("spatial differencing value exceeds i64".into()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let (descriptors, differenced) = match order {
+        SpatialDifferencingOrder::First => first_order_spatial_difference(&values)?,
+        SpatialDifferencingOrder::Second => second_order_spatial_difference(&values)?,
+    };
+    let descriptor_octets = spatial_descriptor_octets(&descriptors)?;
+
+    Ok(SpatialPacking {
+        params: SpatialDifferencingParams {
+            order: order.grib_order(),
+            descriptor_octets,
+        },
+        descriptors,
+        values: differenced,
+    })
+}
+
+fn first_order_spatial_difference(values: &[i64]) -> Result<(SpatialDescriptors, Vec<u64>)> {
+    let mut differences = Vec::with_capacity(values.len().saturating_sub(1));
+    for pair in values.windows(2) {
+        differences.push(
+            pair[1]
+                .checked_sub(pair[0])
+                .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?,
+        );
+    }
+    let overall_minimum = differences.iter().copied().min().unwrap_or(0);
+
+    let mut differenced = Vec::with_capacity(values.len());
+    differenced.push(0);
+    for difference in differences {
+        differenced.push(spatial_difference_delta(difference, overall_minimum)?);
+    }
+
+    Ok((
+        SpatialDescriptors {
+            first_value: values[0],
+            second_value: None,
+            overall_minimum,
+        },
+        differenced,
+    ))
+}
+
+fn second_order_spatial_difference(values: &[i64]) -> Result<(SpatialDescriptors, Vec<u64>)> {
+    let first_value = values[0];
+    let second_value = values[1];
+    let mut previous_difference = second_value
+        .checked_sub(first_value)
+        .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
+    let mut second_differences = Vec::with_capacity(values.len().saturating_sub(2));
+
+    for index in 2..values.len() {
+        let difference = values[index]
+            .checked_sub(values[index - 1])
+            .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
+        second_differences.push(
+            difference
+                .checked_sub(previous_difference)
+                .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?,
+        );
+        previous_difference = difference;
+    }
+
+    let overall_minimum = second_differences.iter().copied().min().unwrap_or(0);
+    let mut differenced = Vec::with_capacity(values.len());
+    differenced.push(0);
+    differenced.push(0);
+    for second_difference in second_differences {
+        differenced.push(spatial_difference_delta(
+            second_difference,
+            overall_minimum,
+        )?);
+    }
+
+    Ok((
+        SpatialDescriptors {
+            first_value,
+            second_value: Some(second_value),
+            overall_minimum,
+        },
+        differenced,
+    ))
+}
+
+fn spatial_difference_delta(value: i64, overall_minimum: i64) -> Result<u64> {
+    let delta = value
+        .checked_sub(overall_minimum)
+        .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
+    u64::try_from(delta)
+        .map_err(|_| Error::Other("spatial differencing produced negative delta".into()))
+}
+
+fn spatial_descriptor_octets(descriptors: &SpatialDescriptors) -> Result<u8> {
+    let values = [
+        Some(descriptors.first_value),
+        descriptors.second_value,
+        Some(descriptors.overall_minimum),
+    ];
+    for octets in 1..=8 {
+        if values
+            .iter()
+            .flatten()
+            .all(|value| signed_magnitude_fits(*value, octets))
+        {
+            return Ok(octets);
+        }
+    }
+
+    Err(Error::Other(
+        "spatial differencing descriptor exceeds signed-magnitude range".into(),
+    ))
+}
+
+fn signed_magnitude_fits(value: i64, octets: u8) -> bool {
+    signed_magnitude_bits(value, octets).is_ok()
+}
+
+fn write_spatial_descriptors(writer: &mut BitWriter, spatial: &SpatialPacking) -> Result<()> {
+    let bit_count = usize::from(spatial.params.descriptor_octets) * 8;
+    writer.write(
+        signed_magnitude_bits(
+            spatial.descriptors.first_value,
+            spatial.params.descriptor_octets,
+        )?,
+        bit_count,
+    )?;
+    if let Some(second_value) = spatial.descriptors.second_value {
+        writer.write(
+            signed_magnitude_bits(second_value, spatial.params.descriptor_octets)?,
+            bit_count,
+        )?;
+    }
+    writer.write(
+        signed_magnitude_bits(
+            spatial.descriptors.overall_minimum,
+            spatial.params.descriptor_octets,
+        )?,
+        bit_count,
+    )
+}
+
+fn signed_magnitude_bits(value: i64, octets: u8) -> Result<u64> {
+    let bit_count = u32::from(octets) * 8;
+    if bit_count == 0 || bit_count > u64::BITS {
+        return Err(Error::Other(
+            "spatial differencing descriptor width must be 1..=8 octets".into(),
+        ));
+    }
+    let magnitude = value
+        .checked_abs()
+        .ok_or_else(|| Error::Other("spatial differencing descriptor magnitude overflow".into()))?
+        as u64;
+    let magnitude_bits = bit_count - 1;
+    let max_magnitude = if magnitude_bits == u64::BITS {
+        u64::MAX
+    } else {
+        (1u64 << magnitude_bits) - 1
+    };
+    if magnitude > max_magnitude {
+        return Err(Error::Other(
+            "spatial differencing descriptor exceeds signed-magnitude range".into(),
+        ));
+    }
+
+    let sign_bit = if value < 0 {
+        1u64 << (bit_count - 1)
+    } else {
+        0
+    };
+    Ok(sign_bit | magnitude)
 }
 
 fn reorder_field_to_grib_scan_order(
@@ -1082,19 +1333,25 @@ fn write_complex_data_representation_section(
     out: &mut Vec<u8>,
     params: &ComplexPackingParams,
 ) -> Result<()> {
-    if params.spatial_differencing.is_some() {
-        return Err(Error::UnsupportedDataTemplate(3));
-    }
-
     let encoded_values = u32::try_from(params.encoded_values)
         .map_err(|_| Error::Other("encoded value count exceeds u32".into()))?;
     let num_groups = u32::try_from(params.num_groups)
         .map_err(|_| Error::Other("complex group count exceeds u32".into()))?;
+    let template = if params.spatial_differencing.is_some() {
+        3
+    } else {
+        2
+    };
+    let section_length = if params.spatial_differencing.is_some() {
+        49
+    } else {
+        47
+    };
 
-    write_u32_be(out, 47)?;
+    write_u32_be(out, section_length)?;
     write_u8_be(out, 5)?;
     write_u32_be(out, encoded_values)?;
-    write_u16_be(out, 2)?;
+    write_u16_be(out, template)?;
     out.extend_from_slice(&params.reference_value.to_be_bytes());
     out.extend_from_slice(
         &encode_wmo_i16(params.binary_scale)
@@ -1116,7 +1373,12 @@ fn write_complex_data_representation_section(
     write_u32_be(out, params.group_length_reference)?;
     write_u8_be(out, params.group_length_increment)?;
     write_u32_be(out, params.true_length_last_group)?;
-    write_u8_be(out, params.scaled_group_length_bits)
+    write_u8_be(out, params.scaled_group_length_bits)?;
+    if let Some(spatial) = params.spatial_differencing {
+        write_u8_be(out, spatial.order)?;
+        write_u8_be(out, spatial.descriptor_octets)?;
+    }
+    Ok(())
 }
 
 fn write_bitmap_section(out: &mut Vec<u8>, bitmap_payload: &[u8]) -> Result<()> {
@@ -1198,7 +1460,7 @@ fn validate_supported_product(product: &ProductDefinition) -> Result<()> {
 mod tests {
     use super::{
         Grib1FieldBuilder, Grib1ProductDefinition, Grib2FieldBuilder, GribWriter, PackingStrategy,
-        ValueOrder,
+        SpatialDifferencingOrder, ValueOrder,
     };
     use std::process::Command;
 
@@ -1491,7 +1753,10 @@ mod tests {
             .identification(identification())
             .grid(grid_with_shape_and_scanning_mode(35, 2, 0))
             .product(product(0, 0))
-            .packing(PackingStrategy::ComplexAuto { decimal_scale: 0 })
+            .packing(PackingStrategy::ComplexAuto {
+                decimal_scale: 0,
+                spatial_differencing: None,
+            })
             .values(&values)
             .build()
             .unwrap();
@@ -1519,7 +1784,10 @@ mod tests {
             .identification(identification())
             .grid(grid())
             .product(product(0, 0))
-            .packing(PackingStrategy::ComplexAuto { decimal_scale: 1 })
+            .packing(PackingStrategy::ComplexAuto {
+                decimal_scale: 1,
+                spatial_differencing: None,
+            })
             .values(&values)
             .build()
             .unwrap();
@@ -1543,7 +1811,10 @@ mod tests {
             .identification(identification())
             .grid(grid())
             .product(product(0, 0))
-            .packing(PackingStrategy::ComplexAuto { decimal_scale: 0 })
+            .packing(PackingStrategy::ComplexAuto {
+                decimal_scale: 0,
+                spatial_differencing: None,
+            })
             .values(&values)
             .build()
             .unwrap();
@@ -1570,7 +1841,10 @@ mod tests {
             .identification(identification())
             .grid(grid())
             .product(product(0, 0))
-            .packing(PackingStrategy::ComplexAuto { decimal_scale: 0 })
+            .packing(PackingStrategy::ComplexAuto {
+                decimal_scale: 0,
+                spatial_differencing: None,
+            })
             .values(&[f64::NAN; 4])
             .build()
             .unwrap();
@@ -1590,11 +1864,136 @@ mod tests {
     }
 
     #[test]
+    fn writes_first_order_spatial_differencing_grib2_field() {
+        let values = (0..70)
+            .map(|index| f64::from((index * index + 7 * index) % 149) - 50.0)
+            .collect::<Vec<_>>();
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid_with_shape_and_scanning_mode(35, 2, 0))
+            .product(product(0, 0))
+            .packing(PackingStrategy::ComplexAuto {
+                decimal_scale: 0,
+                spatial_differencing: Some(SpatialDifferencingOrder::First),
+            })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        let message = file.message(0).unwrap();
+        match &message.metadata().data_representation {
+            DataRepresentation::ComplexPacking(params) => {
+                let spatial = params.spatial_differencing.unwrap();
+                assert_eq!(spatial.order, 1);
+                assert!(spatial.descriptor_octets >= 1);
+                assert_eq!(params.num_groups, 3);
+            }
+            other => panic!("expected complex packing, got {other:?}"),
+        }
+        assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+
+    #[test]
+    fn writes_second_order_spatial_differencing_grib2_field() {
+        let values = (0..70)
+            .map(|index| {
+                let index = f64::from(index);
+                index * index - 12.0 * index + 25.0
+            })
+            .collect::<Vec<_>>();
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid_with_shape_and_scanning_mode(35, 2, 0))
+            .product(product(0, 0))
+            .packing(PackingStrategy::ComplexAuto {
+                decimal_scale: 0,
+                spatial_differencing: Some(SpatialDifferencingOrder::Second),
+            })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        let message = file.message(0).unwrap();
+        match &message.metadata().data_representation {
+            DataRepresentation::ComplexPacking(params) => {
+                let spatial = params.spatial_differencing.unwrap();
+                assert_eq!(spatial.order, 2);
+                assert!(spatial.descriptor_octets >= 1);
+                assert_eq!(params.num_groups, 3);
+            }
+            other => panic!("expected complex packing, got {other:?}"),
+        }
+        assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+
+    #[test]
+    fn writes_spatial_differencing_with_bitmap_missing_values() {
+        let values = [1.0, f64::NAN, 4.0, 9.0];
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 0))
+            .packing(PackingStrategy::ComplexAuto {
+                decimal_scale: 0,
+                spatial_differencing: Some(SpatialDifferencingOrder::First),
+            })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        let bytes = write_message([field]);
+        assert_eq!(section_numbers(&bytes), vec![1, 3, 4, 5, 6, 7, 8]);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        match &message.metadata().data_representation {
+            DataRepresentation::ComplexPacking(params) => {
+                assert_eq!(params.encoded_values, 3);
+                assert_eq!(params.spatial_differencing.unwrap().order, 1);
+            }
+            other => panic!("expected complex packing, got {other:?}"),
+        }
+        let decoded = message.read_flat_data_as_f64().unwrap();
+        assert_eq!(decoded[0], 1.0);
+        assert!(decoded[1].is_nan());
+        assert_eq!(decoded[2], 4.0);
+        assert_eq!(decoded[3], 9.0);
+    }
+
+    #[test]
+    fn rejects_spatial_differencing_without_enough_present_values() {
+        let err = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 0))
+            .packing(PackingStrategy::ComplexAuto {
+                decimal_scale: 0,
+                spatial_differencing: Some(SpatialDifferencingOrder::Second),
+            })
+            .values(&[1.0, f64::NAN, f64::NAN, f64::NAN])
+            .build()
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            grib_core::Error::DataLengthMismatch {
+                expected: 2,
+                actual: 1
+            }
+        ));
+    }
+
+    #[test]
     fn rejects_complex_packing_for_grib1() {
         let err = Grib1FieldBuilder::new()
             .product(grib1_product())
             .grid(grid())
-            .packing(PackingStrategy::ComplexAuto { decimal_scale: 0 })
+            .packing(PackingStrategy::ComplexAuto {
+                decimal_scale: 0,
+                spatial_differencing: None,
+            })
             .values(&[1.0, 2.0, 3.0, 4.0])
             .build()
             .unwrap_err();

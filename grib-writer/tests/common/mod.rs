@@ -11,7 +11,7 @@ use grib_core::{
 use grib_reader::GribFile;
 use grib_writer::{
     Grib1Field, Grib1FieldBuilder, Grib1ProductDefinition, Grib2Field, Grib2FieldBuilder,
-    GribWriter, PackingStrategy,
+    GribWriter, PackingStrategy, SpatialDifferencingOrder,
 };
 use serde::Deserialize;
 
@@ -199,12 +199,49 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
         .values(&[1.2, 2.3, 3.4, 4.5])
         .build()
         .unwrap();
+    let complex_values = (0..70)
+        .map(|index| f64::from((index * 37) % 113) / 10.0 - 5.0)
+        .collect::<Vec<_>>();
     let complex = Grib2FieldBuilder::new()
         .identification(identification())
-        .grid(latlon_grid(4, 2, 0))
+        .grid(latlon_grid(35, 2, 0))
         .product(product(0, 0))
-        .packing(PackingStrategy::ComplexAuto { decimal_scale: 1 })
-        .values(&[1.2, f64::NAN, 3.4, 4.5, -2.1, 0.0, 8.8, 9.9])
+        .packing(PackingStrategy::ComplexAuto {
+            decimal_scale: 1,
+            spatial_differencing: None,
+        })
+        .values(&complex_values)
+        .build()
+        .unwrap();
+    let spatial_first_values = (0..70)
+        .map(|index| f64::from((index * index + 7 * index) % 149) - 50.0)
+        .collect::<Vec<_>>();
+    let spatial_first = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(latlon_grid(35, 2, 0))
+        .product(product(0, 0))
+        .packing(PackingStrategy::ComplexAuto {
+            decimal_scale: 0,
+            spatial_differencing: Some(SpatialDifferencingOrder::First),
+        })
+        .values(&spatial_first_values)
+        .build()
+        .unwrap();
+    let spatial_second_values = (0..70)
+        .map(|index| {
+            let index = f64::from(index);
+            index * index - 12.0 * index + 25.0
+        })
+        .collect::<Vec<_>>();
+    let spatial_second = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(latlon_grid(35, 2, 0))
+        .product(product(0, 0))
+        .packing(PackingStrategy::ComplexAuto {
+            decimal_scale: 0,
+            spatial_differencing: Some(SpatialDifferencingOrder::Second),
+        })
+        .values(&spatial_second_values)
         .build()
         .unwrap();
 
@@ -219,6 +256,14 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
         ),
         ("writer-decimal.grib2", write_grib2_message([decimal])),
         ("writer-complex.grib2", write_grib2_message([complex])),
+        (
+            "writer-complex-spatial-first.grib2",
+            write_grib2_message([spatial_first]),
+        ),
+        (
+            "writer-complex-spatial-second.grib2",
+            write_grib2_message([spatial_second]),
+        ),
         (
             "writer-multifield.grib2",
             write_grib2_message([

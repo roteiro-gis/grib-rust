@@ -147,7 +147,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Parallel field decoding via Rayon
 - Output: caller-owned `&mut [f32]`/`&mut [f64]`, flat `Vec<f32>`/`Vec<f64>`, or `ndarray::ArrayD<f32>`/`ArrayD<f64>`
 - Memory-mapped I/O or owned byte buffers
-- Writer GRIB2 regular lat/lon fields with product template 4.0, simple packing template 5.0, and complex packing template 5.2
+- Writer GRIB2 regular lat/lon fields with product template 4.0, simple packing template 5.0, complex packing template 5.2, and spatial differencing template 5.3
 - Writer GRIB2 bitmap section generation from explicit masks or `NaN` values
 - Writer single-message multi-field GRIB2 output with reused grid sections
 - Writer GRIB1 regular lat/lon fields with simple packing and optional bitmap section
@@ -155,7 +155,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 ## Not Yet Supported
 
 - Non-lat/lon grid templates
-- Writer GRIB2 complex packing template 5.3 spatial differencing and row-by-row complex packing
+- Writer GRIB2 row-by-row complex packing
 - JPEG2000 and PNG-packed GRIB2 fields
 - GRIB1 predefined bitmaps
 
