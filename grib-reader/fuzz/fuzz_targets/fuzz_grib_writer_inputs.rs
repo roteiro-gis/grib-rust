@@ -8,7 +8,7 @@ use grib_core::{
 use grib_reader::GribFile;
 use grib_writer::{
     Grib1FieldBuilder, Grib1ProductDefinition, Grib2Field, Grib2FieldBuilder, GribWriter,
-    PackingStrategy,
+    PackingStrategy, SpatialDifferencingOrder,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -84,7 +84,15 @@ fn generated_grib2_field(
 ) -> grib_writer::Result<Grib2Field> {
     let decimal_scale = decimal_scale(input);
     let packing = if input.bool() {
-        PackingStrategy::ComplexAuto { decimal_scale }
+        let spatial_differencing = match input.u8() % 4 {
+            0 => Some(SpatialDifferencingOrder::First),
+            1 => Some(SpatialDifferencingOrder::Second),
+            _ => None,
+        };
+        PackingStrategy::ComplexAuto {
+            decimal_scale,
+            spatial_differencing,
+        }
     } else {
         PackingStrategy::SimpleAuto { decimal_scale }
     };
