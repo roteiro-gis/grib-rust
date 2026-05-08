@@ -4,8 +4,8 @@ use std::path::Path;
 
 use common::{
     build_grib1_bitmap_message, build_grib1_message, build_grib2_complex_packing_message,
-    build_grib2_complex_packing_message_with_missing, build_grib2_message,
-    build_grib2_multifield_message, build_grib2_spatial_differencing_message,
+    build_grib2_complex_packing_message_with_missing, build_grib2_lambert_message,
+    build_grib2_message, build_grib2_multifield_message, build_grib2_spatial_differencing_message,
     collect_parity_samples, dump_reference, helper_path, write_fixture,
 };
 use grib_reader::GribFile;
@@ -50,6 +50,7 @@ fn generated_fixtures_match_eccodes_when_configured() {
             "spatial-differencing.grib2",
             &build_grib2_spatial_differencing_message(),
         ),
+        write_fixture(dir.path(), "lambert.grib2", &build_grib2_lambert_message()),
     ];
 
     for path in fixtures {

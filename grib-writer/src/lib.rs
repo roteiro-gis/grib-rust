@@ -833,6 +833,7 @@ fn reorder_field_to_grib_scan_order(
             }
             Ok(())
         }
+        GridDefinition::LambertConformal(_) => Err(Error::UnsupportedGridTemplate(30)),
         GridDefinition::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
     }
 }
@@ -1033,6 +1034,7 @@ fn write_grib1_grid_section(out: &mut Vec<u8>, grid: &GridDefinition) -> Result<
     let GridDefinition::LatLon(grid) = grid else {
         return Err(Error::UnsupportedGridTemplate(match grid {
             GridDefinition::Unsupported(template) => *template,
+            GridDefinition::LambertConformal(_) => 30,
             GridDefinition::LatLon(_) => unreachable!(),
         }));
     };
@@ -1221,6 +1223,7 @@ fn write_grid_section(out: &mut Vec<u8>, grid: &GridDefinition) -> Result<()> {
     let GridDefinition::LatLon(grid) = grid else {
         return Err(Error::UnsupportedGridTemplate(match grid {
             GridDefinition::Unsupported(template) => *template,
+            GridDefinition::LambertConformal(_) => 30,
             GridDefinition::LatLon(_) => unreachable!(),
         }));
     };
@@ -1408,6 +1411,7 @@ fn checked_section_length(length: usize, section: u8) -> Result<u32> {
 fn checked_grid_point_count(grid: &GridDefinition) -> Result<usize> {
     match grid {
         GridDefinition::LatLon(grid) => Ok(checked_latlon_point_count(grid)? as usize),
+        GridDefinition::LambertConformal(_) => Err(Error::UnsupportedGridTemplate(30)),
         GridDefinition::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
     }
 }
@@ -1422,6 +1426,7 @@ fn checked_latlon_point_count(grid: &LatLonGrid) -> Result<u32> {
 fn validate_supported_grid(grid: &GridDefinition) -> Result<()> {
     match grid {
         GridDefinition::LatLon(grid) => validate_supported_scan_order(grid),
+        GridDefinition::LambertConformal(_) => Err(Error::UnsupportedGridTemplate(30)),
         GridDefinition::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
     }
 }

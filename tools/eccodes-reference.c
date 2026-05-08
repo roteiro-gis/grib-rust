@@ -1,6 +1,7 @@
 #include <eccodes.h>
 
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -52,6 +53,19 @@ static long get_long_or_default(
         die_codes(err, key, path);
     }
     return value;
+}
+
+static long get_grid_dimension(
+    codes_handle *handle,
+    const char *primary_key,
+    const char *fallback_key,
+    const char *path
+) {
+    long value = get_long_or_default(handle, primary_key, LONG_MIN, path);
+    if (value != LONG_MIN) {
+        return value;
+    }
+    return get_long(handle, fallback_key, path);
 }
 
 static long *get_long_array(codes_handle *handle, const char *key, size_t *len, const char *path) {
@@ -264,8 +278,8 @@ static decode_totals decode_file(const char *path, int emit_json) {
         long hour = get_long(handle, "hour", path);
         long minute = get_long(handle, "minute", path);
         long second = get_long(handle, "second", path);
-        long ni = get_long(handle, "Ni", path);
-        long nj = get_long(handle, "Nj", path);
+        long ni = get_grid_dimension(handle, "Ni", "Nx", path);
+        long nj = get_grid_dimension(handle, "Nj", "Ny", path);
         char name[256];
         get_string(handle, "name", name, sizeof(name), path);
 

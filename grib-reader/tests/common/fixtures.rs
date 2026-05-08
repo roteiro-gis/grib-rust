@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use grib_core::binary::encode_wmo_i32;
+
 pub fn build_grib2_message(values: &[u8]) -> Vec<u8> {
     build_grib2_message_with_forecast(values, 0)
 }
@@ -73,6 +75,116 @@ pub fn build_grib2_complex_packing_message_with_missing() -> Vec<u8> {
 
 pub fn build_grib2_spatial_differencing_message() -> Vec<u8> {
     SPATIAL_DIFFERENCING_MESSAGE.to_vec()
+}
+
+pub fn build_grib2_lambert_message() -> Vec<u8> {
+    build_grib2_lambert_message_with_scanning_mode(0, &[1, 2, 3, 4, 5, 6])
+}
+
+pub fn build_grib2_lambert_alternating_message() -> Vec<u8> {
+    build_grib2_lambert_message_with_scanning_mode(0b0001_0000, &[1, 2, 3, 6, 5, 4])
+}
+
+fn build_grib2_lambert_message_with_scanning_mode(scanning_mode: u8, values: &[u8]) -> Vec<u8> {
+    let sections = [
+        build_identification_section(),
+        build_lambert_grid_section(scanning_mode),
+        build_product_section(),
+        build_simple_representation_section(values.len(), 8),
+        build_data_section(values),
+    ];
+    assemble_grib2_message(&sections)
+}
+
+fn build_identification_section() -> Vec<u8> {
+    let mut section = vec![0u8; 21];
+    section[..4].copy_from_slice(&21u32.to_be_bytes());
+    section[4] = 1;
+    section[5..7].copy_from_slice(&7u16.to_be_bytes());
+    section[7..9].copy_from_slice(&0u16.to_be_bytes());
+    section[9] = 35;
+    section[10] = 1;
+    section[11] = 1;
+    section[12..14].copy_from_slice(&2026u16.to_be_bytes());
+    section[14] = 3;
+    section[15] = 20;
+    section[16] = 12;
+    section[19] = 0;
+    section[20] = 1;
+    section
+}
+
+fn build_lambert_grid_section(scanning_mode: u8) -> Vec<u8> {
+    let mut section = vec![0u8; 81];
+    section[..4].copy_from_slice(&81u32.to_be_bytes());
+    section[4] = 3;
+    section[6..10].copy_from_slice(&6u32.to_be_bytes());
+    section[12..14].copy_from_slice(&30u16.to_be_bytes());
+    section[14] = 1;
+    section[16..20].copy_from_slice(&6_371_200u32.to_be_bytes());
+    section[30..34].copy_from_slice(&3u32.to_be_bytes());
+    section[34..38].copy_from_slice(&2u32.to_be_bytes());
+    section[38..42].copy_from_slice(&encode_wmo_i32(12_190_000).unwrap());
+    section[42..46].copy_from_slice(&226_541_000u32.to_be_bytes());
+    section[46] = 0x08;
+    section[47..51].copy_from_slice(&encode_wmo_i32(25_000_000).unwrap());
+    section[51..55].copy_from_slice(&265_000_000u32.to_be_bytes());
+    section[55..59].copy_from_slice(&2_539_703u32.to_be_bytes());
+    section[59..63].copy_from_slice(&2_539_703u32.to_be_bytes());
+    section[64] = scanning_mode;
+    section[65..69].copy_from_slice(&encode_wmo_i32(25_000_000).unwrap());
+    section[69..73].copy_from_slice(&encode_wmo_i32(25_000_000).unwrap());
+    section[73..77].copy_from_slice(&encode_wmo_i32(-90_000_000).unwrap());
+    section
+}
+
+fn build_product_section() -> Vec<u8> {
+    let mut section = vec![0u8; 34];
+    section[..4].copy_from_slice(&34u32.to_be_bytes());
+    section[4] = 4;
+    section[7..9].copy_from_slice(&0u16.to_be_bytes());
+    section[9] = 0;
+    section[10] = 0;
+    section[11] = 2;
+    section[17] = 1;
+    section[22] = 103;
+    section[24..28].copy_from_slice(&850u32.to_be_bytes());
+    section[28] = 255;
+    section
+}
+
+fn build_simple_representation_section(encoded_values: usize, bits_per_value: u8) -> Vec<u8> {
+    let mut section = vec![0u8; 21];
+    section[..4].copy_from_slice(&21u32.to_be_bytes());
+    section[4] = 5;
+    section[5..9].copy_from_slice(&(encoded_values as u32).to_be_bytes());
+    section[9..11].copy_from_slice(&0u16.to_be_bytes());
+    section[11..15].copy_from_slice(&0f32.to_be_bytes());
+    section[19] = bits_per_value;
+    section
+}
+
+fn build_data_section(payload: &[u8]) -> Vec<u8> {
+    let mut section = vec![0u8; payload.len() + 5];
+    section[..4].copy_from_slice(&((payload.len() + 5) as u32).to_be_bytes());
+    section[4] = 7;
+    section[5..].copy_from_slice(payload);
+    section
+}
+
+fn assemble_grib2_message(sections: &[Vec<u8>]) -> Vec<u8> {
+    let total_len = 16 + sections.iter().map(Vec::len).sum::<usize>() + 4;
+    let mut message = Vec::new();
+    message.extend_from_slice(b"GRIB");
+    message.extend_from_slice(&[0, 0]);
+    message.push(0);
+    message.push(2);
+    message.extend_from_slice(&(total_len as u64).to_be_bytes());
+    for section in sections {
+        message.extend_from_slice(section);
+    }
+    message.extend_from_slice(b"7777");
+    message
 }
 
 const MINIMAL_GRIB2: &[u8] = include_bytes!("../corpus/bootstrap/minimal.grib2");

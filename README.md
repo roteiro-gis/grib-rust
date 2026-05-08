@@ -137,6 +137,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - GRIB1 and GRIB2 message scanning with `"GRIB"`/`"7777"` boundary detection
 - Logical field indexing for multi-field GRIB2 messages
 - Regular latitude/longitude grids for GRIB1 and GRIB2
+- Reader GRIB2 Lambert conformal grid template 3.30 metadata and flat data decode
 - Reader simple packing for GRIB1 and GRIB2
 - GRIB2 complex packing with general group splitting, including spatial differencing
 - WMO parameter table lookups (Code Table 4.2)
@@ -154,7 +155,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 
 ## Not Yet Supported
 
-- Non-lat/lon grid templates
+- Additional non-lat/lon grid templates and projected coordinate generation
 - Writer GRIB2 row-by-row complex packing
 - JPEG2000 and PNG-packed GRIB2 fields
 - GRIB1 predefined bitmaps
