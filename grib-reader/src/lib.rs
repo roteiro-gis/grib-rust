@@ -1,8 +1,9 @@
 //! Pure-Rust GRIB file reader.
 //!
 //! The current implementation supports the production-critical baseline for both
-//! GRIB1 and GRIB2: regular latitude/longitude grids, simple packing, and
-//! GRIB2 complex packing with general group splitting.
+//! GRIB1 and GRIB2: regular latitude/longitude grids, GRIB2 Lambert conformal
+//! metadata and flat decode, simple packing, and GRIB2 complex packing with
+//! general group splitting.
 //!
 //! # Example
 //!
@@ -47,7 +48,7 @@ pub use data::{
 };
 pub use error::{Error, Result};
 pub use grib1::{BinaryDataSection, GridDescription, ProductDefinition as Grib1ProductDefinition};
-pub use grid::{GridDefinition, LatLonGrid};
+pub use grid::{GridDefinition, LambertConformalGrid, LatLonGrid};
 pub use metadata::{ForecastTimeUnit, Parameter, ReferenceTime};
 pub use product::{
     AnalysisOrForecastTemplate, FixedSurface, Identification, ProductDefinition,
@@ -339,6 +340,7 @@ impl<'a> Message<'a> {
     pub fn latitudes(&self) -> Option<Vec<f64>> {
         match &self.metadata.grid {
             GridDefinition::LatLon(grid) => Some(grid.latitudes()),
+            GridDefinition::LambertConformal(_) => None,
             GridDefinition::Unsupported(_) => None,
         }
     }
@@ -346,17 +348,13 @@ impl<'a> Message<'a> {
     pub fn longitudes(&self) -> Option<Vec<f64>> {
         match &self.metadata.grid {
             GridDefinition::LatLon(grid) => Some(grid.longitudes()),
+            GridDefinition::LambertConformal(_) => None,
             GridDefinition::Unsupported(_) => None,
         }
     }
 
     pub fn decode_into<T: DecodeSample>(&self, out: &mut [T]) -> Result<()> {
-        let grid = match &self.metadata.grid {
-            GridDefinition::LatLon(grid) => grid,
-            GridDefinition::Unsupported(template) => {
-                return Err(Error::UnsupportedGridTemplate(*template));
-            }
-        };
+        self.metadata.grid.validate_supported_scan_order()?;
 
         match self.decode_plan {
             DecodePlan::Grib2(field) => {
@@ -395,7 +393,7 @@ impl<'a> Message<'a> {
             }
         }
 
-        grid.reorder_for_ndarray_in_place(out)
+        self.metadata.grid.reorder_for_ndarray_in_place(out)
     }
 
     pub fn read_flat_data_as_f64(&self) -> Result<Vec<f64>> {

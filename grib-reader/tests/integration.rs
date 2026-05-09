@@ -4,11 +4,11 @@ use std::io::Write;
 
 use common::{
     build_grib1_message, build_grib1_message_with_bitmap, build_grib2_complex_packing_message,
-    build_grib2_complex_packing_message_with_missing, build_grib2_message,
-    build_grib2_message_with_forecast, build_grib2_multifield_message,
-    build_grib2_spatial_differencing_message,
+    build_grib2_complex_packing_message_with_missing, build_grib2_lambert_alternating_message,
+    build_grib2_lambert_message, build_grib2_message, build_grib2_message_with_forecast,
+    build_grib2_multifield_message, build_grib2_spatial_differencing_message,
 };
-use grib_reader::{Error, ForecastTimeUnit, GribFile, OpenOptions};
+use grib_reader::{Error, ForecastTimeUnit, GribFile, GridDefinition, OpenOptions};
 
 #[test]
 fn open_grib2_from_file_and_decode() {
@@ -84,6 +84,56 @@ fn decode_into_reuses_caller_buffers_for_f32_and_f64() {
     let mut as_f64 = [0.0_f64; 4];
     field.decode_into(&mut as_f64).unwrap();
     assert_eq!(as_f64, [1.0, 2.0, 3.0, 4.0]);
+}
+
+#[test]
+fn open_grib2_lambert_conformal_field_and_decode_flat_data() {
+    let opened = GribFile::from_bytes(build_grib2_lambert_message()).unwrap();
+    let field = opened.message(0).unwrap();
+
+    assert_eq!(field.grid_shape(), (3, 2));
+    assert_eq!(field.latitudes(), None);
+    assert_eq!(field.longitudes(), None);
+    match field.grid_definition() {
+        GridDefinition::LambertConformal(grid) => {
+            assert_eq!(grid.number_of_points, 6);
+            assert_eq!(grid.shape_of_earth, 1);
+            assert_eq!(grid.scaled_value_radius, 6_371_200);
+            assert_eq!(grid.nx, 3);
+            assert_eq!(grid.ny, 2);
+            assert_eq!(grid.lat_first, 12_190_000);
+            assert_eq!(grid.lon_first, 226_541_000);
+            assert_eq!(grid.lat_d, 25_000_000);
+            assert_eq!(grid.lon_v, 265_000_000);
+            assert_eq!(grid.dx, 2_539_703);
+            assert_eq!(grid.dy, 2_539_703);
+            assert_eq!(grid.latin1, 25_000_000);
+            assert_eq!(grid.latin2, 25_000_000);
+        }
+        other => panic!("expected Lambert conformal grid, got {other:?}"),
+    }
+
+    assert_eq!(
+        field.read_flat_data_as_f64().unwrap(),
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    );
+    let array = field.read_data_as_f64().unwrap();
+    assert_eq!(array.shape(), &[2, 3]);
+    assert_eq!(
+        array.iter().copied().collect::<Vec<_>>(),
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    );
+}
+
+#[test]
+fn open_grib2_lambert_conformal_normalizes_alternating_scan_rows() {
+    let opened = GribFile::from_bytes(build_grib2_lambert_alternating_message()).unwrap();
+    let field = opened.message(0).unwrap();
+
+    assert_eq!(
+        field.read_flat_data_as_f64().unwrap(),
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    );
 }
 
 #[test]

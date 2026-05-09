@@ -17,7 +17,7 @@ pub use data::{
     ComplexPackingParams, DataRepresentation, SimplePackingParams, SpatialDifferencingParams,
 };
 pub use error::{Error, Result};
-pub use grid::{GridDefinition, LatLonGrid};
+pub use grid::{GridDefinition, LambertConformalGrid, LatLonGrid};
 pub use metadata::{ForecastTimeUnit, Parameter, ReferenceTime};
 pub use product::{
     AnalysisOrForecastTemplate, FixedSurface, Identification, ProductDefinition,
