@@ -4,7 +4,13 @@ use crate::error::{Error, Result};
 use crate::util::grib_i32;
 
 /// Grid definition extracted from Section 3.
+///
+/// This enum is non-exhaustive because GRIB grid templates are open-ended:
+/// WMO can add standard templates and centers can use local templates. Prefer
+/// the query helpers on this type for common behavior, or keep a wildcard arm
+/// when matching specific grid families.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum GridDefinition {
     /// Template 3.0: Regular latitude/longitude (equidistant cylindrical).
     LatLon(LatLonGrid),
@@ -57,6 +63,39 @@ pub struct LambertConformalGrid {
 }
 
 impl GridDefinition {
+    /// GRIB2 grid definition template number for typed templates.
+    ///
+    /// `Unsupported` stores the unhandled template number from the source
+    /// message for diagnostics.
+    pub fn template_number(&self) -> u16 {
+        match self {
+            Self::LatLon(_) => 0,
+            Self::LambertConformal(_) => 30,
+            Self::Unsupported(template) => *template,
+        }
+    }
+
+    pub fn as_lat_lon(&self) -> Option<&LatLonGrid> {
+        match self {
+            Self::LatLon(grid) => Some(grid),
+            _ => None,
+        }
+    }
+
+    pub fn as_lambert_conformal(&self) -> Option<&LambertConformalGrid> {
+        match self {
+            Self::LambertConformal(grid) => Some(grid),
+            _ => None,
+        }
+    }
+
+    pub fn unsupported_template(&self) -> Option<u16> {
+        match self {
+            Self::Unsupported(template) => Some(*template),
+            _ => None,
+        }
+    }
+
     pub fn shape(&self) -> (usize, usize) {
         match self {
             Self::LatLon(g) => (g.ni as usize, g.nj as usize),
@@ -352,6 +391,10 @@ mod tests {
 
         assert_eq!(grid.shape(), (3, 2));
         assert_eq!(grid.ndarray_shape(), vec![2, 3]);
+        assert_eq!(grid.template_number(), 0);
+        assert!(grid.as_lat_lon().is_some());
+        assert!(grid.as_lambert_conformal().is_none());
+        assert_eq!(grid.unsupported_template(), None);
         match grid {
             GridDefinition::LatLon(ref latlon) => {
                 assert_eq!(latlon.longitudes(), vec![-120.0, -119.0, -118.0]);
@@ -369,6 +412,10 @@ mod tests {
         assert_eq!(grid.shape(), (3, 2));
         assert_eq!(grid.ndarray_shape(), vec![2, 3]);
         assert_eq!(grid.num_points(), 6);
+        assert_eq!(grid.template_number(), 30);
+        assert!(grid.as_lat_lon().is_none());
+        assert!(grid.as_lambert_conformal().is_some());
+        assert_eq!(grid.unsupported_template(), None);
         match grid {
             GridDefinition::LambertConformal(lambert) => {
                 assert_eq!(lambert.number_of_points, 6);
@@ -392,6 +439,16 @@ mod tests {
             }
             other => panic!("expected Lambert conformal grid, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn reports_unsupported_template_helpers() {
+        let grid = GridDefinition::Unsupported(3_276);
+
+        assert_eq!(grid.template_number(), 3_276);
+        assert!(grid.as_lat_lon().is_none());
+        assert!(grid.as_lambert_conformal().is_none());
+        assert_eq!(grid.unsupported_template(), Some(3_276));
     }
 
     #[test]

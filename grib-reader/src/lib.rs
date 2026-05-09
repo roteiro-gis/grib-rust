@@ -338,19 +338,11 @@ impl<'a> Message<'a> {
     }
 
     pub fn latitudes(&self) -> Option<Vec<f64>> {
-        match &self.metadata.grid {
-            GridDefinition::LatLon(grid) => Some(grid.latitudes()),
-            GridDefinition::LambertConformal(_) => None,
-            GridDefinition::Unsupported(_) => None,
-        }
+        self.metadata.grid.as_lat_lon().map(LatLonGrid::latitudes)
     }
 
     pub fn longitudes(&self) -> Option<Vec<f64>> {
-        match &self.metadata.grid {
-            GridDefinition::LatLon(grid) => Some(grid.longitudes()),
-            GridDefinition::LambertConformal(_) => None,
-            GridDefinition::Unsupported(_) => None,
-        }
+        self.metadata.grid.as_lat_lon().map(LatLonGrid::longitudes)
     }
 
     pub fn decode_into<T: DecodeSample>(&self, out: &mut [T]) -> Result<()> {

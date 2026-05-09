@@ -164,6 +164,14 @@ Unsupported cases fail explicitly with typed errors.
 Calendar-dependent forecast units such as months and years are exposed through
 raw metadata but currently return `None` from `valid_time()`.
 
+## API Compatibility
+
+The workspace is pre-1.0. `GridDefinition` is intentionally `#[non_exhaustive]`
+because GRIB grid templates are open-ended: WMO can add templates and producers
+can use center-specific local templates. Downstream code should prefer
+`GridDefinition` query helpers for common behavior or include a wildcard arm
+when matching specific grid families.
+
 ## Feature flags
 
 | Flag | Default | Description |
@@ -199,13 +207,13 @@ git merge <release-branch>
 
 cargo package --workspace --locked
 cargo publish -p grib-core --dry-run --locked
-cargo publish -p grib-reader --dry-run --locked
 cargo publish -p grib-core --locked
+cargo publish -p grib-reader --dry-run --locked
 cargo publish -p grib-reader --locked
 cargo publish -p grib-writer --dry-run --locked
 cargo publish -p grib-writer --locked
 
-git tag v<version>
+git tag -a v<version> -m "v<version>"
 git push origin main
 git push origin v<version>
 ```
@@ -222,7 +230,7 @@ git push origin v<version>
 - `./scripts/run-reference-parity.sh` runs the Dockerized ecCodes parity suite.
 - `grib-writer` has a versioned dev-dependency on `grib-reader` for local
   validation tests and benchmarks, so dry-run and publish it after
-  `grib-reader` v0.3.0 is visible in the crates.io index.
+  `grib-reader` v0.4.0 is visible in the crates.io index.
 - For reference comparisons and current benchmark results against ecCodes, see
   [docs/benchmark-report.md](docs/benchmark-report.md). Re-run the benchmark
   scripts after corpus changes before using those numbers as current throughput
