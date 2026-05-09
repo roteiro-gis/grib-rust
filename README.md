@@ -166,10 +166,11 @@ raw metadata but currently return `None` from `valid_time()`.
 
 ## API Compatibility
 
-The workspace is pre-1.0. `GridDefinition` may gain new variants as additional
-GRIB grid templates are promoted from unsupported diagnostics into typed reader
-metadata. Downstream exhaustive matches should keep a wildcard arm or update
-when adopting a new minor release.
+The workspace is pre-1.0. `GridDefinition` is intentionally `#[non_exhaustive]`
+because GRIB grid templates are open-ended: WMO can add templates and producers
+can use center-specific local templates. Downstream code should prefer
+`GridDefinition` query helpers for common behavior or include a wildcard arm
+when matching specific grid families.
 
 ## Feature flags
 

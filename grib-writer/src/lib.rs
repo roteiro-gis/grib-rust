@@ -825,16 +825,14 @@ fn reorder_field_to_grib_scan_order(
     values: &mut [f64],
     bitmap: Option<&mut [bool]>,
 ) -> Result<()> {
-    match grid {
-        GridDefinition::LatLon(grid) => {
-            grid.reorder_for_ndarray_in_place(values)?;
-            if let Some(bitmap) = bitmap {
-                grid.reorder_for_ndarray_in_place(bitmap)?;
-            }
-            Ok(())
+    if let Some(grid) = grid.as_lat_lon() {
+        grid.reorder_for_ndarray_in_place(values)?;
+        if let Some(bitmap) = bitmap {
+            grid.reorder_for_ndarray_in_place(bitmap)?;
         }
-        GridDefinition::LambertConformal(_) => Err(Error::UnsupportedGridTemplate(30)),
-        GridDefinition::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
+        Ok(())
+    } else {
+        Err(Error::UnsupportedGridTemplate(grid.template_number()))
     }
 }
 
@@ -1031,12 +1029,8 @@ fn write_grib1_product_section(out: &mut Vec<u8>, product: &Grib1ProductDefiniti
 }
 
 fn write_grib1_grid_section(out: &mut Vec<u8>, grid: &GridDefinition) -> Result<()> {
-    let GridDefinition::LatLon(grid) = grid else {
-        return Err(Error::UnsupportedGridTemplate(match grid {
-            GridDefinition::Unsupported(template) => *template,
-            GridDefinition::LambertConformal(_) => 30,
-            GridDefinition::LatLon(_) => unreachable!(),
-        }));
+    let Some(grid) = grid.as_lat_lon() else {
+        return Err(Error::UnsupportedGridTemplate(grid.template_number()));
     };
 
     write_u24_be(out, 32)?;
@@ -1220,12 +1214,8 @@ fn write_identification_section(out: &mut Vec<u8>, identification: &Identificati
 }
 
 fn write_grid_section(out: &mut Vec<u8>, grid: &GridDefinition) -> Result<()> {
-    let GridDefinition::LatLon(grid) = grid else {
-        return Err(Error::UnsupportedGridTemplate(match grid {
-            GridDefinition::Unsupported(template) => *template,
-            GridDefinition::LambertConformal(_) => 30,
-            GridDefinition::LatLon(_) => unreachable!(),
-        }));
+    let Some(grid) = grid.as_lat_lon() else {
+        return Err(Error::UnsupportedGridTemplate(grid.template_number()));
     };
 
     let mut section = vec![0u8; 72];
@@ -1409,10 +1399,10 @@ fn checked_section_length(length: usize, section: u8) -> Result<u32> {
 }
 
 fn checked_grid_point_count(grid: &GridDefinition) -> Result<usize> {
-    match grid {
-        GridDefinition::LatLon(grid) => Ok(checked_latlon_point_count(grid)? as usize),
-        GridDefinition::LambertConformal(_) => Err(Error::UnsupportedGridTemplate(30)),
-        GridDefinition::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
+    if let Some(grid) = grid.as_lat_lon() {
+        Ok(checked_latlon_point_count(grid)? as usize)
+    } else {
+        Err(Error::UnsupportedGridTemplate(grid.template_number()))
     }
 }
 
@@ -1424,10 +1414,10 @@ fn checked_latlon_point_count(grid: &LatLonGrid) -> Result<u32> {
 }
 
 fn validate_supported_grid(grid: &GridDefinition) -> Result<()> {
-    match grid {
-        GridDefinition::LatLon(grid) => validate_supported_scan_order(grid),
-        GridDefinition::LambertConformal(_) => Err(Error::UnsupportedGridTemplate(30)),
-        GridDefinition::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
+    if let Some(grid) = grid.as_lat_lon() {
+        validate_supported_scan_order(grid)
+    } else {
+        Err(Error::UnsupportedGridTemplate(grid.template_number()))
     }
 }
 
@@ -1440,10 +1430,10 @@ fn validate_supported_scan_order(grid: &LatLonGrid) -> Result<()> {
 }
 
 fn validate_supported_grib1_grid(grid: &GridDefinition) -> Result<()> {
-    validate_supported_grid(grid)?;
-    let GridDefinition::LatLon(grid) = grid else {
-        return Ok(());
+    let Some(grid) = grid.as_lat_lon() else {
+        return Err(Error::UnsupportedGridTemplate(grid.template_number()));
     };
+    validate_supported_scan_order(grid)?;
     checked_grib1_grid_dimension(grid.ni, "Ni")?;
     checked_grib1_grid_dimension(grid.nj, "Nj")?;
     checked_grib1_increment(grid.di, "i direction increment")?;
