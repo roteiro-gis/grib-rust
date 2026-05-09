@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use grib_reader::GribFile;
+use grib_reader::{GribFile, GridDefinition};
 
 #[test]
 fn bootstrap_corpus_decodes() {
@@ -24,6 +24,35 @@ fn interop_corpus_decodes_when_present() {
     for path in files {
         assert_sample_decodes(&path);
     }
+}
+
+#[test]
+fn hrrr_lambert_interop_sample_has_expected_grid() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/corpus/interop/samples/noaa-hrrr-conus-lambert-refc.grib2");
+    let bytes =
+        fs::read(&path).unwrap_or_else(|err| panic!("failed reading {}: {err}", path.display()));
+    let file = GribFile::from_bytes(bytes)
+        .unwrap_or_else(|err| panic!("failed opening {}: {err}", path.display()));
+    let message = file.message(0).unwrap();
+
+    assert_eq!(message.grid_shape(), (1799, 1059));
+    match message.grid_definition() {
+        GridDefinition::LambertConformal(grid) => {
+            assert_eq!(grid.number_of_points, 1_905_141);
+            assert_eq!(grid.nx, 1799);
+            assert_eq!(grid.ny, 1059);
+            assert_eq!(grid.scanning_mode, 64);
+            assert_eq!(grid.dx, 3_000_000);
+            assert_eq!(grid.dy, 3_000_000);
+        }
+        other => panic!("expected Lambert conformal grid, got {other:?}"),
+    }
+
+    assert_eq!(
+        message.read_flat_data_as_f64().unwrap().len(),
+        message.grid_definition().num_points()
+    );
 }
 
 fn assert_sample_decodes(path: &Path) {

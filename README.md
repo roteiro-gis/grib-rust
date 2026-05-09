@@ -164,6 +164,13 @@ Unsupported cases fail explicitly with typed errors.
 Calendar-dependent forecast units such as months and years are exposed through
 raw metadata but currently return `None` from `valid_time()`.
 
+## API Compatibility
+
+The workspace is pre-1.0. `GridDefinition` may gain new variants as additional
+GRIB grid templates are promoted from unsupported diagnostics into typed reader
+metadata. Downstream exhaustive matches should keep a wildcard arm or update
+when adopting a new minor release.
+
 ## Feature flags
 
 | Flag | Default | Description |
