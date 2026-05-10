@@ -7,7 +7,7 @@
 [![grib-writer crates.io](https://img.shields.io/crates/v/grib-writer.svg)](https://crates.io/crates/grib-writer)
 [![grib-writer docs.rs](https://docs.rs/grib-writer/badge.svg)](https://docs.rs/grib-writer)
 
-Pure-Rust GRIB reader, writer, and shared core primitives for weather and climate data. No C libraries, no build scripts, and no unsafe beyond `memmap2`.
+Rust GRIB reader, writer, and shared core primitives for weather and climate data. The default build has no C libraries, no build scripts, and no unsafe in crate code beyond `memmap2`; optional GRIB2 image-packing codecs are behind feature flags.
 
 ## Crates
 
@@ -140,6 +140,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Reader GRIB2 Lambert conformal grid template 3.30 metadata and flat data decode
 - Reader simple packing for GRIB1 and GRIB2
 - GRIB2 complex packing with general group splitting, including spatial differencing
+- Feature-gated reader GRIB2 JPEG2000 template 5.40 and PNG template 5.41 packed data decode
 - WMO parameter table lookups (Code Table 4.2)
 - Typed metadata access for reference time, parameter identity, product metadata, grid geometry, and lat/lon coordinates
 - Forecast valid-time helpers for supported fixed-width GRIB1/GRIB2 time units
@@ -157,7 +158,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 
 - Additional non-lat/lon grid templates and projected coordinate generation
 - Writer GRIB2 row-by-row complex packing
-- JPEG2000 and PNG-packed GRIB2 fields
+- Writer JPEG2000 and PNG-packed GRIB2 fields
 - GRIB1 predefined bitmaps
 
 Unsupported cases fail explicitly with typed errors.
@@ -177,6 +178,9 @@ when matching specific grid families.
 | Flag | Default | Description |
 |---|---|---|
 | `rayon` | yes | Parallel field decoding |
+| `jpeg2000` | no | GRIB2 template 5.40 JPEG2000 packed-data decode via `jpeg2k`/OpenJPEG |
+| `png` | no | GRIB2 template 5.41 PNG packed-data decode |
+| `codecs` | no | Enables both `jpeg2000` and `png` |
 
 ## Testing
 

@@ -3,7 +3,8 @@
 use crate::error::{Error, Result};
 use grib_core::bit::{read_bit, BitReader};
 pub use grib_core::data::{
-    ComplexPackingParams, DataRepresentation, SimplePackingParams, SpatialDifferencingParams,
+    ComplexPackingParams, DataRepresentation, ImagePackingParams, Jpeg2000PackingParams,
+    PngPackingParams, SimplePackingParams, SpatialDifferencingParams,
 };
 
 /// Numeric target type for decoded field values.
@@ -113,6 +114,8 @@ pub(crate) fn decode_payload_into<T: DecodeSample>(
     let expected_values = match representation {
         DataRepresentation::SimplePacking(params) => params.encoded_values,
         DataRepresentation::ComplexPacking(params) => params.encoded_values,
+        DataRepresentation::Jpeg2000Packing(params) => params.packing.encoded_values,
+        DataRepresentation::PngPacking(params) => params.packing.encoded_values,
         DataRepresentation::Unsupported(template) => {
             return Err(Error::UnsupportedDataTemplate(*template));
         }
@@ -143,6 +146,12 @@ pub(crate) fn decode_payload_into<T: DecodeSample>(
         }
         DataRepresentation::ComplexPacking(params) => {
             unpack_complex_into(payload, params, &mut output)?
+        }
+        DataRepresentation::Jpeg2000Packing(params) => {
+            unpack_jpeg2000_into(payload, params, expected_values, &mut output)?
+        }
+        DataRepresentation::PngPacking(params) => {
+            unpack_png_into(payload, params, expected_values, &mut output)?
         }
         DataRepresentation::Unsupported(_) => unreachable!(),
     }
@@ -259,6 +268,310 @@ fn unpack_simple_into<T: DecodeSample>(
     }
 
     Ok(())
+}
+
+#[cfg(feature = "jpeg2000")]
+fn unpack_jpeg2000_into<T: DecodeSample>(
+    data_bytes: &[u8],
+    params: &Jpeg2000PackingParams,
+    num_values: usize,
+    output: &mut OutputCursor<'_, T>,
+) -> Result<()> {
+    validate_jpeg2000_bits(params.packing.bits_per_value)?;
+
+    let image = jpeg2k::Image::from_bytes(data_bytes)
+        .map_err(|err| Error::Other(format!("JPEG 2000 decode failed: {err}")))?;
+    if image.num_components() != 1 {
+        return Err(Error::Other(format!(
+            "JPEG 2000 GRIB packing requires one component, got {}",
+            image.num_components()
+        )));
+    }
+
+    let component = image
+        .components()
+        .first()
+        .ok_or_else(|| Error::Other("JPEG 2000 image has no components".into()))?;
+    if component.is_signed() {
+        return Err(Error::Other(
+            "JPEG 2000 GRIB packing requires unsigned component data".into(),
+        ));
+    }
+    if component.precision() > u32::from(params.packing.bits_per_value) {
+        return Err(Error::Other(format!(
+            "JPEG 2000 component precision {} exceeds GRIB bits-per-value {}",
+            component.precision(),
+            params.packing.bits_per_value
+        )));
+    }
+
+    let sample_count = image_sample_count(component.width(), component.height())?;
+    if sample_count != num_values {
+        return Err(Error::DataLengthMismatch {
+            expected: num_values,
+            actual: sample_count,
+        });
+    }
+
+    for &sample in component.data() {
+        let raw = jpeg2000_raw_value(sample, params.packing.bits_per_value)?;
+        push_image_value(output, &params.packing, raw)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(not(feature = "jpeg2000"))]
+fn unpack_jpeg2000_into<T: DecodeSample>(
+    _data_bytes: &[u8],
+    _params: &Jpeg2000PackingParams,
+    _num_values: usize,
+    _output: &mut OutputCursor<'_, T>,
+) -> Result<()> {
+    Err(Error::UnsupportedDataTemplate(40))
+}
+
+#[cfg(feature = "jpeg2000")]
+fn validate_jpeg2000_bits(bits_per_value: u8) -> Result<()> {
+    if !(1..=32).contains(&bits_per_value) {
+        return Err(Error::UnsupportedPackingWidth(bits_per_value));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "jpeg2000")]
+fn jpeg2000_raw_value(sample: i32, bits_per_value: u8) -> Result<u64> {
+    let raw = if bits_per_value == 32 {
+        u64::from(u32::from_ne_bytes(sample.to_ne_bytes()))
+    } else {
+        u64::try_from(sample).map_err(|_| {
+            Error::Other("JPEG 2000 unsigned component yielded a negative sample".into())
+        })?
+    };
+    validate_raw_value_fits(raw, bits_per_value)?;
+    Ok(raw)
+}
+
+#[cfg(feature = "png")]
+fn unpack_png_into<T: DecodeSample>(
+    data_bytes: &[u8],
+    params: &PngPackingParams,
+    num_values: usize,
+    output: &mut OutputCursor<'_, T>,
+) -> Result<()> {
+    validate_png_bits(params.packing.bits_per_value)?;
+
+    let decoder = png::Decoder::new(std::io::Cursor::new(data_bytes));
+    let mut reader = decoder
+        .read_info()
+        .map_err(|err| Error::Other(format!("PNG decode failed: {err}")))?;
+    let buffer_size = reader
+        .output_buffer_size()
+        .ok_or_else(|| Error::Other("PNG output buffer size overflow".into()))?;
+    let mut buffer = vec![0; buffer_size];
+    let info = reader
+        .next_frame(&mut buffer)
+        .map_err(|err| Error::Other(format!("PNG decode failed: {err}")))?;
+    let data = &buffer[..info.buffer_size()];
+
+    let sample_count = image_sample_count(info.width, info.height)?;
+    if sample_count != num_values {
+        return Err(Error::DataLengthMismatch {
+            expected: num_values,
+            actual: sample_count,
+        });
+    }
+
+    match (
+        info.color_type,
+        info.bit_depth,
+        params.packing.bits_per_value,
+    ) {
+        (png::ColorType::Grayscale, png::BitDepth::One, 1)
+        | (png::ColorType::Grayscale, png::BitDepth::Two, 2)
+        | (png::ColorType::Grayscale, png::BitDepth::Four, 4) => unpack_png_subbyte_grayscale(
+            data,
+            info.width,
+            info.height,
+            params.packing.bits_per_value,
+            &params.packing,
+            output,
+        ),
+        (png::ColorType::Grayscale, png::BitDepth::Eight, 8) => {
+            unpack_png_bytes(data, 1, num_values, &params.packing, output)
+        }
+        (png::ColorType::Grayscale, png::BitDepth::Sixteen, 16) => {
+            unpack_png_u16(data, num_values, &params.packing, output)
+        }
+        (png::ColorType::Rgb, png::BitDepth::Eight, 24) => {
+            unpack_png_bytes(data, 3, num_values, &params.packing, output)
+        }
+        (png::ColorType::Rgba, png::BitDepth::Eight, 32) => {
+            unpack_png_bytes(data, 4, num_values, &params.packing, output)
+        }
+        (color_type, bit_depth, bits_per_value) => Err(Error::Other(format!(
+            "PNG image layout {color_type:?}/{bit_depth:?} is incompatible with GRIB bits-per-value {bits_per_value}"
+        ))),
+    }
+}
+
+#[cfg(not(feature = "png"))]
+fn unpack_png_into<T: DecodeSample>(
+    _data_bytes: &[u8],
+    _params: &PngPackingParams,
+    _num_values: usize,
+    _output: &mut OutputCursor<'_, T>,
+) -> Result<()> {
+    Err(Error::UnsupportedDataTemplate(41))
+}
+
+#[cfg(feature = "png")]
+fn validate_png_bits(bits_per_value: u8) -> Result<()> {
+    if !matches!(bits_per_value, 1 | 2 | 4 | 8 | 16 | 24 | 32) {
+        return Err(Error::UnsupportedPackingWidth(bits_per_value));
+    }
+    Ok(())
+}
+
+#[cfg(any(feature = "jpeg2000", feature = "png"))]
+fn image_sample_count(width: u32, height: u32) -> Result<usize> {
+    let width = usize::try_from(width).map_err(|_| Error::Other("image width overflow".into()))?;
+    let height =
+        usize::try_from(height).map_err(|_| Error::Other("image height overflow".into()))?;
+    width
+        .checked_mul(height)
+        .ok_or_else(|| Error::Other("image sample count overflow".into()))
+}
+
+#[cfg(feature = "png")]
+fn unpack_png_subbyte_grayscale<T: DecodeSample>(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    bits_per_sample: u8,
+    params: &ImagePackingParams,
+    output: &mut OutputCursor<'_, T>,
+) -> Result<()> {
+    let width = usize::try_from(width).map_err(|_| Error::Other("PNG width overflow".into()))?;
+    let height = usize::try_from(height).map_err(|_| Error::Other("PNG height overflow".into()))?;
+    let bits = usize::from(bits_per_sample);
+    let row_bytes = width
+        .checked_mul(bits)
+        .ok_or_else(|| Error::Other("PNG row width overflow".into()))?
+        .div_ceil(8);
+    let expected_bytes = row_bytes
+        .checked_mul(height)
+        .ok_or_else(|| Error::Other("PNG data length overflow".into()))?;
+    if data.len() < expected_bytes {
+        return Err(Error::DataLengthMismatch {
+            expected: expected_bytes,
+            actual: data.len(),
+        });
+    }
+
+    let mask = (1u8 << bits) - 1;
+    for row in data[..expected_bytes].chunks_exact(row_bytes) {
+        for x in 0..width {
+            let bit_offset = x
+                .checked_mul(bits)
+                .ok_or_else(|| Error::Other("PNG bit offset overflow".into()))?;
+            let shift = 8 - bits - (bit_offset % 8);
+            let raw = u64::from((row[bit_offset / 8] >> shift) & mask);
+            push_image_value(output, params, raw)?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "png")]
+fn unpack_png_bytes<T: DecodeSample>(
+    data: &[u8],
+    bytes_per_sample: usize,
+    num_values: usize,
+    params: &ImagePackingParams,
+    output: &mut OutputCursor<'_, T>,
+) -> Result<()> {
+    let expected_bytes = num_values
+        .checked_mul(bytes_per_sample)
+        .ok_or_else(|| Error::Other("PNG data length overflow".into()))?;
+    if data.len() < expected_bytes {
+        return Err(Error::DataLengthMismatch {
+            expected: expected_bytes,
+            actual: data.len(),
+        });
+    }
+
+    for sample in data[..expected_bytes].chunks_exact(bytes_per_sample) {
+        let raw = sample
+            .iter()
+            .fold(0u64, |acc, byte| (acc << 8) | u64::from(*byte));
+        push_image_value(output, params, raw)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "png")]
+fn unpack_png_u16<T: DecodeSample>(
+    data: &[u8],
+    num_values: usize,
+    params: &ImagePackingParams,
+    output: &mut OutputCursor<'_, T>,
+) -> Result<()> {
+    let expected_bytes = num_values
+        .checked_mul(2)
+        .ok_or_else(|| Error::Other("PNG data length overflow".into()))?;
+    if data.len() < expected_bytes {
+        return Err(Error::DataLengthMismatch {
+            expected: expected_bytes,
+            actual: data.len(),
+        });
+    }
+
+    for sample in data[..expected_bytes].chunks_exact(2) {
+        let raw = u64::from(u16::from_be_bytes(sample.try_into().unwrap()));
+        push_image_value(output, params, raw)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(any(feature = "jpeg2000", feature = "png"))]
+fn push_image_value<T: DecodeSample>(
+    output: &mut OutputCursor<'_, T>,
+    params: &ImagePackingParams,
+    raw: u64,
+) -> Result<()> {
+    validate_raw_value_fits(raw, params.bits_per_value)?;
+    output.push_present(scale_image_value(params, raw))
+}
+
+#[cfg(any(feature = "jpeg2000", feature = "png"))]
+fn validate_raw_value_fits(raw: u64, bits_per_value: u8) -> Result<()> {
+    let max_value = if bits_per_value == u64::BITS as u8 {
+        u64::MAX
+    } else {
+        (1u64 << bits_per_value) - 1
+    };
+    if raw > max_value {
+        return Err(Error::Other(format!(
+            "decoded image sample {raw} exceeds GRIB bits-per-value {bits_per_value}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(any(feature = "jpeg2000", feature = "png"))]
+fn scale_image_value<T: DecodeSample>(params: &ImagePackingParams, raw: u64) -> T {
+    let binary_factor = 2.0_f64.powi(params.binary_scale as i32);
+    let decimal_factor = 10.0_f64.powi(-(params.decimal_scale as i32));
+    T::from_f64(scale_decoded_value(
+        params.reference_value as f64,
+        raw as f64,
+        binary_factor,
+        decimal_factor,
+    ))
 }
 
 #[cfg(test)]
@@ -826,8 +1139,9 @@ enum MissingKind {
 #[cfg(test)]
 mod tests {
     use super::{
-        bitmap_payload, count_bitmap_present_points, decode_field, unpack_complex, unpack_simple,
-        ComplexPackingParams, DataRepresentation, SimplePackingParams, SpatialDifferencingParams,
+        bitmap_payload, count_bitmap_present_points, decode_field, decode_payload, unpack_complex,
+        unpack_simple, ComplexPackingParams, DataRepresentation, ImagePackingParams,
+        PngPackingParams, SimplePackingParams, SpatialDifferencingParams,
     };
     use crate::error::Error;
 
@@ -894,6 +1208,204 @@ mod tests {
         assert!(decoded[1].is_nan());
         assert_eq!(decoded[2], 20.0);
         assert_eq!(decoded[3], 30.0);
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn decodes_png_packing_grayscale8() {
+        let payload = encode_png(
+            2,
+            2,
+            png::ColorType::Grayscale,
+            png::BitDepth::Eight,
+            &[1, 2, 3, 4],
+        );
+        let representation = DataRepresentation::PngPacking(PngPackingParams {
+            packing: ImagePackingParams {
+                encoded_values: 4,
+                reference_value: 10.0,
+                binary_scale: 1,
+                decimal_scale: 1,
+                bits_per_value: 8,
+                original_field_type: 0,
+            },
+        });
+
+        let decoded = decode_payload(&payload, &representation, None, 4).unwrap();
+        assert_float_values(&decoded, &[1.2, 1.4, 1.6, 1.8]);
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn decodes_png_packing_grayscale16() {
+        let payload = encode_png(
+            2,
+            1,
+            png::ColorType::Grayscale,
+            png::BitDepth::Sixteen,
+            &[0x01, 0x00, 0x02, 0x00],
+        );
+        let representation = DataRepresentation::PngPacking(PngPackingParams {
+            packing: ImagePackingParams {
+                encoded_values: 2,
+                reference_value: 0.0,
+                binary_scale: 0,
+                decimal_scale: 0,
+                bits_per_value: 16,
+                original_field_type: 0,
+            },
+        });
+
+        let decoded = decode_payload(&payload, &representation, None, 2).unwrap();
+        assert_eq!(decoded, vec![256.0, 512.0]);
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn decodes_png_packing_grayscale_subbyte() {
+        let payload = encode_png(
+            4,
+            1,
+            png::ColorType::Grayscale,
+            png::BitDepth::Four,
+            &[0x12, 0x34],
+        );
+        let representation = DataRepresentation::PngPacking(PngPackingParams {
+            packing: ImagePackingParams {
+                encoded_values: 4,
+                reference_value: 0.0,
+                binary_scale: 0,
+                decimal_scale: 0,
+                bits_per_value: 4,
+                original_field_type: 0,
+            },
+        });
+
+        let decoded = decode_payload(&payload, &representation, None, 4).unwrap();
+        assert_eq!(decoded, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn decodes_png_packing_rgb8() {
+        let payload = encode_png(
+            2,
+            1,
+            png::ColorType::Rgb,
+            png::BitDepth::Eight,
+            &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
+        );
+        let representation = DataRepresentation::PngPacking(PngPackingParams {
+            packing: ImagePackingParams {
+                encoded_values: 2,
+                reference_value: 0.0,
+                binary_scale: 0,
+                decimal_scale: 0,
+                bits_per_value: 24,
+                original_field_type: 0,
+            },
+        });
+
+        let decoded = decode_payload(&payload, &representation, None, 2).unwrap();
+        assert_eq!(decoded, vec![0x01_02_03 as f64, 0x04_05_06 as f64]);
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn decodes_png_packing_rgba8() {
+        let payload = encode_png(
+            1,
+            1,
+            png::ColorType::Rgba,
+            png::BitDepth::Eight,
+            &[0x01, 0x02, 0x03, 0x04],
+        );
+        let representation = DataRepresentation::PngPacking(PngPackingParams {
+            packing: ImagePackingParams {
+                encoded_values: 1,
+                reference_value: 0.0,
+                binary_scale: 0,
+                decimal_scale: 0,
+                bits_per_value: 32,
+                original_field_type: 0,
+            },
+        });
+
+        let decoded = decode_payload(&payload, &representation, None, 1).unwrap();
+        assert_eq!(decoded, vec![0x01_02_03_04 as f64]);
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn decodes_png_packing_with_bitmap() {
+        let payload = encode_png(
+            3,
+            1,
+            png::ColorType::Grayscale,
+            png::BitDepth::Eight,
+            &[10, 20, 30],
+        );
+        let bitmap_section = [0, 0, 0, 7, 6, 0, 0b1011_0000];
+        let representation = DataRepresentation::PngPacking(PngPackingParams {
+            packing: ImagePackingParams {
+                encoded_values: 3,
+                reference_value: 0.0,
+                binary_scale: 0,
+                decimal_scale: 0,
+                bits_per_value: 8,
+                original_field_type: 0,
+            },
+        });
+
+        let decoded = decode_payload(
+            &payload,
+            &representation,
+            bitmap_payload(&bitmap_section).unwrap(),
+            4,
+        )
+        .unwrap();
+        assert_eq!(decoded[0], 10.0);
+        assert!(decoded[1].is_nan());
+        assert_eq!(decoded[2], 20.0);
+        assert_eq!(decoded[3], 30.0);
+    }
+
+    #[cfg(not(feature = "png"))]
+    #[test]
+    fn png_packing_requires_png_feature() {
+        let representation = DataRepresentation::PngPacking(PngPackingParams {
+            packing: ImagePackingParams {
+                encoded_values: 1,
+                reference_value: 0.0,
+                binary_scale: 0,
+                decimal_scale: 0,
+                bits_per_value: 8,
+                original_field_type: 0,
+            },
+        });
+
+        let err = decode_payload(&[], &representation, None, 1).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedDataTemplate(41)));
+    }
+
+    #[cfg(not(feature = "jpeg2000"))]
+    #[test]
+    fn jpeg2000_packing_requires_jpeg2000_feature() {
+        let representation = DataRepresentation::Jpeg2000Packing(super::Jpeg2000PackingParams {
+            packing: ImagePackingParams {
+                encoded_values: 1,
+                reference_value: 0.0,
+                binary_scale: 0,
+                decimal_scale: 0,
+                bits_per_value: 8,
+                original_field_type: 0,
+            },
+            compression_type: 1,
+            target_compression_ratio: 255,
+        });
+
+        let err = decode_payload(&[], &representation, None, 1).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedDataTemplate(40)));
     }
 
     #[test]
@@ -1082,5 +1594,35 @@ mod tests {
         assert!(values[1].is_nan());
         assert_eq!(values[2], 13.0);
         assert_eq!(values[3], 18.0);
+    }
+
+    #[cfg(feature = "png")]
+    fn encode_png(
+        width: u32,
+        height: u32,
+        color_type: png::ColorType,
+        bit_depth: png::BitDepth,
+        data: &[u8],
+    ) -> Vec<u8> {
+        let mut payload = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut payload, width, height);
+            encoder.set_color(color_type);
+            encoder.set_depth(bit_depth);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(data).unwrap();
+        }
+        payload
+    }
+
+    #[cfg(feature = "png")]
+    fn assert_float_values(actual: &[f64], expected: &[f64]) {
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "expected {expected}, got {actual}"
+            );
+        }
     }
 }

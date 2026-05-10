@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use grib_reader::{GribFile, GridDefinition};
+use grib_reader::{DataRepresentation, GribFile, GridDefinition};
 
 #[test]
 fn bootstrap_corpus_decodes() {
@@ -60,6 +60,9 @@ fn assert_sample_decodes(path: &Path) {
         fs::read(path).unwrap_or_else(|err| panic!("failed reading {}: {err}", path.display()));
     let file = GribFile::from_bytes(bytes)
         .unwrap_or_else(|err| panic!("failed opening {}: {err}", path.display()));
+    if sample_requires_disabled_codec(&file) {
+        return;
+    }
     assert!(
         file.message_count() > 0,
         "sample {} produced zero logical fields",
@@ -96,4 +99,16 @@ fn is_grib_sample(path: &Path) -> bool {
         path.extension().and_then(|ext| ext.to_str()),
         Some("grib" | "grib1" | "grib2" | "grb" | "bin")
     )
+}
+
+fn sample_requires_disabled_codec(file: &GribFile) -> bool {
+    for index in 0..file.message_count() {
+        let message = file.message(index).unwrap();
+        match &message.metadata().data_representation {
+            DataRepresentation::Jpeg2000Packing(_) if !cfg!(feature = "jpeg2000") => return true,
+            DataRepresentation::PngPacking(_) if !cfg!(feature = "png") => return true,
+            _ => {}
+        }
+    }
+    false
 }

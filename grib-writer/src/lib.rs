@@ -1295,6 +1295,8 @@ fn write_data_representation_section(out: &mut Vec<u8>, packed: &PackedField) ->
         DataRepresentation::ComplexPacking(params) => {
             write_complex_data_representation_section(out, params)
         }
+        DataRepresentation::Jpeg2000Packing(_) => Err(Error::UnsupportedDataTemplate(40)),
+        DataRepresentation::PngPacking(_) => Err(Error::UnsupportedDataTemplate(41)),
         DataRepresentation::Unsupported(template) => Err(Error::UnsupportedDataTemplate(*template)),
     }
 }
