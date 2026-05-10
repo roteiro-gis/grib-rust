@@ -8,7 +8,7 @@ use common::{
     build_grib2_message, build_grib2_multifield_message, build_grib2_spatial_differencing_message,
     collect_parity_samples, dump_reference, helper_path, write_fixture,
 };
-use grib_reader::GribFile;
+use grib_reader::{DataRepresentation, GribFile};
 
 #[test]
 #[ignore = "requires GRIB_READER_ECCODES_HELPER"]
@@ -73,6 +73,9 @@ fn corpus_samples_match_eccodes_when_configured() {
 fn assert_matches_reference(helper: &Path, path: &Path) {
     let rust = GribFile::open(path)
         .unwrap_or_else(|err| panic!("failed opening {} with Rust decoder: {err}", path.display()));
+    if sample_requires_disabled_codec(&rust) {
+        return;
+    }
     let reference = dump_reference(helper, path);
 
     assert_eq!(
@@ -185,4 +188,16 @@ fn assert_matches_reference(helper: &Path, path: &Path) {
             }
         }
     }
+}
+
+fn sample_requires_disabled_codec(file: &GribFile) -> bool {
+    for index in 0..file.message_count() {
+        let message = file.message(index).unwrap();
+        match &message.metadata().data_representation {
+            DataRepresentation::Jpeg2000Packing(_) if !cfg!(feature = "jpeg2000") => return true,
+            DataRepresentation::PngPacking(_) if !cfg!(feature = "png") => return true,
+            _ => {}
+        }
+    }
+    false
 }

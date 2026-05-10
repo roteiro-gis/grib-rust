@@ -10,6 +10,10 @@ pub enum DataRepresentation {
     SimplePacking(SimplePackingParams),
     /// Template 5.2/5.3: Complex packing with optional spatial differencing.
     ComplexPacking(ComplexPackingParams),
+    /// Template 5.40: JPEG 2000 code stream packing.
+    Jpeg2000Packing(Jpeg2000PackingParams),
+    /// Template 5.41: PNG image packing.
+    PngPacking(PngPackingParams),
     /// Unsupported template.
     Unsupported(u16),
 }
@@ -23,6 +27,31 @@ pub struct SimplePackingParams {
     pub decimal_scale: i16,
     pub bits_per_value: u8,
     pub original_field_type: u8,
+}
+
+/// Parameters shared by image-backed grid point packing templates.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImagePackingParams {
+    pub encoded_values: usize,
+    pub reference_value: f32,
+    pub binary_scale: i16,
+    pub decimal_scale: i16,
+    pub bits_per_value: u8,
+    pub original_field_type: u8,
+}
+
+/// Parameters for JPEG 2000 code stream packing (Template 5.40).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Jpeg2000PackingParams {
+    pub packing: ImagePackingParams,
+    pub compression_type: u8,
+    pub target_compression_ratio: u8,
+}
+
+/// Parameters for PNG image packing (Template 5.41).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PngPackingParams {
+    pub packing: ImagePackingParams,
 }
 
 /// Parameters for complex packing (Templates 5.2 and 5.3).
@@ -75,6 +104,8 @@ impl DataRepresentation {
             0 => parse_simple_packing(section_bytes),
             2 => parse_complex_packing(section_bytes, false),
             3 => parse_complex_packing(section_bytes, true),
+            40 => parse_jpeg2000_packing(section_bytes),
+            41 => parse_png_packing(section_bytes),
             _ => Ok(Self::Unsupported(template)),
         }
     }
@@ -83,6 +114,8 @@ impl DataRepresentation {
         match self {
             Self::SimplePacking(params) => Some(params.encoded_values),
             Self::ComplexPacking(params) => Some(params.encoded_values),
+            Self::Jpeg2000Packing(params) => Some(params.packing.encoded_values),
+            Self::PngPacking(params) => Some(params.packing.encoded_values),
             Self::Unsupported(_) => None,
         }
     }
@@ -110,6 +143,45 @@ fn parse_simple_packing(data: &[u8]) -> Result<DataRepresentation> {
         decimal_scale,
         bits_per_value,
         original_field_type,
+    }))
+}
+
+fn parse_image_packing_base(
+    data: &[u8],
+    template: u16,
+    required: usize,
+) -> Result<ImagePackingParams> {
+    if data.len() < required {
+        return Err(Error::InvalidSection {
+            section: 5,
+            reason: format!(
+                "template 5.{template} requires {required} bytes, got {}",
+                data.len()
+            ),
+        });
+    }
+
+    Ok(ImagePackingParams {
+        encoded_values: u32::from_be_bytes(data[5..9].try_into().unwrap()) as usize,
+        reference_value: f32::from_be_bytes(data[11..15].try_into().unwrap()),
+        binary_scale: grib_i16(&data[15..17]).unwrap(),
+        decimal_scale: grib_i16(&data[17..19]).unwrap(),
+        bits_per_value: data[19],
+        original_field_type: data[20],
+    })
+}
+
+fn parse_jpeg2000_packing(data: &[u8]) -> Result<DataRepresentation> {
+    Ok(DataRepresentation::Jpeg2000Packing(Jpeg2000PackingParams {
+        packing: parse_image_packing_base(data, 40, 23)?,
+        compression_type: data[21],
+        target_compression_ratio: data[22],
+    }))
+}
+
+fn parse_png_packing(data: &[u8]) -> Result<DataRepresentation> {
+    Ok(DataRepresentation::PngPacking(PngPackingParams {
+        packing: parse_image_packing_base(data, 41, 21)?,
     }))
 }
 
@@ -180,7 +252,11 @@ fn parse_complex_packing(
 
 #[cfg(test)]
 mod tests {
-    use super::{DataRepresentation, SimplePackingParams};
+    use super::{
+        DataRepresentation, ImagePackingParams, Jpeg2000PackingParams, PngPackingParams,
+        SimplePackingParams,
+    };
+    use crate::util::encode_grib_i16;
 
     #[test]
     fn parses_simple_packing_template() {
@@ -204,6 +280,66 @@ mod tests {
                 decimal_scale: 1,
                 bits_per_value: 8,
                 original_field_type: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_jpeg2000_packing_template() {
+        let mut section = vec![0u8; 23];
+        section[..4].copy_from_slice(&(23u32).to_be_bytes());
+        section[4] = 5;
+        section[5..9].copy_from_slice(&4u32.to_be_bytes());
+        section[9..11].copy_from_slice(&40u16.to_be_bytes());
+        section[11..15].copy_from_slice(&3.5f32.to_be_bytes());
+        section[15..17].copy_from_slice(&encode_grib_i16(-1).unwrap());
+        section[17..19].copy_from_slice(&2i16.to_be_bytes());
+        section[19] = 12;
+        section[20] = 0;
+        section[21] = 1;
+        section[22] = 255;
+
+        assert_eq!(
+            DataRepresentation::parse(&section).unwrap(),
+            DataRepresentation::Jpeg2000Packing(Jpeg2000PackingParams {
+                packing: ImagePackingParams {
+                    encoded_values: 4,
+                    reference_value: 3.5,
+                    binary_scale: -1,
+                    decimal_scale: 2,
+                    bits_per_value: 12,
+                    original_field_type: 0,
+                },
+                compression_type: 1,
+                target_compression_ratio: 255,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_png_packing_template() {
+        let mut section = vec![0u8; 21];
+        section[..4].copy_from_slice(&(21u32).to_be_bytes());
+        section[4] = 5;
+        section[5..9].copy_from_slice(&6u32.to_be_bytes());
+        section[9..11].copy_from_slice(&41u16.to_be_bytes());
+        section[11..15].copy_from_slice(&1.25f32.to_be_bytes());
+        section[15..17].copy_from_slice(&1i16.to_be_bytes());
+        section[17..19].copy_from_slice(&encode_grib_i16(-2).unwrap());
+        section[19] = 16;
+        section[20] = 1;
+
+        assert_eq!(
+            DataRepresentation::parse(&section).unwrap(),
+            DataRepresentation::PngPacking(PngPackingParams {
+                packing: ImagePackingParams {
+                    encoded_values: 6,
+                    reference_value: 1.25,
+                    binary_scale: 1,
+                    decimal_scale: -2,
+                    bits_per_value: 16,
+                    original_field_type: 1,
+                },
             })
         );
     }

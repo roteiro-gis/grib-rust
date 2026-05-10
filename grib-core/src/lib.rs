@@ -14,7 +14,8 @@ pub mod product;
 pub mod util;
 
 pub use data::{
-    ComplexPackingParams, DataRepresentation, SimplePackingParams, SpatialDifferencingParams,
+    ComplexPackingParams, DataRepresentation, ImagePackingParams, Jpeg2000PackingParams,
+    PngPackingParams, SimplePackingParams, SpatialDifferencingParams,
 };
 pub use error::{Error, Result};
 pub use grid::{GridDefinition, LambertConformalGrid, LatLonGrid};
