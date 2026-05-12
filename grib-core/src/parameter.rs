@@ -75,6 +75,10 @@ pub fn parameter_name(discipline: u8, category: u8, number: u8) -> &'static str 
         // Category 7: Thermodynamic stability
         (0, 7, 6) => "CAPE", // Convective available potential energy
         (0, 7, 7) => "CIN",  // Convective inhibition
+        // Category 16: Forecast radar imagery
+        (0, 16, 196) => "REFC", // Maximum/Composite radar reflectivity
+        // Category 19: Physical atmospheric properties
+        (0, 19, 1) => "ALBDO", // Albedo
 
         // Discipline 10: Oceanographic products
         // Category 0: Waves
@@ -114,6 +118,8 @@ pub fn parameter_description(discipline: u8, category: u8, number: u8) -> &'stat
         (0, 6, 1) => "Total cloud cover",
         (0, 7, 6) => "Convective available potential energy",
         (0, 7, 7) => "Convective inhibition",
+        (0, 16, 196) => "Maximum/Composite radar reflectivity",
+        (0, 19, 1) => "Albedo",
         (10, 0, 3) => "Significant height of combined wind waves and swell",
         (10, 0, 4) => "Direction of wind waves",
         (10, 0, 5) => "Mean period of wind waves",
@@ -133,8 +139,15 @@ mod tests {
         assert_eq!(parameter_name(0, 0, 0), "TMP");
         assert_eq!(parameter_name(0, 2, 2), "UGRD");
         assert_eq!(parameter_name(0, 3, 5), "HGT");
+        assert_eq!(parameter_name(0, 16, 196), "REFC");
+        assert_eq!(parameter_name(0, 19, 1), "ALBDO");
         assert_eq!(parameter_name(10, 0, 3), "HTSGW");
         assert_eq!(parameter_description(0, 0, 2), "Potential temperature");
+        assert_eq!(
+            parameter_description(0, 16, 196),
+            "Maximum/Composite radar reflectivity"
+        );
+        assert_eq!(parameter_description(0, 19, 1), "Albedo");
         assert_eq!(parameter_description(10, 3, 0), "Water temperature");
     }
 
