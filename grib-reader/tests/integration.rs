@@ -6,7 +6,8 @@ use common::{
     build_grib1_message, build_grib1_message_with_bitmap, build_grib2_complex_packing_message,
     build_grib2_complex_packing_message_with_missing, build_grib2_lambert_alternating_message,
     build_grib2_lambert_message, build_grib2_message, build_grib2_message_with_forecast,
-    build_grib2_multifield_message, build_grib2_spatial_differencing_message,
+    build_grib2_multifield_message, build_grib2_polar_stereographic_alternating_message,
+    build_grib2_polar_stereographic_message, build_grib2_spatial_differencing_message,
 };
 use grib_reader::{Error, ForecastTimeUnit, GribFile, GridDefinition, OpenOptions};
 
@@ -128,6 +129,55 @@ fn open_grib2_lambert_conformal_field_and_decode_flat_data() {
 #[test]
 fn open_grib2_lambert_conformal_normalizes_alternating_scan_rows() {
     let opened = GribFile::from_bytes(build_grib2_lambert_alternating_message()).unwrap();
+    let field = opened.message(0).unwrap();
+
+    assert_eq!(
+        field.read_flat_data_as_f64().unwrap(),
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    );
+}
+
+#[test]
+fn open_grib2_polar_stereographic_field_and_decode_flat_data() {
+    let opened = GribFile::from_bytes(build_grib2_polar_stereographic_message()).unwrap();
+    let field = opened.message(0).unwrap();
+
+    assert_eq!(field.grid_shape(), (3, 2));
+    assert_eq!(field.latitudes(), None);
+    assert_eq!(field.longitudes(), None);
+    match field.grid_definition() {
+        GridDefinition::PolarStereographic(grid) => {
+            assert_eq!(grid.number_of_points, 6);
+            assert_eq!(grid.shape_of_earth, 6);
+            assert_eq!(grid.nx, 3);
+            assert_eq!(grid.ny, 2);
+            assert_eq!(grid.lat_first, 41_612_949);
+            assert_eq!(grid.lon_first, 185_117_126);
+            assert_eq!(grid.lat_d, 60_000_000);
+            assert_eq!(grid.lon_v, 225_000_000);
+            assert_eq!(grid.dx, 3_000_000);
+            assert_eq!(grid.dy, 3_000_000);
+            assert_eq!(grid.projection_center_flag, 0);
+        }
+        other => panic!("expected polar stereographic grid, got {other:?}"),
+    }
+
+    assert_eq!(
+        field.read_flat_data_as_f64().unwrap(),
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    );
+    let array = field.read_data_as_f64().unwrap();
+    assert_eq!(array.shape(), &[2, 3]);
+    assert_eq!(
+        array.iter().copied().collect::<Vec<_>>(),
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    );
+}
+
+#[test]
+fn open_grib2_polar_stereographic_normalizes_alternating_scan_rows() {
+    let opened =
+        GribFile::from_bytes(build_grib2_polar_stereographic_alternating_message()).unwrap();
     let field = opened.message(0).unwrap();
 
     assert_eq!(

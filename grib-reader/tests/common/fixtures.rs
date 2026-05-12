@@ -85,10 +85,32 @@ pub fn build_grib2_lambert_alternating_message() -> Vec<u8> {
     build_grib2_lambert_message_with_scanning_mode(0b0001_0000, &[1, 2, 3, 6, 5, 4])
 }
 
+pub fn build_grib2_polar_stereographic_message() -> Vec<u8> {
+    build_grib2_polar_stereographic_message_with_scanning_mode(0, &[1, 2, 3, 4, 5, 6])
+}
+
+pub fn build_grib2_polar_stereographic_alternating_message() -> Vec<u8> {
+    build_grib2_polar_stereographic_message_with_scanning_mode(0b0001_0000, &[1, 2, 3, 6, 5, 4])
+}
+
 fn build_grib2_lambert_message_with_scanning_mode(scanning_mode: u8, values: &[u8]) -> Vec<u8> {
     let sections = [
         build_identification_section(),
         build_lambert_grid_section(scanning_mode),
+        build_product_section(),
+        build_simple_representation_section(values.len(), 8),
+        build_data_section(values),
+    ];
+    assemble_grib2_message(&sections)
+}
+
+fn build_grib2_polar_stereographic_message_with_scanning_mode(
+    scanning_mode: u8,
+    values: &[u8],
+) -> Vec<u8> {
+    let sections = [
+        build_identification_section(),
+        build_polar_stereographic_grid_section(scanning_mode),
         build_product_section(),
         build_simple_representation_section(values.len(), 8),
         build_data_section(values),
@@ -135,6 +157,26 @@ fn build_lambert_grid_section(scanning_mode: u8) -> Vec<u8> {
     section[65..69].copy_from_slice(&encode_wmo_i32(25_000_000).unwrap());
     section[69..73].copy_from_slice(&encode_wmo_i32(25_000_000).unwrap());
     section[73..77].copy_from_slice(&encode_wmo_i32(-90_000_000).unwrap());
+    section
+}
+
+fn build_polar_stereographic_grid_section(scanning_mode: u8) -> Vec<u8> {
+    let mut section = vec![0u8; 65];
+    section[..4].copy_from_slice(&65u32.to_be_bytes());
+    section[4] = 3;
+    section[6..10].copy_from_slice(&6u32.to_be_bytes());
+    section[12..14].copy_from_slice(&20u16.to_be_bytes());
+    section[14] = 6;
+    section[30..34].copy_from_slice(&3u32.to_be_bytes());
+    section[34..38].copy_from_slice(&2u32.to_be_bytes());
+    section[38..42].copy_from_slice(&encode_wmo_i32(41_612_949).unwrap());
+    section[42..46].copy_from_slice(&185_117_126u32.to_be_bytes());
+    section[46] = 0x08;
+    section[47..51].copy_from_slice(&encode_wmo_i32(60_000_000).unwrap());
+    section[51..55].copy_from_slice(&225_000_000u32.to_be_bytes());
+    section[55..59].copy_from_slice(&3_000_000u32.to_be_bytes());
+    section[59..63].copy_from_slice(&3_000_000u32.to_be_bytes());
+    section[64] = scanning_mode;
     section
 }
 

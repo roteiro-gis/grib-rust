@@ -137,7 +137,8 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - GRIB1 and GRIB2 message scanning with `"GRIB"`/`"7777"` boundary detection
 - Logical field indexing for multi-field GRIB2 messages
 - Regular latitude/longitude grids for GRIB1 and GRIB2
-- Reader GRIB2 Lambert conformal grid template 3.30 metadata and flat data decode
+- Reader GRIB2 Lambert conformal grid template 3.30 and polar stereographic grid
+  template 3.20 metadata and flat data decode
 - Reader simple packing for GRIB1 and GRIB2
 - GRIB2 complex packing with general group splitting, including spatial differencing
 - Feature-gated reader GRIB2 JPEG2000 template 5.40 and PNG template 5.41 packed data decode

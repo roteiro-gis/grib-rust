@@ -1,1 +1,3 @@
-pub use grib_core::grid::{GridDefinition, LambertConformalGrid, LatLonGrid};
+pub use grib_core::grid::{
+    GridDefinition, LambertConformalGrid, LatLonGrid, PolarStereographicGrid,
+};

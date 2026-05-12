@@ -55,6 +55,39 @@ fn hrrr_lambert_interop_sample_has_expected_grid() {
     );
 }
 
+#[test]
+fn hrrr_alaska_polar_interop_sample_has_expected_grid() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/corpus/interop/samples/noaa-hrrr-alaska-polar-refc.grib2");
+    let bytes =
+        fs::read(&path).unwrap_or_else(|err| panic!("failed reading {}: {err}", path.display()));
+    let file = GribFile::from_bytes(bytes)
+        .unwrap_or_else(|err| panic!("failed opening {}: {err}", path.display()));
+    let message = file.message(0).unwrap();
+
+    assert_eq!(message.grid_shape(), (1299, 919));
+    match message.grid_definition() {
+        GridDefinition::PolarStereographic(grid) => {
+            assert_eq!(grid.number_of_points, 1_193_781);
+            assert_eq!(grid.nx, 1299);
+            assert_eq!(grid.ny, 919);
+            assert_eq!(grid.scanning_mode, 64);
+            assert_eq!(grid.lat_first, 41_612_949);
+            assert_eq!(grid.lon_first, 185_117_126);
+            assert_eq!(grid.lat_d, 60_000_000);
+            assert_eq!(grid.lon_v, 225_000_000);
+            assert_eq!(grid.dx, 3_000_000);
+            assert_eq!(grid.dy, 3_000_000);
+        }
+        other => panic!("expected polar stereographic grid, got {other:?}"),
+    }
+
+    assert_eq!(
+        message.read_flat_data_as_f64().unwrap().len(),
+        message.grid_definition().num_points()
+    );
+}
+
 fn assert_sample_decodes(path: &Path) {
     let bytes =
         fs::read(path).unwrap_or_else(|err| panic!("failed reading {}: {err}", path.display()));

@@ -16,6 +16,8 @@ pub enum GridDefinition {
     LatLon(LatLonGrid),
     /// Template 3.30: Lambert conformal.
     LambertConformal(LambertConformalGrid),
+    /// Template 3.20: Polar stereographic projection.
+    PolarStereographic(PolarStereographicGrid),
     /// Unsupported template (stored for diagnostics).
     Unsupported(u16),
 }
@@ -62,6 +64,30 @@ pub struct LambertConformalGrid {
     pub lon_southern_pole: u32,
 }
 
+/// Template 3.20: Polar stereographic projection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PolarStereographicGrid {
+    pub number_of_points: u32,
+    pub shape_of_earth: u8,
+    pub scale_factor_radius: u8,
+    pub scaled_value_radius: u32,
+    pub scale_factor_major_axis: u8,
+    pub scaled_value_major_axis: u32,
+    pub scale_factor_minor_axis: u8,
+    pub scaled_value_minor_axis: u32,
+    pub nx: u32,
+    pub ny: u32,
+    pub lat_first: i32,
+    pub lon_first: u32,
+    pub resolution_and_component_flags: u8,
+    pub lat_d: i32,
+    pub lon_v: u32,
+    pub dx: u32,
+    pub dy: u32,
+    pub projection_center_flag: u8,
+    pub scanning_mode: u8,
+}
+
 impl GridDefinition {
     /// GRIB2 grid definition template number for typed templates.
     ///
@@ -70,6 +96,7 @@ impl GridDefinition {
     pub fn template_number(&self) -> u16 {
         match self {
             Self::LatLon(_) => 0,
+            Self::PolarStereographic(_) => 20,
             Self::LambertConformal(_) => 30,
             Self::Unsupported(template) => *template,
         }
@@ -78,6 +105,13 @@ impl GridDefinition {
     pub fn as_lat_lon(&self) -> Option<&LatLonGrid> {
         match self {
             Self::LatLon(grid) => Some(grid),
+            _ => None,
+        }
+    }
+
+    pub fn as_polar_stereographic(&self) -> Option<&PolarStereographicGrid> {
+        match self {
+            Self::PolarStereographic(grid) => Some(grid),
             _ => None,
         }
     }
@@ -99,6 +133,7 @@ impl GridDefinition {
     pub fn shape(&self) -> (usize, usize) {
         match self {
             Self::LatLon(g) => (g.ni as usize, g.nj as usize),
+            Self::PolarStereographic(g) => (g.nx as usize, g.ny as usize),
             Self::LambertConformal(g) => (g.nx as usize, g.ny as usize),
             Self::Unsupported(_) => (0, 0),
         }
@@ -107,7 +142,11 @@ impl GridDefinition {
     pub fn ndarray_shape(&self) -> Vec<usize> {
         let (ni, nj) = self.shape();
         match self {
-            Self::LatLon(_) | Self::LambertConformal(_) if ni > 0 && nj > 0 => vec![nj, ni],
+            Self::LatLon(_) | Self::PolarStereographic(_) | Self::LambertConformal(_)
+                if ni > 0 && nj > 0 =>
+            {
+                vec![nj, ni]
+            }
             _ => Vec::new(),
         }
     }
@@ -118,6 +157,7 @@ impl GridDefinition {
                 let (ni, nj) = self.shape();
                 ni.saturating_mul(nj)
             }
+            Self::PolarStereographic(g) => g.number_of_points as usize,
             Self::LambertConformal(g) => g.number_of_points as usize,
             Self::Unsupported(_) => 0,
         }
@@ -126,6 +166,7 @@ impl GridDefinition {
     pub fn validate_supported_scan_order(&self) -> Result<()> {
         match self {
             Self::LatLon(grid) => grid.validate_supported_scan_order(),
+            Self::PolarStereographic(grid) => grid.validate_supported_scan_order(),
             Self::LambertConformal(grid) => grid.validate_supported_scan_order(),
             Self::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
         }
@@ -134,6 +175,7 @@ impl GridDefinition {
     pub fn reorder_for_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
         match self {
             Self::LatLon(grid) => grid.reorder_for_ndarray_in_place(values),
+            Self::PolarStereographic(grid) => grid.reorder_for_ndarray_in_place(values),
             Self::LambertConformal(grid) => grid.reorder_for_ndarray_in_place(values),
             Self::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
         }
@@ -156,6 +198,7 @@ impl GridDefinition {
         let template = u16::from_be_bytes(section_bytes[12..14].try_into().unwrap());
         match template {
             0 => parse_latlon(section_bytes),
+            20 => parse_polar_stereographic(section_bytes),
             30 => parse_lambert_conformal(section_bytes),
             _ => Ok(Self::Unsupported(template)),
         }
@@ -232,6 +275,21 @@ impl LatLonGrid {
 }
 
 impl LambertConformalGrid {
+    pub fn reorder_for_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
+        transform_supported_scan_order_in_place(
+            values,
+            self.nx as usize,
+            self.ny as usize,
+            self.scanning_mode,
+        )
+    }
+
+    pub fn validate_supported_scan_order(&self) -> Result<()> {
+        validate_supported_scan_order(self.scanning_mode)
+    }
+}
+
+impl PolarStereographicGrid {
     pub fn reorder_for_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
         transform_supported_scan_order_in_place(
             values,
@@ -335,6 +393,37 @@ fn parse_latlon(data: &[u8]) -> Result<GridDefinition> {
     }))
 }
 
+fn parse_polar_stereographic(data: &[u8]) -> Result<GridDefinition> {
+    if data.len() < 65 {
+        return Err(Error::InvalidSection {
+            section: 3,
+            reason: format!("template 3.20 requires 65 bytes, got {}", data.len()),
+        });
+    }
+
+    Ok(GridDefinition::PolarStereographic(PolarStereographicGrid {
+        number_of_points: u32::from_be_bytes(data[6..10].try_into().unwrap()),
+        shape_of_earth: data[14],
+        scale_factor_radius: data[15],
+        scaled_value_radius: u32::from_be_bytes(data[16..20].try_into().unwrap()),
+        scale_factor_major_axis: data[20],
+        scaled_value_major_axis: u32::from_be_bytes(data[21..25].try_into().unwrap()),
+        scale_factor_minor_axis: data[25],
+        scaled_value_minor_axis: u32::from_be_bytes(data[26..30].try_into().unwrap()),
+        nx: u32::from_be_bytes(data[30..34].try_into().unwrap()),
+        ny: u32::from_be_bytes(data[34..38].try_into().unwrap()),
+        lat_first: grib_i32(&data[38..42]).unwrap(),
+        lon_first: u32::from_be_bytes(data[42..46].try_into().unwrap()),
+        resolution_and_component_flags: data[46],
+        lat_d: grib_i32(&data[47..51]).unwrap(),
+        lon_v: u32::from_be_bytes(data[51..55].try_into().unwrap()),
+        dx: u32::from_be_bytes(data[55..59].try_into().unwrap()),
+        dy: u32::from_be_bytes(data[59..63].try_into().unwrap()),
+        projection_center_flag: data[63],
+        scanning_mode: data[64],
+    }))
+}
+
 fn parse_lambert_conformal(data: &[u8]) -> Result<GridDefinition> {
     if data.len() < 81 {
         return Err(Error::InvalidSection {
@@ -372,7 +461,7 @@ fn parse_lambert_conformal(data: &[u8]) -> Result<GridDefinition> {
 
 #[cfg(test)]
 mod tests {
-    use super::{GridDefinition, LambertConformalGrid, LatLonGrid};
+    use super::{GridDefinition, LambertConformalGrid, LatLonGrid, PolarStereographicGrid};
     use crate::binary::encode_wmo_i32;
 
     #[test]
@@ -393,6 +482,7 @@ mod tests {
         assert_eq!(grid.ndarray_shape(), vec![2, 3]);
         assert_eq!(grid.template_number(), 0);
         assert!(grid.as_lat_lon().is_some());
+        assert!(grid.as_polar_stereographic().is_none());
         assert!(grid.as_lambert_conformal().is_none());
         assert_eq!(grid.unsupported_template(), None);
         match grid {
@@ -401,6 +491,39 @@ mod tests {
                 assert_eq!(latlon.latitudes(), vec![50.0, 49.0]);
             }
             other => panic!("expected lat/lon grid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_polar_stereographic_template() {
+        let section = build_polar_stereographic_section(0);
+        let grid = GridDefinition::parse(&section).unwrap();
+
+        assert_eq!(grid.shape(), (3, 2));
+        assert_eq!(grid.ndarray_shape(), vec![2, 3]);
+        assert_eq!(grid.num_points(), 6);
+        assert_eq!(grid.template_number(), 20);
+        assert!(grid.as_lat_lon().is_none());
+        assert!(grid.as_polar_stereographic().is_some());
+        assert!(grid.as_lambert_conformal().is_none());
+        assert_eq!(grid.unsupported_template(), None);
+        match grid {
+            GridDefinition::PolarStereographic(polar) => {
+                assert_eq!(polar.number_of_points, 6);
+                assert_eq!(polar.shape_of_earth, 6);
+                assert_eq!(polar.nx, 3);
+                assert_eq!(polar.ny, 2);
+                assert_eq!(polar.lat_first, 41_612_949);
+                assert_eq!(polar.lon_first, 185_117_126);
+                assert_eq!(polar.resolution_and_component_flags, 0x08);
+                assert_eq!(polar.lat_d, 60_000_000);
+                assert_eq!(polar.lon_v, 225_000_000);
+                assert_eq!(polar.dx, 3_000_000);
+                assert_eq!(polar.dy, 3_000_000);
+                assert_eq!(polar.projection_center_flag, 0);
+                assert_eq!(polar.scanning_mode, 0);
+            }
+            other => panic!("expected polar stereographic grid, got {other:?}"),
         }
     }
 
@@ -447,6 +570,7 @@ mod tests {
 
         assert_eq!(grid.template_number(), 3_276);
         assert!(grid.as_lat_lon().is_none());
+        assert!(grid.as_polar_stereographic().is_none());
         assert!(grid.as_lambert_conformal().is_none());
         assert_eq!(grid.unsupported_template(), Some(3_276));
     }
@@ -489,6 +613,35 @@ mod tests {
             .reorder_ndarray_to_grib_scan(vec![1, 2, 3, 4, 5, 6])
             .unwrap();
         assert_eq!(scan_order, vec![1, 2, 3, 6, 5, 4]);
+    }
+
+    #[test]
+    fn normalizes_polar_stereographic_alternating_row_scan() {
+        let grid = PolarStereographicGrid {
+            number_of_points: 6,
+            shape_of_earth: 6,
+            scale_factor_radius: 0,
+            scaled_value_radius: 0,
+            scale_factor_major_axis: 0,
+            scaled_value_major_axis: 0,
+            scale_factor_minor_axis: 0,
+            scaled_value_minor_axis: 0,
+            nx: 3,
+            ny: 2,
+            lat_first: 0,
+            lon_first: 0,
+            resolution_and_component_flags: 0,
+            lat_d: 0,
+            lon_v: 0,
+            dx: 1,
+            dy: 1,
+            projection_center_flag: 0,
+            scanning_mode: 0b0001_0000,
+        };
+
+        let mut values = vec![1.0, 2.0, 3.0, 6.0, 5.0, 4.0];
+        grid.reorder_for_ndarray_in_place(&mut values).unwrap();
+        assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 
     #[test]
@@ -572,6 +725,26 @@ mod tests {
             err,
             crate::Error::UnsupportedScanningMode(0b0010_0000)
         ));
+    }
+
+    fn build_polar_stereographic_section(scanning_mode: u8) -> Vec<u8> {
+        let mut section = vec![0u8; 65];
+        section[..4].copy_from_slice(&65u32.to_be_bytes());
+        section[4] = 3;
+        section[6..10].copy_from_slice(&6u32.to_be_bytes());
+        section[12..14].copy_from_slice(&20u16.to_be_bytes());
+        section[14] = 6;
+        section[30..34].copy_from_slice(&3u32.to_be_bytes());
+        section[34..38].copy_from_slice(&2u32.to_be_bytes());
+        section[38..42].copy_from_slice(&encode_wmo_i32(41_612_949).unwrap());
+        section[42..46].copy_from_slice(&185_117_126u32.to_be_bytes());
+        section[46] = 0x08;
+        section[47..51].copy_from_slice(&encode_wmo_i32(60_000_000).unwrap());
+        section[51..55].copy_from_slice(&225_000_000u32.to_be_bytes());
+        section[55..59].copy_from_slice(&3_000_000u32.to_be_bytes());
+        section[59..63].copy_from_slice(&3_000_000u32.to_be_bytes());
+        section[64] = scanning_mode;
+        section
     }
 
     fn build_lambert_section() -> Vec<u8> {

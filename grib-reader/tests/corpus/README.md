@@ -21,6 +21,10 @@ Current interoperability samples:
   `CMC_glb_ALBDO_SFC_0_latlon.15x.15_2026051000_P000.grib2`, cycle
   `2026-05-10 00Z`, public MSC Datamart object
   `https://dd.weather.gc.ca/today/model_gem_global/15km/grib2/lat_lon/00/000/CMC_glb_ALBDO_SFC_0_latlon.15x.15_2026051000_P000.grib2`.
+- `interop/samples/noaa-hrrr-alaska-polar-refc.grib2`: first GRIB message
+  from NOAA HRRR Alaska surface analysis `hrrr.t00z.wrfsfcf00.ak.grib2`,
+  cycle `2024-01-01 00Z`, bytes `0-496072`, public NOAA Open Data S3 object
+  `https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20240101/alaska/hrrr.t00z.wrfsfcf00.ak.grib2`.
 - `interop/samples/noaa-hrrr-conus-lambert-refc.grib2`: first GRIB message
   from NOAA HRRR CONUS surface analysis `hrrr.t00z.wrfsfcf00.grib2`, cycle
   `2024-01-01 00Z`, bytes `0-202809`, public NOAA Open Data S3 object

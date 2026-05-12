@@ -2,8 +2,9 @@
 //!
 //! The current implementation supports the production-critical baseline for both
 //! GRIB1 and GRIB2: regular latitude/longitude grids, GRIB2 Lambert conformal
-//! metadata and flat decode, simple packing, GRIB2 complex packing with
-//! general group splitting, and optional image-backed GRIB2 packing codecs.
+//! and polar stereographic metadata and flat decode, simple packing, GRIB2
+//! complex packing with general group splitting, and optional image-backed
+//! GRIB2 packing codecs.
 //!
 //! # Example
 //!
@@ -48,7 +49,7 @@ pub use data::{
 };
 pub use error::{Error, Result};
 pub use grib1::{BinaryDataSection, GridDescription, ProductDefinition as Grib1ProductDefinition};
-pub use grid::{GridDefinition, LambertConformalGrid, LatLonGrid};
+pub use grid::{GridDefinition, LambertConformalGrid, LatLonGrid, PolarStereographicGrid};
 pub use metadata::{ForecastTimeUnit, Parameter, ReferenceTime};
 pub use product::{
     AnalysisOrForecastTemplate, FixedSurface, Identification, ProductDefinition,
