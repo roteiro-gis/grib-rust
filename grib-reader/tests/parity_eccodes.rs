@@ -103,13 +103,15 @@ fn assert_matches_reference(helper: &Path, path: &Path) {
             path.display(),
             index
         );
-        assert_eq!(
-            message.parameter_description(),
-            expected.name,
-            "parameter description mismatch for {} field {}",
-            path.display(),
-            index
-        );
+        if !has_local_use_parameter(&message) {
+            assert_eq!(
+                message.parameter_description(),
+                expected.name,
+                "parameter description mismatch for {} field {}",
+                path.display(),
+                index
+            );
+        }
         assert_eq!(
             message.reference_time().year,
             expected.reference_time.year,
@@ -206,4 +208,17 @@ fn sample_requires_disabled_codec(file: &GribFile) -> bool {
         }
     }
     false
+}
+
+fn has_local_use_parameter(message: &grib_reader::Message<'_>) -> bool {
+    let Some(product) = message.product_definition() else {
+        return false;
+    };
+    // Local table resolution is intentionally not modeled yet, so ecCodes may
+    // know a center-specific name that the generic WMO lookup must not claim.
+    is_local_use_code(product.parameter_category) || is_local_use_code(product.parameter_number)
+}
+
+fn is_local_use_code(code: u8) -> bool {
+    (192..=254).contains(&code)
 }
