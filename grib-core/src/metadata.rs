@@ -1,5 +1,7 @@
 //! Edition-independent field metadata.
 
+use std::borrow::Cow;
+
 /// Semantic forecast-time units shared across GRIB editions.
 ///
 /// Raw unit codes are edition-specific. In particular, GRIB1 code `13` means
@@ -169,15 +171,39 @@ impl ReferenceTime {
     }
 }
 
-/// Edition-independent parameter identity.
+/// Source table used to resolve a parameter name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParameterTableSource {
+    /// GRIB1 parameter table.
+    Grib1 { table_version: u8 },
+    /// WMO GRIB2 Code Table 4.2.
+    Wmo,
+    /// Center-specific GRIB2 local table.
+    Local {
+        center_id: u16,
+        subcenter_id: u16,
+        local_table_version: u8,
+    },
+    /// A GRIB2 local-use code without a matching local table entry.
+    UnknownLocal {
+        center_id: u16,
+        subcenter_id: u16,
+        local_table_version: u8,
+    },
+    /// No WMO or local table entry matched this parameter.
+    Unknown,
+}
+
+/// Edition-independent parameter identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parameter {
     pub discipline: Option<u8>,
     pub category: Option<u8>,
     pub table_version: Option<u8>,
     pub number: u8,
-    pub short_name: &'static str,
-    pub description: &'static str,
+    pub short_name: Cow<'static, str>,
+    pub description: Cow<'static, str>,
+    pub source: ParameterTableSource,
 }
 
 impl Parameter {
@@ -192,8 +218,9 @@ impl Parameter {
             category: None,
             table_version: Some(table_version),
             number,
-            short_name,
-            description,
+            short_name: Cow::Borrowed(short_name),
+            description: Cow::Borrowed(description),
+            source: ParameterTableSource::Grib1 { table_version },
         }
     }
 
@@ -204,13 +231,41 @@ impl Parameter {
         short_name: &'static str,
         description: &'static str,
     ) -> Self {
+        let source = if short_name == "unknown" && description == "Unknown parameter" {
+            ParameterTableSource::Unknown
+        } else {
+            ParameterTableSource::Wmo
+        };
+        Self::new_grib2_with_source(
+            discipline,
+            category,
+            number,
+            short_name,
+            description,
+            source,
+        )
+    }
+
+    pub fn new_grib2_with_source<S, D>(
+        discipline: u8,
+        category: u8,
+        number: u8,
+        short_name: S,
+        description: D,
+        source: ParameterTableSource,
+    ) -> Self
+    where
+        S: Into<Cow<'static, str>>,
+        D: Into<Cow<'static, str>>,
+    {
         Self {
             discipline: Some(discipline),
             category: Some(category),
             table_version: None,
             number,
-            short_name,
-            description,
+            short_name: short_name.into(),
+            description: description.into(),
+            source,
         }
     }
 }

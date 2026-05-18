@@ -9,7 +9,7 @@ use common::{
     build_grib2_spatial_differencing_message, collect_parity_samples, dump_reference, helper_path,
     write_fixture,
 };
-use grib_reader::{DataRepresentation, GribFile};
+use grib_reader::{DataRepresentation, GribFile, ParameterTableSource};
 
 #[test]
 #[ignore = "requires GRIB_READER_ECCODES_HELPER"]
@@ -103,7 +103,7 @@ fn assert_matches_reference(helper: &Path, path: &Path) {
             path.display(),
             index
         );
-        if !has_local_use_parameter(&message) {
+        if !has_unknown_local_use_parameter(&message) {
             assert_eq!(
                 message.parameter_description(),
                 expected.name,
@@ -210,15 +210,9 @@ fn sample_requires_disabled_codec(file: &GribFile) -> bool {
     false
 }
 
-fn has_local_use_parameter(message: &grib_reader::Message<'_>) -> bool {
-    let Some(product) = message.product_definition() else {
-        return false;
-    };
-    // Local table resolution is intentionally not modeled yet, so ecCodes may
-    // know a center-specific name that the generic WMO lookup must not claim.
-    is_local_use_code(product.parameter_category) || is_local_use_code(product.parameter_number)
-}
-
-fn is_local_use_code(code: u8) -> bool {
-    (192..=254).contains(&code)
+fn has_unknown_local_use_parameter(message: &grib_reader::Message<'_>) -> bool {
+    matches!(
+        message.parameter().source,
+        ParameterTableSource::UnknownLocal { .. }
+    )
 }

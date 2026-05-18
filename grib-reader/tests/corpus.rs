@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use grib_reader::{DataRepresentation, GribFile, GridDefinition};
+use grib_reader::{DataRepresentation, GribFile, GridDefinition, ParameterTableSource};
 
 #[test]
 fn bootstrap_corpus_decodes() {
@@ -36,6 +36,16 @@ fn hrrr_lambert_interop_sample_has_expected_grid() {
         .unwrap_or_else(|err| panic!("failed opening {}: {err}", path.display()));
     let message = file.message(0).unwrap();
 
+    assert_eq!(message.parameter_name(), "REFC");
+    assert_eq!(message.parameter_description(), "Composite reflectivity");
+    assert_eq!(
+        message.parameter().source,
+        ParameterTableSource::Local {
+            center_id: 7,
+            subcenter_id: 0,
+            local_table_version: 1,
+        }
+    );
     assert_eq!(message.grid_shape(), (1799, 1059));
     match message.grid_definition() {
         GridDefinition::LambertConformal(grid) => {
@@ -65,6 +75,16 @@ fn hrrr_alaska_polar_interop_sample_has_expected_grid() {
         .unwrap_or_else(|err| panic!("failed opening {}: {err}", path.display()));
     let message = file.message(0).unwrap();
 
+    assert_eq!(message.parameter_name(), "REFC");
+    assert_eq!(message.parameter_description(), "Composite reflectivity");
+    assert_eq!(
+        message.parameter().source,
+        ParameterTableSource::Local {
+            center_id: 7,
+            subcenter_id: 0,
+            local_table_version: 1,
+        }
+    );
     assert_eq!(message.grid_shape(), (1299, 919));
     match message.grid_definition() {
         GridDefinition::PolarStereographic(grid) => {
