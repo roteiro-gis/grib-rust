@@ -21,29 +21,7 @@ pub struct LocalParameterEntry<'a> {
     pub description: &'a str,
 }
 
-impl<'a> LocalParameterEntry<'a> {
-    pub const fn new(
-        center_id: u16,
-        subcenter_id: Option<u16>,
-        local_table_version: Option<u8>,
-        discipline: u8,
-        category: u8,
-        number: u8,
-        short_name: &'a str,
-        description: &'a str,
-    ) -> Self {
-        Self {
-            center_id,
-            subcenter_id,
-            local_table_version,
-            discipline,
-            category,
-            number,
-            short_name,
-            description,
-        }
-    }
-
+impl LocalParameterEntry<'_> {
     fn matches(
         &self,
         discipline: u8,
@@ -67,19 +45,16 @@ impl<'a> LocalParameterEntry<'a> {
 }
 
 /// Built-in local table entries shipped with the crate.
-pub const BUILTIN_LOCAL_PARAMETERS: &[LocalParameterEntry<'static>] = &[
-    // NCEP/NOAA local table: center 7, local table version 1.
-    LocalParameterEntry::new(
-        7,
-        None,
-        Some(1),
-        0,
-        16,
-        196,
-        "REFC",
-        "Composite reflectivity",
-    ),
-];
+pub const BUILTIN_LOCAL_PARAMETERS: &[LocalParameterEntry<'static>] = &[LocalParameterEntry {
+    center_id: 7,
+    subcenter_id: None,
+    local_table_version: Some(1),
+    discipline: 0,
+    category: 16,
+    number: 196,
+    short_name: "REFC",
+    description: "Composite reflectivity",
+}];
 
 /// Look up a GRIB1 parameter short name.
 pub fn grib1_parameter_name(table_version: u8, number: u8) -> &'static str {
@@ -374,16 +349,16 @@ mod tests {
 
     #[test]
     fn user_local_entries_resolve_local_use_codes() {
-        let entries = [LocalParameterEntry::new(
-            42,
-            Some(5),
-            Some(3),
-            0,
-            192,
-            1,
-            "XFOO",
-            "Example local parameter",
-        )];
+        let entries = [LocalParameterEntry {
+            center_id: 42,
+            subcenter_id: Some(5),
+            local_table_version: Some(3),
+            discipline: 0,
+            category: 192,
+            number: 1,
+            short_name: "XFOO",
+            description: "Example local parameter",
+        }];
 
         let parameter = lookup_parameter_with_local_entries(0, 192, 1, 42, 5, 3, &entries);
 
@@ -401,16 +376,16 @@ mod tests {
 
     #[test]
     fn wmo_parameters_win_over_local_entries() {
-        let entries = [LocalParameterEntry::new(
-            7,
-            None,
-            Some(1),
-            0,
-            0,
-            0,
-            "BADTMP",
-            "Bad local temperature",
-        )];
+        let entries = [LocalParameterEntry {
+            center_id: 7,
+            subcenter_id: None,
+            local_table_version: Some(1),
+            discipline: 0,
+            category: 0,
+            number: 0,
+            short_name: "BADTMP",
+            description: "Bad local temperature",
+        }];
 
         let parameter = lookup_parameter_with_local_entries(0, 0, 0, 7, 0, 1, &entries);
 

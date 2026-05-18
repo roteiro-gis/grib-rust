@@ -362,16 +362,16 @@ fn caller_local_entries_resolve_unknown_center_local_parameters() {
     set_grib2_identification(&mut bytes, 8, 0, 1);
     set_grib2_product_parameter(&mut bytes, 16, 196);
 
-    let local_parameters = [LocalParameterEntry::new(
-        8,
-        Some(0),
-        Some(1),
-        0,
-        16,
-        196,
-        "LREFC",
-        "Local composite reflectivity",
-    )];
+    let local_parameters = [LocalParameterEntry {
+        center_id: 8,
+        subcenter_id: Some(0),
+        local_table_version: Some(1),
+        discipline: 0,
+        category: 16,
+        number: 196,
+        short_name: "LREFC",
+        description: "Local composite reflectivity",
+    }];
     let opened = GribFile::from_bytes_with_local_parameters(
         bytes,
         OpenOptions::default(),
