@@ -19,7 +19,8 @@ pub use data::{
 };
 pub use error::{Error, Result};
 pub use grid::{GridDefinition, LambertConformalGrid, LatLonGrid, PolarStereographicGrid};
-pub use metadata::{ForecastTimeUnit, Parameter, ReferenceTime};
+pub use metadata::{ForecastTimeUnit, Parameter, ParameterTableSource, ReferenceTime};
+pub use parameter::{LocalParameterEntry, BUILTIN_LOCAL_PARAMETERS};
 pub use product::{
     AnalysisOrForecastTemplate, FixedSurface, Identification, ProductDefinition,
     ProductDefinitionTemplate,

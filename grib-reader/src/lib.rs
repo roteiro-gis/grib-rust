@@ -50,7 +50,8 @@ pub use data::{
 pub use error::{Error, Result};
 pub use grib1::{BinaryDataSection, GridDescription, ProductDefinition as Grib1ProductDefinition};
 pub use grid::{GridDefinition, LambertConformalGrid, LatLonGrid, PolarStereographicGrid};
-pub use metadata::{ForecastTimeUnit, Parameter, ReferenceTime};
+pub use metadata::{ForecastTimeUnit, Parameter, ParameterTableSource, ReferenceTime};
+pub use parameter::{LocalParameterEntry, BUILTIN_LOCAL_PARAMETERS};
 pub use product::{
     AnalysisOrForecastTemplate, FixedSurface, Identification, ProductDefinition,
     ProductDefinitionTemplate,
@@ -66,6 +67,7 @@ use crate::data::{
     decode_payload_into,
 };
 use crate::indicator::Indicator;
+use crate::parameter::lookup_parameter_with_local_entries;
 use crate::sections::{index_fields, FieldSections, SectionRef};
 
 #[cfg(feature = "rayon")]
@@ -156,11 +158,20 @@ impl GribFile {
 
     /// Open a GRIB file from disk using explicit decoder options.
     pub fn open_with_options<P: AsRef<Path>>(path: P, options: OpenOptions) -> Result<Self> {
+        Self::open_with_local_parameters(path, options, &[])
+    }
+
+    /// Open a GRIB file from disk using explicit decoder options and local table entries.
+    pub fn open_with_local_parameters<P: AsRef<Path>>(
+        path: P,
+        options: OpenOptions,
+        local_parameters: &[LocalParameterEntry<'_>],
+    ) -> Result<Self> {
         let file = std::fs::File::open(path.as_ref())
             .map_err(|e| Error::Io(e, path.as_ref().display().to_string()))?;
         let mmap = unsafe { Mmap::map(&file) }
             .map_err(|e| Error::Io(e, path.as_ref().display().to_string()))?;
-        Self::from_data(GribData::Mmap(mmap), options)
+        Self::from_data(GribData::Mmap(mmap), options, local_parameters)
     }
 
     /// Open a GRIB file from an owned byte buffer.
@@ -170,11 +181,24 @@ impl GribFile {
 
     /// Open a GRIB file from an owned byte buffer using explicit decoder options.
     pub fn from_bytes_with_options(data: Vec<u8>, options: OpenOptions) -> Result<Self> {
-        Self::from_data(GribData::Bytes(data), options)
+        Self::from_bytes_with_local_parameters(data, options, &[])
     }
 
-    fn from_data(data: GribData, options: OpenOptions) -> Result<Self> {
-        let messages = scan_messages(data.as_bytes(), options)?;
+    /// Open a GRIB file from bytes using explicit decoder options and local table entries.
+    pub fn from_bytes_with_local_parameters(
+        data: Vec<u8>,
+        options: OpenOptions,
+        local_parameters: &[LocalParameterEntry<'_>],
+    ) -> Result<Self> {
+        Self::from_data(GribData::Bytes(data), options, local_parameters)
+    }
+
+    fn from_data(
+        data: GribData,
+        options: OpenOptions,
+        local_parameters: &[LocalParameterEntry<'_>],
+    ) -> Result<Self> {
+        let messages = scan_messages(data.as_bytes(), options, local_parameters)?;
         if messages.is_empty() {
             return Err(Error::NoMessages);
         }
@@ -305,12 +329,12 @@ impl<'a> Message<'a> {
         &self.metadata.grid
     }
 
-    pub fn parameter_name(&self) -> &'static str {
-        self.metadata.parameter.short_name
+    pub fn parameter_name(&self) -> &str {
+        self.metadata.parameter.short_name.as_ref()
     }
 
-    pub fn parameter_description(&self) -> &'static str {
-        self.metadata.parameter.description
+    pub fn parameter_description(&self) -> &str {
+        self.metadata.parameter.description.as_ref()
     }
 
     pub fn forecast_time_unit(&self) -> Option<u8> {
@@ -441,7 +465,11 @@ fn section_bytes(msg_bytes: &[u8], section: SectionRef) -> &[u8] {
     &msg_bytes[section.offset..section.offset + section.length]
 }
 
-fn scan_messages(data: &[u8], options: OpenOptions) -> Result<Vec<MessageIndex>> {
+fn scan_messages(
+    data: &[u8],
+    options: OpenOptions,
+    local_parameters: &[LocalParameterEntry<'_>],
+) -> Result<Vec<MessageIndex>> {
     let mut messages = Vec::new();
     let mut pos = 0usize;
 
@@ -463,7 +491,7 @@ fn scan_messages(data: &[u8], options: OpenOptions) -> Result<Vec<MessageIndex>>
         let message_bytes = &data[pos..next_pos];
         let indexed = match indicator.edition {
             1 => index_grib1_message(message_bytes, pos)?,
-            2 => index_grib2_message(message_bytes, pos, &indicator)?,
+            2 => index_grib2_message(message_bytes, pos, &indicator, local_parameters)?,
             other => return Err(Error::UnsupportedEdition(other)),
         };
 
@@ -561,6 +589,7 @@ fn index_grib2_message(
     message_bytes: &[u8],
     offset: usize,
     indicator: &Indicator,
+    local_parameters: &[LocalParameterEntry<'_>],
 ) -> Result<Vec<MessageIndex>> {
     let fields = index_fields(message_bytes)?;
     let mut messages = Vec::with_capacity(fields.len());
@@ -575,12 +604,14 @@ fn index_grib2_message(
             message_bytes,
             field_sections.data_representation,
         ))?;
-        let parameter = Parameter::new_grib2(
+        let parameter = lookup_parameter_with_local_entries(
             indicator.discipline,
             product.parameter_category,
             product.parameter_number,
-            product.parameter_name(indicator.discipline),
-            product.parameter_description(indicator.discipline),
+            identification.center_id,
+            identification.subcenter_id,
+            identification.local_table_version,
+            local_parameters,
         );
 
         messages.push(MessageIndex {
@@ -811,7 +842,7 @@ mod tests {
             build_simple_representation(4, 8),
             build_data(&pack_u8_values(&[1, 2, 3, 4])),
         ]);
-        let messages = scan_messages(&message, OpenOptions::default()).unwrap();
+        let messages = scan_messages(&message, OpenOptions::default(), &[]).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].metadata.parameter.short_name, "TMP");
     }

@@ -9,7 +9,10 @@ use common::{
     build_grib2_multifield_message, build_grib2_polar_stereographic_alternating_message,
     build_grib2_polar_stereographic_message, build_grib2_spatial_differencing_message,
 };
-use grib_reader::{Error, ForecastTimeUnit, GribFile, GridDefinition, OpenOptions};
+use grib_reader::{
+    Error, ForecastTimeUnit, GribFile, GridDefinition, LocalParameterEntry, OpenOptions,
+    ParameterTableSource,
+};
 
 #[test]
 fn open_grib2_from_file_and_decode() {
@@ -306,9 +309,90 @@ fn iterates_multifield_grib2_message() {
     let opened = GribFile::from_bytes(build_grib2_multifield_message()).unwrap();
     let names = opened
         .messages()
-        .map(|message| message.parameter_name())
+        .map(|message| message.parameter_name().to_owned())
         .collect::<Vec<_>>();
     assert_eq!(names, vec!["TMP", "POT"]);
+}
+
+#[test]
+fn ncep_refc_resolves_from_builtin_local_table() {
+    let mut bytes = build_grib2_message(&[1, 2, 3, 4]);
+    set_grib2_identification(&mut bytes, 7, 0, 1);
+    set_grib2_product_parameter(&mut bytes, 16, 196);
+
+    let opened = GribFile::from_bytes(bytes).unwrap();
+    let field = opened.message(0).unwrap();
+
+    assert_eq!(field.parameter_name(), "REFC");
+    assert_eq!(field.parameter_description(), "Composite reflectivity");
+    assert_eq!(
+        field.parameter().source,
+        ParameterTableSource::Local {
+            center_id: 7,
+            subcenter_id: 0,
+            local_table_version: 1,
+        }
+    );
+}
+
+#[test]
+fn unknown_local_grib2_parameter_remains_unknown_local() {
+    let mut bytes = build_grib2_message(&[1, 2, 3, 4]);
+    set_grib2_identification(&mut bytes, 8, 0, 1);
+    set_grib2_product_parameter(&mut bytes, 16, 196);
+
+    let opened = GribFile::from_bytes(bytes).unwrap();
+    let field = opened.message(0).unwrap();
+
+    assert_eq!(field.parameter_name(), "unknown");
+    assert_eq!(field.parameter_description(), "Unknown parameter");
+    assert_eq!(
+        field.parameter().source,
+        ParameterTableSource::UnknownLocal {
+            center_id: 8,
+            subcenter_id: 0,
+            local_table_version: 1,
+        }
+    );
+}
+
+#[test]
+fn caller_local_entries_resolve_unknown_center_local_parameters() {
+    let mut bytes = build_grib2_message(&[1, 2, 3, 4]);
+    set_grib2_identification(&mut bytes, 8, 0, 1);
+    set_grib2_product_parameter(&mut bytes, 16, 196);
+
+    let local_parameters = [LocalParameterEntry::new(
+        8,
+        Some(0),
+        Some(1),
+        0,
+        16,
+        196,
+        "LREFC",
+        "Local composite reflectivity",
+    )];
+    let opened = GribFile::from_bytes_with_local_parameters(
+        bytes,
+        OpenOptions::default(),
+        &local_parameters,
+    )
+    .unwrap();
+    let field = opened.message(0).unwrap();
+
+    assert_eq!(field.parameter_name(), "LREFC");
+    assert_eq!(
+        field.parameter_description(),
+        "Local composite reflectivity"
+    );
+    assert_eq!(
+        field.parameter().source,
+        ParameterTableSource::Local {
+            center_id: 8,
+            subcenter_id: 0,
+            local_table_version: 1,
+        }
+    );
 }
 
 #[test]
@@ -417,4 +501,36 @@ fn open_grib2_spatial_differencing_field_and_decode() {
         .collect::<Vec<_>>();
 
     assert_eq!(decoded, vec![10.0, 12.0, 15.0, 19.0]);
+}
+
+fn set_grib2_identification(
+    bytes: &mut [u8],
+    center_id: u16,
+    subcenter_id: u16,
+    local_table_version: u8,
+) {
+    let offset = grib2_section_offset(bytes, 1);
+    bytes[offset + 5..offset + 7].copy_from_slice(&center_id.to_be_bytes());
+    bytes[offset + 7..offset + 9].copy_from_slice(&subcenter_id.to_be_bytes());
+    bytes[offset + 10] = local_table_version;
+}
+
+fn set_grib2_product_parameter(bytes: &mut [u8], category: u8, number: u8) {
+    let offset = grib2_section_offset(bytes, 4);
+    bytes[offset + 9] = category;
+    bytes[offset + 10] = number;
+}
+
+fn grib2_section_offset(bytes: &[u8], section_number: u8) -> usize {
+    let mut offset = 16;
+    while offset + 5 <= bytes.len().saturating_sub(4) {
+        let length = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        assert!(length >= 5, "invalid section length {length}");
+        if bytes[offset + 4] == section_number {
+            return offset;
+        }
+        offset += length;
+    }
+
+    panic!("section {section_number} not found");
 }
