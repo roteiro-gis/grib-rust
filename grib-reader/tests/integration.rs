@@ -324,7 +324,10 @@ fn ncep_refc_resolves_from_builtin_local_table() {
     let field = opened.message(0).unwrap();
 
     assert_eq!(field.parameter_name(), "REFC");
-    assert_eq!(field.parameter_description(), "Composite reflectivity");
+    assert_eq!(
+        field.parameter_description(),
+        "Maximum/Composite radar reflectivity"
+    );
     assert_eq!(
         field.parameter().source,
         ParameterTableSource::Local {

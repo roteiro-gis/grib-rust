@@ -37,7 +37,10 @@ fn hrrr_lambert_interop_sample_has_expected_grid() {
     let message = file.message(0).unwrap();
 
     assert_eq!(message.parameter_name(), "REFC");
-    assert_eq!(message.parameter_description(), "Composite reflectivity");
+    assert_eq!(
+        message.parameter_description(),
+        "Maximum/Composite radar reflectivity"
+    );
     assert_eq!(
         message.parameter().source,
         ParameterTableSource::Local {
@@ -76,7 +79,10 @@ fn hrrr_alaska_polar_interop_sample_has_expected_grid() {
     let message = file.message(0).unwrap();
 
     assert_eq!(message.parameter_name(), "REFC");
-    assert_eq!(message.parameter_description(), "Composite reflectivity");
+    assert_eq!(
+        message.parameter_description(),
+        "Maximum/Composite radar reflectivity"
+    );
     assert_eq!(
         message.parameter().source,
         ParameterTableSource::Local {
