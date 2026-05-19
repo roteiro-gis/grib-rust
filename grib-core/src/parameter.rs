@@ -53,7 +53,7 @@ pub const BUILTIN_LOCAL_PARAMETERS: &[LocalParameterEntry<'static>] = &[LocalPar
     category: 16,
     number: 196,
     short_name: "REFC",
-    description: "Composite reflectivity",
+    description: "Maximum/Composite radar reflectivity",
 }];
 
 /// Look up a GRIB1 parameter short name.
@@ -304,7 +304,10 @@ mod tests {
         let parameter = lookup_parameter(0, 16, 196, 7, 0, 1);
 
         assert_eq!(parameter.short_name, "REFC");
-        assert_eq!(parameter.description, "Composite reflectivity");
+        assert_eq!(
+            parameter.description,
+            "Maximum/Composite radar reflectivity"
+        );
         assert_eq!(
             parameter.source,
             ParameterTableSource::Local {
