@@ -108,14 +108,14 @@ dependencies = [
 
 [[package]]
 name = "grib-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "grib-reader"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "flate2",
  "grib-core",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "grib-writer"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "grib-core",
 ]

@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "../README.md"
 documentation = "https://docs.rs/grib-core"
 keywords = ["grib", "grib2", "weather", "climate"]
 categories = ["science", "encoding", "parser-implementations"]
