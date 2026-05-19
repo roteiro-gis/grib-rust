@@ -261,7 +261,7 @@ git push origin v<version>
 - `./scripts/run-reference-parity.sh` runs the Dockerized ecCodes parity suite.
 - `grib-writer` has a versioned dev-dependency on `grib-reader` for local
   validation tests and benchmarks, so dry-run and publish it after
-  `grib-reader` v0.4.0 is visible in the crates.io index.
+  `grib-reader` v0.5.0 is visible in the crates.io index.
 - For reference comparisons and current benchmark results against ecCodes, see
   [docs/benchmark-report.md](docs/benchmark-report.md). Re-run the benchmark
   scripts after corpus changes before using those numbers as current throughput
