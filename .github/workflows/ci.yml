@@ -23,14 +23,14 @@ env:
 
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy --no-self-update
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
@@ -39,24 +39,24 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Verify corpus fixtures are up to date
         run: |
-          cargo run -p grib-reader --example sync_corpus
+          cargo run -p grib-reader --example sync_corpus --locked
           git diff --exit-code
 
       - name: Run tests with all features
-        run: cargo test --all-features
+        run: cargo test --all-features --locked
 
       - name: Run tests with no default features
-        run: cargo test --no-default-features
+        run: cargo test --no-default-features --locked
 
       - name: Check fuzz targets
-        run: cargo check --manifest-path grib-reader/fuzz/Cargo.toml --bins
+        run: cargo check --manifest-path grib-reader/fuzz/Cargo.toml --bins --locked
 
       - name: Lint fuzz targets
-        run: cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins -- -D warnings
+        run: cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins --locked -- -D warnings
 
       - name: Verify crate packaging
         run: cargo package --workspace --locked
