@@ -177,6 +177,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Output: caller-owned `&mut [f32]`/`&mut [f64]`, flat `Vec<f32>`/`Vec<f64>`, or `ndarray::ArrayD<f32>`/`ArrayD<f64>`
 - Memory-mapped I/O or owned byte buffers
 - Writer GRIB2 regular lat/lon fields with product template 4.0, simple packing template 5.0, complex packing template 5.2, and spatial differencing template 5.3
+- Feature-gated writer GRIB2 JPEG2000 template 5.40 and PNG template 5.41 packed data encode
 - Writer GRIB2 bitmap section generation from explicit masks or `NaN` values
 - Writer single-message multi-field GRIB2 output with reused grid sections
 - Writer GRIB1 regular lat/lon fields with simple packing and optional bitmap section
@@ -185,7 +186,6 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 
 - Additional non-lat/lon grid templates and projected coordinate generation
 - Writer GRIB2 row-by-row complex packing
-- Writer JPEG2000 and PNG-packed GRIB2 fields
 - GRIB1 predefined bitmaps
 
 Unsupported cases fail explicitly with typed errors.
@@ -205,8 +205,8 @@ when matching specific grid families.
 | Flag | Default | Description |
 |---|---|---|
 | `rayon` | yes | Parallel field decoding |
-| `jpeg2000` | no | GRIB2 template 5.40 JPEG2000 packed-data decode via `jpeg2k`/OpenJPEG |
-| `png` | no | GRIB2 template 5.41 PNG packed-data decode |
+| `jpeg2000` | no | GRIB2 template 5.40 JPEG2000 packed-data decode in `grib-reader` and encode in `grib-writer` |
+| `png` | no | GRIB2 template 5.41 PNG packed-data decode in `grib-reader` and encode in `grib-writer` |
 | `codecs` | no | Enables both `jpeg2000` and `png` |
 
 ## Testing
