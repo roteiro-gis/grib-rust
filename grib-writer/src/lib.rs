@@ -11,8 +11,8 @@ use grib_core::binary::{
 use grib_core::bit::BitWriter;
 use grib_core::{
     ComplexPackingParams, DataRepresentation, FixedSurface, GridDefinition, Identification,
-    LatLonGrid, ProductDefinition, ProductDefinitionTemplate, SimplePackingParams,
-    SpatialDifferencingParams,
+    ImagePackingParams, Jpeg2000PackingParams, LatLonGrid, PngPackingParams, ProductDefinition,
+    ProductDefinitionTemplate, SimplePackingParams, SpatialDifferencingParams,
 };
 
 pub use grib_core::grib1::ProductDefinition as Grib1ProductDefinition;
@@ -28,6 +28,10 @@ pub enum PackingStrategy {
         decimal_scale: i16,
         spatial_differencing: Option<SpatialDifferencingOrder>,
     },
+    /// GRIB2 JPEG 2000 code stream packing template 5.40.
+    Jpeg2000Auto { decimal_scale: i16 },
+    /// GRIB2 PNG image packing template 5.41.
+    PngAuto { decimal_scale: i16 },
 }
 
 /// Spatial differencing order for GRIB2 complex packing template 5.3.
@@ -145,6 +149,16 @@ impl Grib1FieldBuilder {
             PackingStrategy::ComplexAuto { .. } => {
                 return Err(Error::Other(
                     "GRIB1 writer does not support complex packing".into(),
+                ));
+            }
+            PackingStrategy::Jpeg2000Auto { .. } => {
+                return Err(Error::Other(
+                    "GRIB1 writer does not support JPEG2000 packing".into(),
+                ));
+            }
+            PackingStrategy::PngAuto { .. } => {
+                return Err(Error::Other(
+                    "GRIB1 writer does not support PNG packing".into(),
                 ));
             }
         };
@@ -296,6 +310,12 @@ impl Grib2FieldBuilder {
                 decimal_scale,
                 spatial_differencing,
             )?,
+            PackingStrategy::Jpeg2000Auto { decimal_scale } => {
+                pack_jpeg2000_auto(&values, bitmap.as_deref(), &grid, decimal_scale)?
+            }
+            PackingStrategy::PngAuto { decimal_scale } => {
+                pack_png_auto(&values, bitmap.as_deref(), &grid, decimal_scale)?
+            }
         };
 
         Ok(Grib2Field {
@@ -562,6 +582,457 @@ fn pack_complex_auto(
         bitmap_payload,
         data_payload: writer.into_bytes(),
     })
+}
+
+#[cfg(feature = "jpeg2000")]
+fn pack_jpeg2000_auto(
+    values: &[f64],
+    explicit_bitmap: Option<&[bool]>,
+    grid: &GridDefinition,
+    decimal_scale: i16,
+) -> Result<PackedField> {
+    let prepared = prepare_image_packing(
+        values,
+        explicit_bitmap,
+        grid,
+        decimal_scale,
+        "JPEG2000 packing",
+        jpeg2000_bits_per_value,
+    )?;
+    let data_payload = encode_jpeg2000_payload(
+        &prepared.deltas,
+        prepared.params.bits_per_value,
+        prepared.dimensions,
+    )?;
+
+    Ok(PackedField {
+        representation: DataRepresentation::Jpeg2000Packing(Jpeg2000PackingParams {
+            packing: prepared.params,
+            compression_type: 0,
+            target_compression_ratio: 0,
+        }),
+        bitmap_payload: prepared.bitmap_payload,
+        data_payload,
+    })
+}
+
+#[cfg(not(feature = "jpeg2000"))]
+fn pack_jpeg2000_auto(
+    _values: &[f64],
+    _explicit_bitmap: Option<&[bool]>,
+    _grid: &GridDefinition,
+    _decimal_scale: i16,
+) -> Result<PackedField> {
+    Err(Error::UnsupportedDataTemplate(40))
+}
+
+#[cfg(feature = "png")]
+fn pack_png_auto(
+    values: &[f64],
+    explicit_bitmap: Option<&[bool]>,
+    grid: &GridDefinition,
+    decimal_scale: i16,
+) -> Result<PackedField> {
+    let prepared = prepare_image_packing(
+        values,
+        explicit_bitmap,
+        grid,
+        decimal_scale,
+        "PNG packing",
+        png_bits_per_value,
+    )?;
+    let data_payload = encode_png_payload(
+        &prepared.deltas,
+        prepared.params.bits_per_value,
+        prepared.dimensions,
+    )?;
+
+    Ok(PackedField {
+        representation: DataRepresentation::PngPacking(PngPackingParams {
+            packing: prepared.params,
+        }),
+        bitmap_payload: prepared.bitmap_payload,
+        data_payload,
+    })
+}
+
+#[cfg(not(feature = "png"))]
+fn pack_png_auto(
+    _values: &[f64],
+    _explicit_bitmap: Option<&[bool]>,
+    _grid: &GridDefinition,
+    _decimal_scale: i16,
+) -> Result<PackedField> {
+    Err(Error::UnsupportedDataTemplate(41))
+}
+
+#[cfg(any(feature = "jpeg2000", feature = "png"))]
+#[derive(Debug, Clone)]
+struct PreparedImagePacking {
+    params: ImagePackingParams,
+    bitmap_payload: Option<Vec<u8>>,
+    deltas: Vec<u64>,
+    dimensions: ImageDimensions,
+}
+
+#[cfg(any(feature = "jpeg2000", feature = "png"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ImageDimensions {
+    width: u32,
+    height: u32,
+}
+
+#[cfg(any(feature = "jpeg2000", feature = "png"))]
+fn prepare_image_packing(
+    values: &[f64],
+    explicit_bitmap: Option<&[bool]>,
+    grid: &GridDefinition,
+    decimal_scale: i16,
+    packing_name: &str,
+    select_bits_per_value: fn(u8) -> Result<u8>,
+) -> Result<PreparedImagePacking> {
+    let present = present_mask(values, explicit_bitmap)?;
+    let present_count = present.iter().filter(|present| **present).count();
+    if present_count == 0 {
+        return Err(Error::Other(format!(
+            "{packing_name} requires at least one present value"
+        )));
+    }
+
+    let bitmap_payload = if present.iter().any(|present| !*present) {
+        Some(pack_bitmap(&present)?)
+    } else {
+        None
+    };
+
+    let quantized = quantize_present_values(values, &present, decimal_scale, packing_name)?;
+    let (reference_value, deltas) = simple_packing_deltas(&quantized)?;
+    let max_delta = deltas.iter().copied().max().unwrap_or(0);
+    let minimum_bits = bits_needed(max_delta)?.max(1);
+    let bits_per_value = select_bits_per_value(minimum_bits)?;
+    validate_image_deltas_fit(&deltas, bits_per_value)?;
+
+    Ok(PreparedImagePacking {
+        params: ImagePackingParams {
+            encoded_values: present_count,
+            reference_value,
+            binary_scale: 0,
+            decimal_scale,
+            bits_per_value,
+            original_field_type: 0,
+        },
+        bitmap_payload,
+        deltas,
+        dimensions: image_dimensions(grid, values.len(), present_count)?,
+    })
+}
+
+#[cfg(any(feature = "jpeg2000", feature = "png"))]
+fn image_dimensions(
+    grid: &GridDefinition,
+    total_values: usize,
+    present_count: usize,
+) -> Result<ImageDimensions> {
+    if present_count == total_values {
+        let Some(grid) = grid.as_lat_lon() else {
+            return Err(Error::UnsupportedGridTemplate(grid.template_number()));
+        };
+        return Ok(ImageDimensions {
+            width: grid.ni,
+            height: grid.nj,
+        });
+    }
+
+    Ok(ImageDimensions {
+        width: u32::try_from(present_count)
+            .map_err(|_| Error::Other("image width exceeds u32".into()))?,
+        height: 1,
+    })
+}
+
+#[cfg(any(feature = "jpeg2000", feature = "png"))]
+fn validate_image_deltas_fit(deltas: &[u64], bits_per_value: u8) -> Result<()> {
+    let max_value = if bits_per_value == u64::BITS as u8 {
+        u64::MAX
+    } else {
+        (1u64 << bits_per_value) - 1
+    };
+    if deltas.iter().any(|delta| *delta > max_value) {
+        return Err(Error::UnsupportedPackingWidth(bits_per_value));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "jpeg2000")]
+fn jpeg2000_bits_per_value(minimum_bits: u8) -> Result<u8> {
+    if (1..=31).contains(&minimum_bits) {
+        Ok(minimum_bits)
+    } else {
+        Err(Error::UnsupportedPackingWidth(minimum_bits))
+    }
+}
+
+#[cfg(feature = "png")]
+fn png_bits_per_value(minimum_bits: u8) -> Result<u8> {
+    match minimum_bits {
+        0 | 1 => Ok(1),
+        2 => Ok(2),
+        3 | 4 => Ok(4),
+        5..=8 => Ok(8),
+        9..=16 => Ok(16),
+        17..=24 => Ok(24),
+        25..=32 => Ok(32),
+        bits => Err(Error::UnsupportedPackingWidth(bits)),
+    }
+}
+
+#[cfg(feature = "png")]
+fn encode_png_payload(
+    deltas: &[u64],
+    bits_per_value: u8,
+    dimensions: ImageDimensions,
+) -> Result<Vec<u8>> {
+    validate_image_sample_count(deltas.len(), dimensions)?;
+    let (color_type, bit_depth, image_data) = png_image_data(deltas, bits_per_value, dimensions)?;
+
+    let mut payload = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut payload, dimensions.width, dimensions.height);
+        encoder.set_color(color_type);
+        encoder.set_depth(bit_depth);
+        let mut writer = encoder
+            .write_header()
+            .map_err(|err| Error::Other(format!("PNG encode failed: {err}")))?;
+        writer
+            .write_image_data(&image_data)
+            .map_err(|err| Error::Other(format!("PNG encode failed: {err}")))?;
+    }
+    Ok(payload)
+}
+
+#[cfg(feature = "png")]
+fn png_image_data(
+    deltas: &[u64],
+    bits_per_value: u8,
+    dimensions: ImageDimensions,
+) -> Result<(png::ColorType, png::BitDepth, Vec<u8>)> {
+    match bits_per_value {
+        1 => Ok((
+            png::ColorType::Grayscale,
+            png::BitDepth::One,
+            pack_png_subbyte_rows(deltas, dimensions, 1)?,
+        )),
+        2 => Ok((
+            png::ColorType::Grayscale,
+            png::BitDepth::Two,
+            pack_png_subbyte_rows(deltas, dimensions, 2)?,
+        )),
+        4 => Ok((
+            png::ColorType::Grayscale,
+            png::BitDepth::Four,
+            pack_png_subbyte_rows(deltas, dimensions, 4)?,
+        )),
+        8 => Ok((
+            png::ColorType::Grayscale,
+            png::BitDepth::Eight,
+            deltas
+                .iter()
+                .map(|delta| u8::try_from(*delta))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|_| Error::UnsupportedPackingWidth(bits_per_value))?,
+        )),
+        16 => {
+            let mut data = Vec::with_capacity(deltas.len() * 2);
+            for delta in deltas {
+                data.extend_from_slice(
+                    &u16::try_from(*delta)
+                        .map_err(|_| Error::UnsupportedPackingWidth(bits_per_value))?
+                        .to_be_bytes(),
+                );
+            }
+            Ok((png::ColorType::Grayscale, png::BitDepth::Sixteen, data))
+        }
+        24 => Ok((
+            png::ColorType::Rgb,
+            png::BitDepth::Eight,
+            pack_png_multibyte_samples(deltas, 3)?,
+        )),
+        32 => Ok((
+            png::ColorType::Rgba,
+            png::BitDepth::Eight,
+            pack_png_multibyte_samples(deltas, 4)?,
+        )),
+        bits => Err(Error::UnsupportedPackingWidth(bits)),
+    }
+}
+
+#[cfg(feature = "png")]
+fn pack_png_subbyte_rows(
+    deltas: &[u64],
+    dimensions: ImageDimensions,
+    bits_per_value: u8,
+) -> Result<Vec<u8>> {
+    let width =
+        usize::try_from(dimensions.width).map_err(|_| Error::Other("PNG width overflow".into()))?;
+    let height = usize::try_from(dimensions.height)
+        .map_err(|_| Error::Other("PNG height overflow".into()))?;
+    let bits = usize::from(bits_per_value);
+    let row_bits = width
+        .checked_mul(bits)
+        .ok_or_else(|| Error::Other("PNG row width overflow".into()))?;
+    let row_bytes = row_bits.div_ceil(8);
+    let mut data = vec![
+        0;
+        row_bytes
+            .checked_mul(height)
+            .ok_or_else(|| Error::Other("PNG data length overflow".into()))?
+    ];
+
+    for (index, delta) in deltas.iter().copied().enumerate() {
+        let row = index / width;
+        let column = index % width;
+        let bit_offset = column
+            .checked_mul(bits)
+            .ok_or_else(|| Error::Other("PNG bit offset overflow".into()))?;
+        let byte_index = row
+            .checked_mul(row_bytes)
+            .and_then(|row_offset| row_offset.checked_add(bit_offset / 8))
+            .ok_or_else(|| Error::Other("PNG byte offset overflow".into()))?;
+        let shift = 8 - bits - (bit_offset % 8);
+        data[byte_index] |= (delta as u8) << shift;
+    }
+
+    Ok(data)
+}
+
+#[cfg(feature = "png")]
+fn pack_png_multibyte_samples(deltas: &[u64], bytes_per_sample: usize) -> Result<Vec<u8>> {
+    let mut data = Vec::with_capacity(
+        deltas
+            .len()
+            .checked_mul(bytes_per_sample)
+            .ok_or_else(|| Error::Other("PNG data length overflow".into()))?,
+    );
+    for delta in deltas {
+        let bytes = u32::try_from(*delta)
+            .map_err(|_| Error::UnsupportedPackingWidth((bytes_per_sample * 8) as u8))?
+            .to_be_bytes();
+        data.extend_from_slice(&bytes[4 - bytes_per_sample..]);
+    }
+    Ok(data)
+}
+
+#[cfg(feature = "jpeg2000")]
+fn encode_jpeg2000_payload(
+    deltas: &[u64],
+    bits_per_value: u8,
+    dimensions: ImageDimensions,
+) -> Result<Vec<u8>> {
+    validate_image_sample_count(deltas.len(), dimensions)?;
+
+    let component = openjp2::opj_image_comptparm {
+        dx: 1,
+        dy: 1,
+        w: dimensions.width,
+        h: dimensions.height,
+        prec: u32::from(bits_per_value),
+        bpp: u32::from(bits_per_value),
+        sgnd: 0,
+        ..Default::default()
+    };
+    let mut image = openjp2::opj_image::create(&[component], openjp2::OPJ_CLRSPC_GRAY)
+        .ok_or_else(|| Error::Other("failed to create JPEG2000 image".into()))?;
+    image.x1 = dimensions.width;
+    image.y1 = dimensions.height;
+
+    let components = image
+        .comps_mut()
+        .ok_or_else(|| Error::Other("JPEG2000 image has no components".into()))?;
+    let component = components
+        .get_mut(0)
+        .ok_or_else(|| Error::Other("JPEG2000 image has no components".into()))?;
+    component.bpp = u32::from(bits_per_value);
+    component.prec = u32::from(bits_per_value);
+    let data = components
+        .get_mut(0)
+        .and_then(|component| component.data_mut())
+        .ok_or_else(|| Error::Other("JPEG2000 image component has no data".into()))?;
+    if data.len() != deltas.len() {
+        return Err(Error::DataLengthMismatch {
+            expected: deltas.len(),
+            actual: data.len(),
+        });
+    }
+    for (target, delta) in data.iter_mut().zip(deltas) {
+        *target =
+            i32::try_from(*delta).map_err(|_| Error::UnsupportedPackingWidth(bits_per_value))?;
+    }
+
+    let path = tempfile::Builder::new()
+        .prefix("grib-writer-")
+        .suffix(".j2k")
+        .tempfile()
+        .map_err(|err| Error::Io(err, "JPEG2000 temporary codestream".into()))?
+        .into_temp_path();
+
+    {
+        let mut stream = openjp2::Stream::new_file(&path, 64 * 1024, false)
+            .map_err(|err| Error::Io(err, "JPEG2000 temporary codestream".into()))?;
+        let mut codec = openjp2::Codec::new_encoder(openjp2::OPJ_CODEC_J2K)
+            .ok_or_else(|| Error::Other("failed to create JPEG2000 encoder".into()))?;
+        let mut params = openjp2::opj_cparameters_t {
+            tcp_numlayers: 1,
+            cp_disto_alloc: 1,
+            numresolution: jpeg2000_num_resolutions(dimensions),
+            ..Default::default()
+        };
+
+        if codec.setup_encoder(&mut params, &mut image) == 0 {
+            return Err(Error::Other("JPEG2000 encoder setup failed".into()));
+        }
+        if codec.start_compress(&mut image, &mut stream) == 0 {
+            return Err(Error::Other("JPEG2000 start-compress failed".into()));
+        }
+        if codec.encode(&mut stream) == 0 {
+            return Err(Error::Other("JPEG2000 codestream encode failed".into()));
+        }
+        if codec.end_compress(&mut stream) == 0 {
+            return Err(Error::Other("JPEG2000 end-compress failed".into()));
+        }
+        stream
+            .flush()
+            .map_err(|err| Error::Io(err, "JPEG2000 temporary codestream".into()))?;
+    }
+
+    std::fs::read(&path).map_err(|err| Error::Io(err, "JPEG2000 temporary codestream".into()))
+}
+
+#[cfg(feature = "jpeg2000")]
+fn jpeg2000_num_resolutions(dimensions: ImageDimensions) -> i32 {
+    let min_dimension = dimensions.width.min(dimensions.height);
+    let mut resolutions = 1;
+    while resolutions < 32 && min_dimension >= (1u32 << resolutions) {
+        resolutions += 1;
+    }
+    resolutions
+}
+
+#[cfg(any(feature = "jpeg2000", feature = "png"))]
+fn validate_image_sample_count(sample_count: usize, dimensions: ImageDimensions) -> Result<()> {
+    let width = usize::try_from(dimensions.width)
+        .map_err(|_| Error::Other("image width overflow".into()))?;
+    let height = usize::try_from(dimensions.height)
+        .map_err(|_| Error::Other("image height overflow".into()))?;
+    let expected = width
+        .checked_mul(height)
+        .ok_or_else(|| Error::Other("image sample count overflow".into()))?;
+    if sample_count != expected {
+        return Err(Error::DataLengthMismatch {
+            expected,
+            actual: sample_count,
+        });
+    }
+    Ok(())
 }
 
 fn quantize_present_values(
@@ -1295,8 +1766,12 @@ fn write_data_representation_section(out: &mut Vec<u8>, packed: &PackedField) ->
         DataRepresentation::ComplexPacking(params) => {
             write_complex_data_representation_section(out, params)
         }
-        DataRepresentation::Jpeg2000Packing(_) => Err(Error::UnsupportedDataTemplate(40)),
-        DataRepresentation::PngPacking(_) => Err(Error::UnsupportedDataTemplate(41)),
+        DataRepresentation::Jpeg2000Packing(params) => {
+            write_jpeg2000_data_representation_section(out, params)
+        }
+        DataRepresentation::PngPacking(params) => {
+            write_png_data_representation_section(out, params)
+        }
         DataRepresentation::Unsupported(template) => Err(Error::UnsupportedDataTemplate(*template)),
     }
 }
@@ -1374,6 +1849,47 @@ fn write_complex_data_representation_section(
         write_u8_be(out, spatial.descriptor_octets)?;
     }
     Ok(())
+}
+
+fn write_jpeg2000_data_representation_section(
+    out: &mut Vec<u8>,
+    params: &Jpeg2000PackingParams,
+) -> Result<()> {
+    write_image_data_representation_base(out, 23, 40, &params.packing)?;
+    write_u8_be(out, params.compression_type)?;
+    write_u8_be(out, params.target_compression_ratio)
+}
+
+fn write_png_data_representation_section(
+    out: &mut Vec<u8>,
+    params: &PngPackingParams,
+) -> Result<()> {
+    write_image_data_representation_base(out, 21, 41, &params.packing)
+}
+
+fn write_image_data_representation_base(
+    out: &mut Vec<u8>,
+    section_length: u32,
+    template: u16,
+    params: &ImagePackingParams,
+) -> Result<()> {
+    let encoded_values = u32::try_from(params.encoded_values)
+        .map_err(|_| Error::Other("encoded value count exceeds u32".into()))?;
+    write_u32_be(out, section_length)?;
+    write_u8_be(out, 5)?;
+    write_u32_be(out, encoded_values)?;
+    write_u16_be(out, template)?;
+    out.extend_from_slice(&params.reference_value.to_be_bytes());
+    out.extend_from_slice(
+        &encode_wmo_i16(params.binary_scale)
+            .ok_or_else(|| Error::Other("binary scale does not fit GRIB signed i16".into()))?,
+    );
+    out.extend_from_slice(
+        &encode_wmo_i16(params.decimal_scale)
+            .ok_or_else(|| Error::Other("decimal scale does not fit GRIB signed i16".into()))?,
+    );
+    write_u8_be(out, params.bits_per_value)?;
+    write_u8_be(out, params.original_field_type)
 }
 
 fn write_bitmap_section(out: &mut Vec<u8>, bitmap_payload: &[u8]) -> Result<()> {
@@ -1599,6 +2115,16 @@ mod tests {
             .collect()
     }
 
+    #[cfg(any(feature = "jpeg2000", feature = "png"))]
+    fn section_payload(bytes: &[u8], section_number: u8) -> &[u8] {
+        let section = scan_sections(bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == section_number)
+            .unwrap();
+        &bytes[section.offset + 5..section.offset + section.length]
+    }
+
     fn simple_field(
         values: &[f64],
         parameter_category: u8,
@@ -1739,6 +2265,120 @@ mod tests {
         assert_eq!(message.grid_shape(), (2, 2));
         assert_eq!(message.forecast_time(), Some(6));
         assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+
+    #[cfg(not(feature = "png"))]
+    #[test]
+    fn png_packing_requires_png_feature() {
+        let err = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 0))
+            .packing(PackingStrategy::PngAuto { decimal_scale: 0 })
+            .values(&[1.0, 2.0, 3.0, 4.0])
+            .build()
+            .unwrap_err();
+
+        assert!(matches!(err, grib_core::Error::UnsupportedDataTemplate(41)));
+    }
+
+    #[cfg(not(feature = "jpeg2000"))]
+    #[test]
+    fn jpeg2000_packing_requires_jpeg2000_feature() {
+        let err = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 0))
+            .packing(PackingStrategy::Jpeg2000Auto { decimal_scale: 0 })
+            .values(&[1.0, 2.0, 3.0, 4.0])
+            .build()
+            .unwrap_err();
+
+        assert!(matches!(err, grib_core::Error::UnsupportedDataTemplate(40)));
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn writes_png_grib2_field() {
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 0))
+            .packing(PackingStrategy::PngAuto { decimal_scale: 0 })
+            .values(&[12.0, 14.0, 16.0, 18.0])
+            .build()
+            .unwrap();
+
+        match field.data_representation() {
+            DataRepresentation::PngPacking(params) => {
+                assert_eq!(params.packing.encoded_values, 4);
+                assert_eq!(params.packing.reference_value, 12.0);
+                assert_eq!(params.packing.bits_per_value, 4);
+            }
+            other => panic!("expected PNG packing, got {other:?}"),
+        }
+
+        let bytes = write_message([field]);
+        let file = GribFile::from_bytes(bytes.clone()).unwrap();
+        let message = file.message(0).unwrap();
+        assert!(matches!(
+            &message.metadata().data_representation,
+            DataRepresentation::PngPacking(_)
+        ));
+        assert_eq!(
+            message.read_flat_data_as_f64().unwrap(),
+            vec![12.0, 14.0, 16.0, 18.0]
+        );
+
+        let payload = section_payload(&bytes, 7);
+        let decoder = png::Decoder::new(std::io::Cursor::new(payload));
+        let mut reader = decoder.read_info().unwrap();
+        let mut decoded = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut decoded).unwrap();
+        assert_eq!(info.width, 2);
+        assert_eq!(info.height, 2);
+        assert_eq!(info.color_type, png::ColorType::Grayscale);
+        assert_eq!(info.bit_depth, png::BitDepth::Four);
+        assert_eq!(&decoded[..info.buffer_size()], &[0x02, 0x46]);
+    }
+
+    #[cfg(feature = "jpeg2000")]
+    #[test]
+    fn writes_jpeg2000_grib2_field() {
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 0))
+            .packing(PackingStrategy::Jpeg2000Auto { decimal_scale: 0 })
+            .values(&[12.0, 13.0, 14.0, 15.0])
+            .build()
+            .unwrap();
+
+        match field.data_representation() {
+            DataRepresentation::Jpeg2000Packing(params) => {
+                assert_eq!(params.packing.encoded_values, 4);
+                assert_eq!(params.packing.reference_value, 12.0);
+                assert_eq!(params.packing.bits_per_value, 2);
+                assert_eq!(params.compression_type, 0);
+                assert_eq!(params.target_compression_ratio, 0);
+            }
+            other => panic!("expected JPEG2000 packing, got {other:?}"),
+        }
+
+        let bytes = write_message([field]);
+        let file = GribFile::from_bytes(bytes.clone()).unwrap();
+        let message = file.message(0).unwrap();
+        assert!(matches!(
+            &message.metadata().data_representation,
+            DataRepresentation::Jpeg2000Packing(_)
+        ));
+        assert_eq!(
+            message.read_flat_data_as_f64().unwrap(),
+            vec![12.0, 13.0, 14.0, 15.0]
+        );
+
+        let payload = section_payload(&bytes, 7);
+        assert!(payload.starts_with(&[0xff, 0x4f, 0xff, 0x51]));
     }
 
     #[test]
