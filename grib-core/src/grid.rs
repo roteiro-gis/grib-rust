@@ -163,6 +163,30 @@ impl GridDefinition {
         }
     }
 
+    /// Projected x coordinates in metres relative to the first grid point.
+    ///
+    /// Regular latitude/longitude grids return `None`; use
+    /// [`LatLonGrid::longitudes`] for those grids.
+    pub fn projected_x_coordinates(&self) -> Option<Vec<f64>> {
+        match self {
+            Self::PolarStereographic(grid) => Some(grid.x_coordinates()),
+            Self::LambertConformal(grid) => Some(grid.x_coordinates()),
+            _ => None,
+        }
+    }
+
+    /// Projected y coordinates in metres relative to the first grid point.
+    ///
+    /// Regular latitude/longitude grids return `None`; use
+    /// [`LatLonGrid::latitudes`] for those grids.
+    pub fn projected_y_coordinates(&self) -> Option<Vec<f64>> {
+        match self {
+            Self::PolarStereographic(grid) => Some(grid.y_coordinates()),
+            Self::LambertConformal(grid) => Some(grid.y_coordinates()),
+            _ => None,
+        }
+    }
+
     pub fn validate_supported_scan_order(&self) -> Result<()> {
         match self {
             Self::LatLon(grid) => grid.validate_supported_scan_order(),
@@ -275,6 +299,14 @@ impl LatLonGrid {
 }
 
 impl LambertConformalGrid {
+    pub fn x_coordinates(&self) -> Vec<f64> {
+        projected_x_coordinates(self.nx, self.dx, self.scanning_mode)
+    }
+
+    pub fn y_coordinates(&self) -> Vec<f64> {
+        projected_y_coordinates(self.ny, self.dy, self.scanning_mode)
+    }
+
     pub fn reorder_for_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
         transform_supported_scan_order_in_place(
             values,
@@ -290,6 +322,14 @@ impl LambertConformalGrid {
 }
 
 impl PolarStereographicGrid {
+    pub fn x_coordinates(&self) -> Vec<f64> {
+        projected_x_coordinates(self.nx, self.dx, self.scanning_mode)
+    }
+
+    pub fn y_coordinates(&self) -> Vec<f64> {
+        projected_y_coordinates(self.ny, self.dy, self.scanning_mode)
+    }
+
     pub fn reorder_for_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
         transform_supported_scan_order_in_place(
             values,
@@ -347,6 +387,22 @@ fn i_points_are_consecutive(scanning_mode: u8) -> bool {
 
 fn adjacent_rows_alternate_direction(scanning_mode: u8) -> bool {
     scanning_mode & 0b0001_0000 != 0
+}
+
+fn projected_x_coordinates(count: u32, spacing_millimetres: u32, scanning_mode: u8) -> Vec<f64> {
+    projected_axis(count, spacing_millimetres, i_scans_positive(scanning_mode))
+}
+
+fn projected_y_coordinates(count: u32, spacing_millimetres: u32, scanning_mode: u8) -> Vec<f64> {
+    projected_axis(count, spacing_millimetres, j_scans_positive(scanning_mode))
+}
+
+fn projected_axis(count: u32, spacing_millimetres: u32, scans_positive: bool) -> Vec<f64> {
+    let step = f64::from(spacing_millimetres) / 1_000.0;
+    let signed_step = if scans_positive { step } else { -step };
+    (0..count)
+        .map(|index| signed_step * f64::from(index))
+        .collect()
 }
 
 fn reverse_alternating_rows<T>(values: &mut [T], ni: usize, nj: usize, i_scans_positive: bool) {
@@ -675,6 +731,73 @@ mod tests {
         let mut values = vec![1.0, 2.0, 3.0, 6.0, 5.0, 4.0];
         grid.reorder_for_ndarray_in_place(&mut values).unwrap();
         assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn generates_projected_coordinate_offsets() {
+        let polar = GridDefinition::PolarStereographic(PolarStereographicGrid {
+            number_of_points: 6,
+            shape_of_earth: 6,
+            scale_factor_radius: 0,
+            scaled_value_radius: 0,
+            scale_factor_major_axis: 0,
+            scaled_value_major_axis: 0,
+            scale_factor_minor_axis: 0,
+            scaled_value_minor_axis: 0,
+            nx: 3,
+            ny: 2,
+            lat_first: 0,
+            lon_first: 0,
+            resolution_and_component_flags: 0,
+            lat_d: 0,
+            lon_v: 0,
+            dx: 3_000_000,
+            dy: 6_000_000,
+            projection_center_flag: 0,
+            scanning_mode: 0,
+        });
+        assert_eq!(
+            polar.projected_x_coordinates().unwrap(),
+            vec![0.0, 3_000.0, 6_000.0]
+        );
+        assert_eq!(
+            polar.projected_y_coordinates().unwrap(),
+            vec![-0.0, -6_000.0]
+        );
+
+        let lambert = GridDefinition::LambertConformal(LambertConformalGrid {
+            number_of_points: 6,
+            shape_of_earth: 1,
+            scale_factor_radius: 0,
+            scaled_value_radius: 6_371_200,
+            scale_factor_major_axis: 0,
+            scaled_value_major_axis: 0,
+            scale_factor_minor_axis: 0,
+            scaled_value_minor_axis: 0,
+            nx: 3,
+            ny: 2,
+            lat_first: 0,
+            lon_first: 0,
+            resolution_and_component_flags: 0,
+            lat_d: 0,
+            lon_v: 0,
+            dx: 2_539_703,
+            dy: 2_539_703,
+            projection_center_flag: 0,
+            scanning_mode: 0b1100_0000,
+            latin1: 0,
+            latin2: 0,
+            lat_southern_pole: 0,
+            lon_southern_pole: 0,
+        });
+        assert_eq!(
+            lambert.projected_x_coordinates().unwrap(),
+            vec![-0.0, -2_539.703, -5_079.406]
+        );
+        assert_eq!(
+            lambert.projected_y_coordinates().unwrap(),
+            vec![0.0, 2_539.703]
+        );
     }
 
     #[test]

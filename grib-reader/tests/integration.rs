@@ -98,6 +98,14 @@ fn open_grib2_lambert_conformal_field_and_decode_flat_data() {
     assert_eq!(field.grid_shape(), (3, 2));
     assert_eq!(field.latitudes(), None);
     assert_eq!(field.longitudes(), None);
+    assert_eq!(
+        field.projected_x_coordinates().unwrap(),
+        vec![0.0, 2_539.703, 5_079.406]
+    );
+    assert_eq!(
+        field.projected_y_coordinates().unwrap(),
+        vec![-0.0, -2_539.703]
+    );
     match field.grid_definition() {
         GridDefinition::LambertConformal(grid) => {
             assert_eq!(grid.number_of_points, 6);
@@ -148,6 +156,14 @@ fn open_grib2_polar_stereographic_field_and_decode_flat_data() {
     assert_eq!(field.grid_shape(), (3, 2));
     assert_eq!(field.latitudes(), None);
     assert_eq!(field.longitudes(), None);
+    assert_eq!(
+        field.projected_x_coordinates().unwrap(),
+        vec![0.0, 3_000.0, 6_000.0]
+    );
+    assert_eq!(
+        field.projected_y_coordinates().unwrap(),
+        vec![-0.0, -3_000.0]
+    );
     match field.grid_definition() {
         GridDefinition::PolarStereographic(grid) => {
             assert_eq!(grid.number_of_points, 6);

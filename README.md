@@ -164,7 +164,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Logical field indexing for multi-field GRIB2 messages
 - Regular latitude/longitude grids for GRIB1 and GRIB2
 - Reader GRIB2 Lambert conformal grid template 3.30 and polar stereographic grid
-  template 3.20 metadata and flat data decode
+  template 3.20 metadata, projected coordinate offsets, and flat data decode
 - Reader simple packing for GRIB1 and GRIB2
 - GRIB2 complex packing with general group splitting, including spatial differencing
 - Feature-gated reader GRIB2 JPEG2000 template 5.40 and PNG template 5.41 packed data decode
@@ -177,6 +177,8 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Output: caller-owned `&mut [f32]`/`&mut [f64]`, flat `Vec<f32>`/`Vec<f64>`, or `ndarray::ArrayD<f32>`/`ArrayD<f64>`
 - Memory-mapped I/O or owned byte buffers
 - Writer GRIB2 regular lat/lon fields with product template 4.0, simple packing template 5.0, complex packing template 5.2, and spatial differencing template 5.3
+- Writer GRIB2 Lambert conformal grid template 3.30 and polar stereographic grid
+  template 3.20 fields
 - Feature-gated writer GRIB2 JPEG2000 template 5.40 and PNG template 5.41 packed data encode
 - Writer GRIB2 bitmap section generation from explicit masks or `NaN` values
 - Writer single-message multi-field GRIB2 output with reused grid sections
@@ -184,7 +186,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 
 ## Not Yet Supported
 
-- Additional non-lat/lon grid templates and projected coordinate generation
+- Additional non-lat/lon grid templates
 - Writer GRIB2 row-by-row complex packing
 - GRIB1 predefined bitmaps
 
