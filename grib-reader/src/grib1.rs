@@ -8,24 +8,22 @@ use grib_core::binary::read_u24_be;
 pub use grib_core::grib1::{BinaryDataSection, GridDescription, ProductDefinition};
 
 pub fn bitmap_payload(section_bytes: &[u8]) -> Result<Option<&[u8]>> {
+    let indicator = bitmap_table_reference(section_bytes)?;
+    if indicator == 0 {
+        Ok(Some(&section_bytes[6..]))
+    } else {
+        Err(Error::UnsupportedBitmapIndicator(indicator))
+    }
+}
+
+pub fn bitmap_table_reference(section_bytes: &[u8]) -> Result<u16> {
     if section_bytes.len() < 6 {
         return Err(Error::InvalidSection {
             section: 3,
             reason: format!("expected at least 6 bytes, got {}", section_bytes.len()),
         });
     }
-    let indicator = u16::from_be_bytes(section_bytes[4..6].try_into().unwrap());
-    if indicator == 0 {
-        Ok(Some(&section_bytes[6..]))
-    } else {
-        Err(Error::UnsupportedBitmapIndicator(
-            if indicator <= u16::from(u8::MAX) {
-                indicator as u8
-            } else {
-                u8::MAX
-            },
-        ))
-    }
+    Ok(u16::from_be_bytes(section_bytes[4..6].try_into().unwrap()))
 }
 
 pub fn decode_simple_field(
@@ -140,7 +138,7 @@ fn section(number: u8, offset: usize, length: usize) -> SectionRef {
 
 #[cfg(test)]
 mod tests {
-    use super::{bitmap_payload, parse_message_sections};
+    use super::{bitmap_payload, bitmap_table_reference, parse_message_sections};
     use crate::error::Error;
 
     #[test]
@@ -189,8 +187,10 @@ mod tests {
     }
 
     #[test]
-    fn reports_small_predefined_bitmap_indicator() {
-        let err = bitmap_payload(&[0, 0, 6, 0, 0, 5]).unwrap_err();
-        assert!(matches!(err, Error::UnsupportedBitmapIndicator(5)));
+    fn reports_predefined_bitmap_indicator() {
+        assert_eq!(bitmap_table_reference(&[0, 0, 6, 0, 1, 44]).unwrap(), 300);
+
+        let err = bitmap_payload(&[0, 0, 6, 0, 1, 44]).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedBitmapIndicator(300)));
     }
 }
