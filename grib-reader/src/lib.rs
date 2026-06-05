@@ -370,6 +370,14 @@ impl<'a> Message<'a> {
         self.metadata.grid.as_lat_lon().map(LatLonGrid::longitudes)
     }
 
+    pub fn projected_x_coordinates(&self) -> Option<Vec<f64>> {
+        self.metadata.grid.projected_x_coordinates()
+    }
+
+    pub fn projected_y_coordinates(&self) -> Option<Vec<f64>> {
+        self.metadata.grid.projected_y_coordinates()
+    }
+
     pub fn decode_into<T: DecodeSample>(&self, out: &mut [T]) -> Result<()> {
         self.metadata.grid.validate_supported_scan_order()?;
 

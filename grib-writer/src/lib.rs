@@ -11,8 +11,9 @@ use grib_core::binary::{
 use grib_core::bit::BitWriter;
 use grib_core::{
     ComplexPackingParams, DataRepresentation, FixedSurface, GridDefinition, Identification,
-    ImagePackingParams, Jpeg2000PackingParams, LatLonGrid, PngPackingParams, ProductDefinition,
-    ProductDefinitionTemplate, SimplePackingParams, SpatialDifferencingParams,
+    ImagePackingParams, Jpeg2000PackingParams, LambertConformalGrid, LatLonGrid, PngPackingParams,
+    PolarStereographicGrid, ProductDefinition, ProductDefinitionTemplate, SimplePackingParams,
+    SpatialDifferencingParams,
 };
 
 pub use grib_core::grib1::ProductDefinition as Grib1ProductDefinition;
@@ -734,12 +735,15 @@ fn image_dimensions(
     present_count: usize,
 ) -> Result<ImageDimensions> {
     if present_count == total_values {
-        let Some(grid) = grid.as_lat_lon() else {
+        let (width, height) = grid.shape();
+        if width == 0 || height == 0 {
             return Err(Error::UnsupportedGridTemplate(grid.template_number()));
-        };
+        }
         return Ok(ImageDimensions {
-            width: grid.ni,
-            height: grid.nj,
+            width: u32::try_from(width)
+                .map_err(|_| Error::Other("image width exceeds u32".into()))?,
+            height: u32::try_from(height)
+                .map_err(|_| Error::Other("image height exceeds u32".into()))?,
         });
     }
 
@@ -1296,15 +1300,11 @@ fn reorder_field_to_grib_scan_order(
     values: &mut [f64],
     bitmap: Option<&mut [bool]>,
 ) -> Result<()> {
-    if let Some(grid) = grid.as_lat_lon() {
-        grid.reorder_for_ndarray_in_place(values)?;
-        if let Some(bitmap) = bitmap {
-            grid.reorder_for_ndarray_in_place(bitmap)?;
-        }
-        Ok(())
-    } else {
-        Err(Error::UnsupportedGridTemplate(grid.template_number()))
+    grid.reorder_for_ndarray_in_place(values)?;
+    if let Some(bitmap) = bitmap {
+        grid.reorder_for_ndarray_in_place(bitmap)?;
     }
+    Ok(())
 }
 
 fn present_mask(values: &[f64], explicit_bitmap: Option<&[bool]>) -> Result<Vec<bool>> {
@@ -1685,10 +1685,17 @@ fn write_identification_section(out: &mut Vec<u8>, identification: &Identificati
 }
 
 fn write_grid_section(out: &mut Vec<u8>, grid: &GridDefinition) -> Result<()> {
-    let Some(grid) = grid.as_lat_lon() else {
-        return Err(Error::UnsupportedGridTemplate(grid.template_number()));
-    };
+    match grid {
+        GridDefinition::LatLon(grid) => write_latlon_grid_section(out, grid),
+        GridDefinition::PolarStereographic(grid) => {
+            write_polar_stereographic_grid_section(out, grid)
+        }
+        GridDefinition::LambertConformal(grid) => write_lambert_conformal_grid_section(out, grid),
+        _ => Err(Error::UnsupportedGridTemplate(grid.template_number())),
+    }
+}
 
+fn write_latlon_grid_section(out: &mut Vec<u8>, grid: &LatLonGrid) -> Result<()> {
     let mut section = vec![0u8; 72];
     section[..4].copy_from_slice(&72u32.to_be_bytes());
     section[4] = 3;
@@ -1713,6 +1720,136 @@ fn write_grid_section(out: &mut Vec<u8>, grid: &GridDefinition) -> Result<()> {
     section[71] = grid.scanning_mode;
     out.extend_from_slice(&section);
     Ok(())
+}
+
+fn write_polar_stereographic_grid_section(
+    out: &mut Vec<u8>,
+    grid: &PolarStereographicGrid,
+) -> Result<()> {
+    checked_projected_point_count(
+        grid.nx,
+        grid.ny,
+        grid.number_of_points,
+        "polar stereographic grid",
+    )?;
+
+    let mut section = vec![0u8; 65];
+    section[..4].copy_from_slice(&65u32.to_be_bytes());
+    section[4] = 3;
+    section[6..10].copy_from_slice(&grid.number_of_points.to_be_bytes());
+    section[12..14].copy_from_slice(&20u16.to_be_bytes());
+    write_projected_grid_shape_of_earth(
+        &mut section,
+        ProjectedGridShapeOfEarth {
+            shape_of_earth: grid.shape_of_earth,
+            scale_factor_radius: grid.scale_factor_radius,
+            scaled_value_radius: grid.scaled_value_radius,
+            scale_factor_major_axis: grid.scale_factor_major_axis,
+            scaled_value_major_axis: grid.scaled_value_major_axis,
+            scale_factor_minor_axis: grid.scale_factor_minor_axis,
+            scaled_value_minor_axis: grid.scaled_value_minor_axis,
+        },
+    );
+    section[30..34].copy_from_slice(&grid.nx.to_be_bytes());
+    section[34..38].copy_from_slice(&grid.ny.to_be_bytes());
+    section[38..42].copy_from_slice(&encode_wmo_i32(grid.lat_first).ok_or_else(|| {
+        Error::Other("latitude of first grid point does not fit GRIB signed i32".into())
+    })?);
+    section[42..46].copy_from_slice(&grid.lon_first.to_be_bytes());
+    section[46] = grid.resolution_and_component_flags;
+    section[47..51].copy_from_slice(&encode_wmo_i32(grid.lat_d).ok_or_else(|| {
+        Error::Other(
+            "latitude where grid lengths are specified does not fit GRIB signed i32".into(),
+        )
+    })?);
+    section[51..55].copy_from_slice(&grid.lon_v.to_be_bytes());
+    section[55..59].copy_from_slice(&grid.dx.to_be_bytes());
+    section[59..63].copy_from_slice(&grid.dy.to_be_bytes());
+    section[63] = grid.projection_center_flag;
+    section[64] = grid.scanning_mode;
+    out.extend_from_slice(&section);
+    Ok(())
+}
+
+fn write_lambert_conformal_grid_section(
+    out: &mut Vec<u8>,
+    grid: &LambertConformalGrid,
+) -> Result<()> {
+    checked_projected_point_count(
+        grid.nx,
+        grid.ny,
+        grid.number_of_points,
+        "Lambert conformal grid",
+    )?;
+
+    let mut section = vec![0u8; 81];
+    section[..4].copy_from_slice(&81u32.to_be_bytes());
+    section[4] = 3;
+    section[6..10].copy_from_slice(&grid.number_of_points.to_be_bytes());
+    section[12..14].copy_from_slice(&30u16.to_be_bytes());
+    write_projected_grid_shape_of_earth(
+        &mut section,
+        ProjectedGridShapeOfEarth {
+            shape_of_earth: grid.shape_of_earth,
+            scale_factor_radius: grid.scale_factor_radius,
+            scaled_value_radius: grid.scaled_value_radius,
+            scale_factor_major_axis: grid.scale_factor_major_axis,
+            scaled_value_major_axis: grid.scaled_value_major_axis,
+            scale_factor_minor_axis: grid.scale_factor_minor_axis,
+            scaled_value_minor_axis: grid.scaled_value_minor_axis,
+        },
+    );
+    section[30..34].copy_from_slice(&grid.nx.to_be_bytes());
+    section[34..38].copy_from_slice(&grid.ny.to_be_bytes());
+    section[38..42].copy_from_slice(&encode_wmo_i32(grid.lat_first).ok_or_else(|| {
+        Error::Other("latitude of first grid point does not fit GRIB signed i32".into())
+    })?);
+    section[42..46].copy_from_slice(&grid.lon_first.to_be_bytes());
+    section[46] = grid.resolution_and_component_flags;
+    section[47..51].copy_from_slice(&encode_wmo_i32(grid.lat_d).ok_or_else(|| {
+        Error::Other(
+            "latitude where grid lengths are specified does not fit GRIB signed i32".into(),
+        )
+    })?);
+    section[51..55].copy_from_slice(&grid.lon_v.to_be_bytes());
+    section[55..59].copy_from_slice(&grid.dx.to_be_bytes());
+    section[59..63].copy_from_slice(&grid.dy.to_be_bytes());
+    section[63] = grid.projection_center_flag;
+    section[64] = grid.scanning_mode;
+    section[65..69].copy_from_slice(
+        &encode_wmo_i32(grid.latin1).ok_or_else(|| {
+            Error::Other("first Latin latitude does not fit GRIB signed i32".into())
+        })?,
+    );
+    section[69..73].copy_from_slice(&encode_wmo_i32(grid.latin2).ok_or_else(|| {
+        Error::Other("second Latin latitude does not fit GRIB signed i32".into())
+    })?);
+    section[73..77].copy_from_slice(&encode_wmo_i32(grid.lat_southern_pole).ok_or_else(|| {
+        Error::Other("latitude of southern pole does not fit GRIB signed i32".into())
+    })?);
+    section[77..81].copy_from_slice(&grid.lon_southern_pole.to_be_bytes());
+    out.extend_from_slice(&section);
+    Ok(())
+}
+
+struct ProjectedGridShapeOfEarth {
+    shape_of_earth: u8,
+    scale_factor_radius: u8,
+    scaled_value_radius: u32,
+    scale_factor_major_axis: u8,
+    scaled_value_major_axis: u32,
+    scale_factor_minor_axis: u8,
+    scaled_value_minor_axis: u32,
+}
+
+fn write_projected_grid_shape_of_earth(section: &mut [u8], shape: ProjectedGridShapeOfEarth) {
+    section[14] = shape.shape_of_earth;
+    section[15] = shape.scale_factor_radius;
+    section[16..20].copy_from_slice(&shape.scaled_value_radius.to_be_bytes());
+    section[20] = shape.scale_factor_major_axis;
+    section[21..25].copy_from_slice(&shape.scaled_value_major_axis.to_be_bytes());
+    section[25] = shape.scale_factor_minor_axis;
+    section[26..30].copy_from_slice(&shape.scaled_value_minor_axis.to_be_bytes());
 }
 
 fn write_product_section(out: &mut Vec<u8>, product: &ProductDefinition) -> Result<()> {
@@ -1917,10 +2054,21 @@ fn checked_section_length(length: usize, section: u8) -> Result<u32> {
 }
 
 fn checked_grid_point_count(grid: &GridDefinition) -> Result<usize> {
-    if let Some(grid) = grid.as_lat_lon() {
-        Ok(checked_latlon_point_count(grid)? as usize)
-    } else {
-        Err(Error::UnsupportedGridTemplate(grid.template_number()))
+    match grid {
+        GridDefinition::LatLon(grid) => Ok(checked_latlon_point_count(grid)? as usize),
+        GridDefinition::PolarStereographic(grid) => checked_projected_point_count(
+            grid.nx,
+            grid.ny,
+            grid.number_of_points,
+            "polar stereographic grid",
+        ),
+        GridDefinition::LambertConformal(grid) => checked_projected_point_count(
+            grid.nx,
+            grid.ny,
+            grid.number_of_points,
+            "Lambert conformal grid",
+        ),
+        _ => Err(Error::UnsupportedGridTemplate(grid.template_number())),
     }
 }
 
@@ -1931,12 +2079,28 @@ fn checked_latlon_point_count(grid: &LatLonGrid) -> Result<u32> {
     u32::try_from(count).map_err(|_| Error::Other("grid point count exceeds u32".into()))
 }
 
-fn validate_supported_grid(grid: &GridDefinition) -> Result<()> {
-    if let Some(grid) = grid.as_lat_lon() {
-        validate_supported_scan_order(grid)
-    } else {
-        Err(Error::UnsupportedGridTemplate(grid.template_number()))
+fn checked_projected_point_count(
+    nx: u32,
+    ny: u32,
+    number_of_points: u32,
+    grid_name: &str,
+) -> Result<usize> {
+    let expected = u64::from(nx)
+        .checked_mul(u64::from(ny))
+        .ok_or_else(|| Error::Other(format!("{grid_name} point count overflow")))?;
+    let expected = u32::try_from(expected)
+        .map_err(|_| Error::Other(format!("{grid_name} point count exceeds u32")))?;
+    if number_of_points != expected {
+        return Err(Error::Other(format!(
+            "{grid_name} number_of_points ({number_of_points}) does not match Nx*Ny ({expected})"
+        )));
     }
+    usize::try_from(number_of_points)
+        .map_err(|_| Error::Other(format!("{grid_name} point count exceeds usize")))
+}
+
+fn validate_supported_grid(grid: &GridDefinition) -> Result<()> {
+    grid.validate_supported_scan_order()
 }
 
 fn validate_supported_scan_order(grid: &LatLonGrid) -> Result<()> {
@@ -1981,7 +2145,8 @@ mod tests {
     use grib_core::metadata::ReferenceTime;
     use grib_core::{
         AnalysisOrForecastTemplate, DataRepresentation, FixedSurface, GridDefinition,
-        Identification, LatLonGrid, ProductDefinition, ProductDefinitionTemplate,
+        Identification, LambertConformalGrid, LatLonGrid, PolarStereographicGrid,
+        ProductDefinition, ProductDefinitionTemplate,
     };
     use grib_reader::sections::scan_sections;
     use grib_reader::GribFile;
@@ -2070,6 +2235,58 @@ mod tests {
             di,
             dj,
             scanning_mode,
+        })
+    }
+
+    fn polar_grid(scanning_mode: u8) -> GridDefinition {
+        GridDefinition::PolarStereographic(PolarStereographicGrid {
+            number_of_points: 6,
+            shape_of_earth: 6,
+            scale_factor_radius: 0,
+            scaled_value_radius: 0,
+            scale_factor_major_axis: 0,
+            scaled_value_major_axis: 0,
+            scale_factor_minor_axis: 0,
+            scaled_value_minor_axis: 0,
+            nx: 3,
+            ny: 2,
+            lat_first: 41_612_949,
+            lon_first: 185_117_126,
+            resolution_and_component_flags: 0x08,
+            lat_d: 60_000_000,
+            lon_v: 225_000_000,
+            dx: 3_000_000,
+            dy: 3_000_000,
+            projection_center_flag: 0,
+            scanning_mode,
+        })
+    }
+
+    fn lambert_grid(scanning_mode: u8) -> GridDefinition {
+        GridDefinition::LambertConformal(LambertConformalGrid {
+            number_of_points: 6,
+            shape_of_earth: 1,
+            scale_factor_radius: 0,
+            scaled_value_radius: 6_371_200,
+            scale_factor_major_axis: 0,
+            scaled_value_major_axis: 0,
+            scale_factor_minor_axis: 0,
+            scaled_value_minor_axis: 0,
+            nx: 3,
+            ny: 2,
+            lat_first: 12_190_000,
+            lon_first: 226_541_000,
+            resolution_and_component_flags: 0x08,
+            lat_d: 25_000_000,
+            lon_v: 265_000_000,
+            dx: 2_539_703,
+            dy: 2_539_703,
+            projection_center_flag: 0,
+            scanning_mode,
+            latin1: 25_000_000,
+            latin2: 25_000_000,
+            lat_southern_pole: -90_000_000,
+            lon_southern_pole: 0,
         })
     }
 
@@ -2267,6 +2484,131 @@ mod tests {
         assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
     }
 
+    #[test]
+    fn writes_polar_stereographic_grib2_field_readable_by_reader() {
+        let values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(polar_grid(0))
+            .product(product(0, 0))
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        let message = file.message(0).unwrap();
+        assert_eq!(message.grid_shape(), (3, 2));
+        assert_eq!(
+            message.projected_x_coordinates().unwrap(),
+            vec![0.0, 3_000.0, 6_000.0]
+        );
+        assert_eq!(
+            message.projected_y_coordinates().unwrap(),
+            vec![-0.0, -3_000.0]
+        );
+        match message.grid_definition() {
+            GridDefinition::PolarStereographic(grid) => {
+                assert_eq!(grid.number_of_points, 6);
+                assert_eq!(grid.shape_of_earth, 6);
+                assert_eq!(grid.nx, 3);
+                assert_eq!(grid.ny, 2);
+                assert_eq!(grid.lat_first, 41_612_949);
+                assert_eq!(grid.lon_first, 185_117_126);
+                assert_eq!(grid.lat_d, 60_000_000);
+                assert_eq!(grid.lon_v, 225_000_000);
+                assert_eq!(grid.dx, 3_000_000);
+                assert_eq!(grid.dy, 3_000_000);
+            }
+            other => panic!("expected polar stereographic grid, got {other:?}"),
+        }
+        assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+
+    #[test]
+    fn writes_lambert_conformal_grib2_field_readable_by_reader() {
+        let values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(lambert_grid(0))
+            .product(product(0, 0))
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        let message = file.message(0).unwrap();
+        assert_eq!(message.grid_shape(), (3, 2));
+        assert_eq!(
+            message.projected_x_coordinates().unwrap(),
+            vec![0.0, 2_539.703, 5_079.406]
+        );
+        assert_eq!(
+            message.projected_y_coordinates().unwrap(),
+            vec![-0.0, -2_539.703]
+        );
+        match message.grid_definition() {
+            GridDefinition::LambertConformal(grid) => {
+                assert_eq!(grid.number_of_points, 6);
+                assert_eq!(grid.shape_of_earth, 1);
+                assert_eq!(grid.scaled_value_radius, 6_371_200);
+                assert_eq!(grid.nx, 3);
+                assert_eq!(grid.ny, 2);
+                assert_eq!(grid.lat_first, 12_190_000);
+                assert_eq!(grid.lon_first, 226_541_000);
+                assert_eq!(grid.lat_d, 25_000_000);
+                assert_eq!(grid.lon_v, 265_000_000);
+                assert_eq!(grid.dx, 2_539_703);
+                assert_eq!(grid.dy, 2_539_703);
+                assert_eq!(grid.latin1, 25_000_000);
+                assert_eq!(grid.latin2, 25_000_000);
+            }
+            other => panic!("expected Lambert conformal grid, got {other:?}"),
+        }
+        assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+
+    #[test]
+    fn roundtrips_projected_grid_logical_order_for_alternating_scan_rows() {
+        let values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(polar_grid(0b0001_0000))
+            .product(product(0, 0))
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        assert_eq!(
+            file.message(0).unwrap().read_flat_data_as_f64().unwrap(),
+            values
+        );
+    }
+
+    #[test]
+    fn rejects_projected_grid_point_count_mismatch_before_writing() {
+        let mut grid = match polar_grid(0) {
+            GridDefinition::PolarStereographic(grid) => grid,
+            other => panic!("expected polar stereographic grid, got {other:?}"),
+        };
+        grid.number_of_points = 5;
+        let err = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(GridDefinition::PolarStereographic(grid))
+            .product(product(0, 0))
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[1.0, 2.0, 3.0, 4.0, 5.0])
+            .build()
+            .unwrap_err();
+
+        assert!(
+            matches!(err, grib_core::Error::Other(message) if message.contains("number_of_points"))
+        );
+    }
+
     #[cfg(not(feature = "png"))]
     #[test]
     fn png_packing_requires_png_feature() {
@@ -2340,6 +2682,42 @@ mod tests {
         assert_eq!(info.color_type, png::ColorType::Grayscale);
         assert_eq!(info.bit_depth, png::BitDepth::Four);
         assert_eq!(&decoded[..info.buffer_size()], &[0x02, 0x46]);
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn writes_png_projected_grib2_field() {
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(polar_grid(0))
+            .product(product(0, 0))
+            .packing(PackingStrategy::PngAuto { decimal_scale: 0 })
+            .values(&[12.0, 14.0, 16.0, 18.0, 20.0, 22.0])
+            .build()
+            .unwrap();
+
+        let bytes = write_message([field]);
+        let file = GribFile::from_bytes(bytes.clone()).unwrap();
+        let message = file.message(0).unwrap();
+        assert!(matches!(
+            &message.metadata().data_representation,
+            DataRepresentation::PngPacking(_)
+        ));
+        assert!(matches!(
+            message.grid_definition(),
+            GridDefinition::PolarStereographic(_)
+        ));
+        assert_eq!(
+            message.read_flat_data_as_f64().unwrap(),
+            vec![12.0, 14.0, 16.0, 18.0, 20.0, 22.0]
+        );
+
+        let payload = section_payload(&bytes, 7);
+        let decoder = png::Decoder::new(std::io::Cursor::new(payload));
+        let reader = decoder.read_info().unwrap();
+        let info = reader.info();
+        assert_eq!(info.width, 3);
+        assert_eq!(info.height, 2);
     }
 
     #[cfg(feature = "jpeg2000")]
