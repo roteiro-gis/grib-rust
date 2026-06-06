@@ -68,24 +68,19 @@ let tolerant = GribFile::from_bytes_with_options(
 println!("recoverable messages: {}", tolerant.message_count());
 ```
 
-Custom GRIB2 local parameter tables can be supplied as an overlay. The reader
-checks WMO Code Table 4.2 first for standard parameters, then checks caller
-entries and the built-in local registry for local-use category or parameter
-numbers.
+Custom GRIB2 local parameter tables can be authored as CSV and supplied as an
+overlay. The reader checks WMO Code Table 4.2 first for standard parameters,
+then checks caller entries and the built-in local registry for local-use
+category or parameter numbers.
 
 ```rust
-use grib_reader::{GribFile, LocalParameterEntry, OpenOptions};
+use grib_reader::{GribFile, LocalParameterTable, OpenOptions};
 
-let local_parameters = [LocalParameterEntry {
-    center_id: 42,
-    subcenter_id: Some(0),
-    local_table_version: Some(1),
-    discipline: 0,
-    category: 16,
-    number: 196,
-    short_name: "LREFC",
-    description: "Local composite reflectivity",
-}];
+let table = LocalParameterTable::from_csv_str(
+    "center_id,subcenter_id,local_table_version,discipline,category,number,short_name,description\n\
+     42,0,1,0,16,196,LREFC,Local composite reflectivity\n",
+)?;
+let local_parameters = table.entries();
 
 let file = GribFile::from_bytes_with_local_parameters(
     std::fs::read("local-product.grib2")?,
@@ -169,7 +164,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Reader GRIB1 predefined bitmaps via caller-supplied center-defined bitmap tables
 - GRIB2 complex packing with general group splitting, including spatial differencing
 - Feature-gated reader GRIB2 JPEG2000 template 5.40 and PNG template 5.41 packed data decode
-- WMO parameter table lookups (Code Table 4.2) plus center/subcenter/local-table-aware GRIB2 local parameter entries
+- WMO parameter table lookups (Code Table 4.2) plus center/subcenter/local-table-aware GRIB2 local parameter entries and CSV authoring helpers
 - Typed metadata access for reference time, parameter identity, product metadata, grid geometry, and lat/lon coordinates
 - Forecast valid-time helpers for supported fixed-width GRIB1/GRIB2 time units
 - `OpenOptions` for strict or tolerant scanning
