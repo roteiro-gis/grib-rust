@@ -176,7 +176,7 @@ pub fn bitmap_payload(section_bytes: &[u8]) -> Result<Option<&[u8]>> {
     match section_bytes[5] {
         255 => Ok(None),
         0 => Ok(Some(&section_bytes[6..])),
-        indicator => Err(Error::UnsupportedBitmapIndicator(indicator)),
+        indicator => Err(Error::UnsupportedBitmapIndicator(u16::from(indicator))),
     }
 }
 

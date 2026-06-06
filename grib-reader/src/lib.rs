@@ -58,6 +58,7 @@ pub use product::{
 };
 
 use std::path::Path;
+use std::sync::Arc;
 
 use memmap2::Mmap;
 use ndarray::{ArrayD, IxDyn};
@@ -90,6 +91,19 @@ impl Default for OpenOptions {
     fn default() -> Self {
         Self { strict: true }
     }
+}
+
+/// Caller-supplied GRIB1 predefined bitmap.
+///
+/// GRIB1 predefined bitmap table references are center-defined, not globally
+/// standardized. `bitmap` is the raw bitmap payload: one bit per grid point in
+/// GRIB scan order, with `1` meaning present and `0` meaning missing.
+#[derive(Debug, Clone, Copy)]
+pub struct PredefinedBitmap<'a> {
+    pub center_id: u16,
+    pub subcenter_id: Option<u16>,
+    pub table_reference: u16,
+    pub bitmap: &'a [u8],
 }
 
 /// A parsed GRIB field.
@@ -127,13 +141,19 @@ struct MessageIndex {
     decode_plan: DecodePlan,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum DecodePlan {
     Grib1 {
-        bitmap: Option<SectionRef>,
+        bitmap: Option<Grib1BitmapSource>,
         data: SectionRef,
     },
     Grib2(FieldSections),
+}
+
+#[derive(Clone)]
+enum Grib1BitmapSource {
+    Explicit(SectionRef),
+    Predefined(Arc<[u8]>),
 }
 
 enum GribData {
@@ -167,11 +187,45 @@ impl GribFile {
         options: OpenOptions,
         local_parameters: &[LocalParameterEntry<'_>],
     ) -> Result<Self> {
+        Self::open_with_local_parameters_and_grib1_predefined_bitmaps(
+            path,
+            options,
+            local_parameters,
+            &[],
+        )
+    }
+
+    /// Open a GRIB file from disk using caller-supplied GRIB1 predefined bitmaps.
+    pub fn open_with_grib1_predefined_bitmaps<P: AsRef<Path>>(
+        path: P,
+        options: OpenOptions,
+        predefined_bitmaps: &[PredefinedBitmap<'_>],
+    ) -> Result<Self> {
+        Self::open_with_local_parameters_and_grib1_predefined_bitmaps(
+            path,
+            options,
+            &[],
+            predefined_bitmaps,
+        )
+    }
+
+    /// Open a GRIB file from disk using GRIB2 local parameters and GRIB1 predefined bitmaps.
+    pub fn open_with_local_parameters_and_grib1_predefined_bitmaps<P: AsRef<Path>>(
+        path: P,
+        options: OpenOptions,
+        local_parameters: &[LocalParameterEntry<'_>],
+        predefined_bitmaps: &[PredefinedBitmap<'_>],
+    ) -> Result<Self> {
         let file = std::fs::File::open(path.as_ref())
             .map_err(|e| Error::Io(e, path.as_ref().display().to_string()))?;
         let mmap = unsafe { Mmap::map(&file) }
             .map_err(|e| Error::Io(e, path.as_ref().display().to_string()))?;
-        Self::from_data(GribData::Mmap(mmap), options, local_parameters)
+        Self::from_data(
+            GribData::Mmap(mmap),
+            options,
+            local_parameters,
+            predefined_bitmaps,
+        )
     }
 
     /// Open a GRIB file from an owned byte buffer.
@@ -190,15 +244,55 @@ impl GribFile {
         options: OpenOptions,
         local_parameters: &[LocalParameterEntry<'_>],
     ) -> Result<Self> {
-        Self::from_data(GribData::Bytes(data), options, local_parameters)
+        Self::from_bytes_with_local_parameters_and_grib1_predefined_bitmaps(
+            data,
+            options,
+            local_parameters,
+            &[],
+        )
+    }
+
+    /// Open a GRIB file from bytes using caller-supplied GRIB1 predefined bitmaps.
+    pub fn from_bytes_with_grib1_predefined_bitmaps(
+        data: Vec<u8>,
+        options: OpenOptions,
+        predefined_bitmaps: &[PredefinedBitmap<'_>],
+    ) -> Result<Self> {
+        Self::from_bytes_with_local_parameters_and_grib1_predefined_bitmaps(
+            data,
+            options,
+            &[],
+            predefined_bitmaps,
+        )
+    }
+
+    /// Open a GRIB file from bytes using GRIB2 local parameters and GRIB1 predefined bitmaps.
+    pub fn from_bytes_with_local_parameters_and_grib1_predefined_bitmaps(
+        data: Vec<u8>,
+        options: OpenOptions,
+        local_parameters: &[LocalParameterEntry<'_>],
+        predefined_bitmaps: &[PredefinedBitmap<'_>],
+    ) -> Result<Self> {
+        Self::from_data(
+            GribData::Bytes(data),
+            options,
+            local_parameters,
+            predefined_bitmaps,
+        )
     }
 
     fn from_data(
         data: GribData,
         options: OpenOptions,
         local_parameters: &[LocalParameterEntry<'_>],
+        predefined_bitmaps: &[PredefinedBitmap<'_>],
     ) -> Result<Self> {
-        let messages = scan_messages(data.as_bytes(), options, local_parameters)?;
+        let messages = scan_messages(
+            data.as_bytes(),
+            options,
+            local_parameters,
+            predefined_bitmaps,
+        )?;
         if messages.is_empty() {
             return Err(Error::NoMessages);
         }
@@ -229,7 +323,7 @@ impl GribFile {
             index,
             bytes,
             metadata: &record.metadata,
-            decode_plan: record.decode_plan,
+            decode_plan: record.decode_plan.clone(),
         })
     }
 
@@ -381,7 +475,7 @@ impl<'a> Message<'a> {
     pub fn decode_into<T: DecodeSample>(&self, out: &mut [T]) -> Result<()> {
         self.metadata.grid.validate_supported_scan_order()?;
 
-        match self.decode_plan {
+        match &self.decode_plan {
             DecodePlan::Grib2(field) => {
                 let data_section = section_bytes(self.bytes, field.data);
                 let bitmap_section = match field.bitmap {
@@ -398,10 +492,13 @@ impl<'a> Message<'a> {
             }
             DecodePlan::Grib1 { bitmap, data } => {
                 let bitmap_section = match bitmap {
-                    Some(section) => grib1::bitmap_payload(section_bytes(self.bytes, section))?,
+                    Some(Grib1BitmapSource::Explicit(section)) => {
+                        grib1::bitmap_payload(section_bytes(self.bytes, *section))?
+                    }
+                    Some(Grib1BitmapSource::Predefined(payload)) => Some(payload.as_ref()),
                     None => None,
                 };
-                let data_section = section_bytes(self.bytes, data);
+                let data_section = section_bytes(self.bytes, *data);
                 if data_section.len() < 11 {
                     return Err(Error::InvalidSection {
                         section: 4,
@@ -477,6 +574,7 @@ fn scan_messages(
     data: &[u8],
     options: OpenOptions,
     local_parameters: &[LocalParameterEntry<'_>],
+    predefined_bitmaps: &[PredefinedBitmap<'_>],
 ) -> Result<Vec<MessageIndex>> {
     let mut messages = Vec::new();
     let mut pos = 0usize;
@@ -498,7 +596,7 @@ fn scan_messages(
 
         let message_bytes = &data[pos..next_pos];
         let indexed = match indicator.edition {
-            1 => index_grib1_message(message_bytes, pos)?,
+            1 => index_grib1_message(message_bytes, pos, predefined_bitmaps)?,
             2 => index_grib2_message(message_bytes, pos, &indicator, local_parameters)?,
             other => return Err(Error::UnsupportedEdition(other)),
         };
@@ -539,7 +637,11 @@ fn locate_message(data: &[u8], pos: usize) -> Result<(Indicator, usize)> {
     Ok((indicator, end))
 }
 
-fn index_grib1_message(message_bytes: &[u8], offset: usize) -> Result<Vec<MessageIndex>> {
+fn index_grib1_message(
+    message_bytes: &[u8],
+    offset: usize,
+    predefined_bitmaps: &[PredefinedBitmap<'_>],
+) -> Result<Vec<MessageIndex>> {
     let sections = grib1::parse_message_sections(message_bytes)?;
     let grid_ref = sections.grid.ok_or_else(|| {
         Error::InvalidSectionOrder(
@@ -549,11 +651,33 @@ fn index_grib1_message(message_bytes: &[u8], offset: usize) -> Result<Vec<Messag
     let grid_description = GridDescription::parse(section_bytes(message_bytes, grid_ref))?;
     let grid = grid_description.grid;
 
-    let bitmap_present_count = match sections.bitmap {
-        Some(bitmap) => {
-            let bitmap_payload = grib1::bitmap_payload(section_bytes(message_bytes, bitmap))?
+    let bitmap = match sections.bitmap {
+        Some(section) => {
+            let section_bytes = section_bytes(message_bytes, section);
+            let table_reference = grib1::bitmap_table_reference(section_bytes)?;
+            if table_reference == 0 {
+                Some(Grib1BitmapSource::Explicit(section))
+            } else {
+                let payload = resolve_predefined_bitmap(
+                    predefined_bitmaps,
+                    sections.product.center_id as u16,
+                    sections.product.subcenter_id as u16,
+                    table_reference,
+                )?;
+                Some(Grib1BitmapSource::Predefined(Arc::from(payload)))
+            }
+        }
+        None => None,
+    };
+
+    let bitmap_present_count = match &bitmap {
+        Some(Grib1BitmapSource::Explicit(section)) => {
+            let bitmap_payload = grib1::bitmap_payload(section_bytes(message_bytes, *section))?
                 .ok_or(Error::MissingBitmap)?;
             count_bitmap_present_points(bitmap_payload, grid.num_points())?
+        }
+        Some(Grib1BitmapSource::Predefined(payload)) => {
+            count_bitmap_present_points(payload, grid.num_points())?
         }
         None => grid.num_points(),
     };
@@ -569,7 +693,7 @@ fn index_grib1_message(message_bytes: &[u8], offset: usize) -> Result<Vec<Messag
         offset,
         length: message_bytes.len(),
         decode_plan: DecodePlan::Grib1 {
-            bitmap: sections.bitmap,
+            bitmap,
             data: sections.data,
         },
         metadata: MessageMetadata {
@@ -591,6 +715,30 @@ fn index_grib1_message(message_bytes: &[u8], offset: usize) -> Result<Vec<Messag
             grib2_product: None,
         },
     }])
+}
+
+fn resolve_predefined_bitmap<'a>(
+    predefined_bitmaps: &[PredefinedBitmap<'a>],
+    center_id: u16,
+    subcenter_id: u16,
+    table_reference: u16,
+) -> Result<&'a [u8]> {
+    predefined_bitmaps
+        .iter()
+        .find(|entry| {
+            entry.center_id == center_id
+                && entry.subcenter_id == Some(subcenter_id)
+                && entry.table_reference == table_reference
+        })
+        .or_else(|| {
+            predefined_bitmaps.iter().find(|entry| {
+                entry.center_id == center_id
+                    && entry.subcenter_id.is_none()
+                    && entry.table_reference == table_reference
+            })
+        })
+        .map(|entry| entry.bitmap)
+        .ok_or(Error::UnsupportedBitmapIndicator(table_reference))
 }
 
 fn index_grib2_message(
@@ -841,6 +989,23 @@ mod tests {
         message
     }
 
+    fn build_grib1_message_with_predefined_bitmap(values: &[u8], table_reference: u16) -> Vec<u8> {
+        let mut message = build_grib1_message(values);
+        message[8 + 7] = 0b1100_0000;
+
+        let mut bitmap = [0u8; 6];
+        bitmap[..3].copy_from_slice(&[0, 0, 6]);
+        bitmap[4..6].copy_from_slice(&table_reference.to_be_bytes());
+
+        let bitmap_offset = 8 + 28 + 32;
+        message.splice(bitmap_offset..bitmap_offset, bitmap);
+        let total_len = message.len();
+        message[4] = ((total_len >> 16) & 0xff) as u8;
+        message[5] = ((total_len >> 8) & 0xff) as u8;
+        message[6] = (total_len & 0xff) as u8;
+        message
+    }
+
     #[test]
     fn scans_single_grib2_message() {
         let message = assemble_grib2_message(&[
@@ -850,7 +1015,7 @@ mod tests {
             build_simple_representation(4, 8),
             build_data(&pack_u8_values(&[1, 2, 3, 4])),
         ]);
-        let messages = scan_messages(&message, OpenOptions::default(), &[]).unwrap();
+        let messages = scan_messages(&message, OpenOptions::default(), &[], &[]).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].metadata.parameter.short_name, "TMP");
     }
@@ -925,5 +1090,40 @@ mod tests {
             array.iter().copied().collect::<Vec<_>>(),
             vec![1.0, 2.0, 3.0, 4.0]
         );
+    }
+
+    #[test]
+    fn decodes_grib1_predefined_bitmap_when_supplied() {
+        let message = build_grib1_message_with_predefined_bitmap(&[9, 7], 300);
+        let bitmap = [0b1010_0000];
+        let predefined = [PredefinedBitmap {
+            center_id: 7,
+            subcenter_id: Some(0),
+            table_reference: 300,
+            bitmap: &bitmap,
+        }];
+
+        let file = GribFile::from_bytes_with_grib1_predefined_bitmaps(
+            message,
+            OpenOptions::default(),
+            &predefined,
+        )
+        .unwrap();
+        let decoded = file.message(0).unwrap().read_flat_data_as_f64().unwrap();
+        assert_eq!(decoded[0], 9.0);
+        assert!(decoded[1].is_nan());
+        assert_eq!(decoded[2], 7.0);
+        assert!(decoded[3].is_nan());
+    }
+
+    #[test]
+    fn rejects_grib1_predefined_bitmap_without_supplied_table() {
+        let message = build_grib1_message_with_predefined_bitmap(&[9, 7], 300);
+        let err = match GribFile::from_bytes(message) {
+            Ok(_) => panic!("expected unsupported predefined bitmap"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, Error::UnsupportedBitmapIndicator(300)));
     }
 }

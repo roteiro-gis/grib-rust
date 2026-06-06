@@ -41,7 +41,7 @@ pub enum Error {
     UnsupportedProductTemplate(u16),
 
     #[error("unsupported bitmap indicator: {0}")]
-    UnsupportedBitmapIndicator(u8),
+    UnsupportedBitmapIndicator(u16),
 
     #[error("unsupported packing width: {0} bits per value")]
     UnsupportedPackingWidth(u8),
