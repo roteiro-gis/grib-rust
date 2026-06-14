@@ -5,6 +5,7 @@
 - add GRIB2 Mercator grid template 3.10 and Albers equal-area grid template
   3.31 reader metadata parsing, scan-order normalization, projected coordinate
   offsets, flat data decode, and writer roundtrip support
+- add GRIB1 writer predefined bitmap references
 
 ## 0.5.0 - 2026-05-18
 

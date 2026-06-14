@@ -180,13 +180,13 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Feature-gated writer GRIB2 JPEG2000 template 5.40 and PNG template 5.41 packed data encode
 - Writer GRIB2 bitmap section generation from explicit masks or `NaN` values
 - Writer single-message multi-field GRIB2 output with reused grid sections
-- Writer GRIB1 regular lat/lon fields with simple packing and optional bitmap section
+- Writer GRIB1 regular lat/lon fields with simple packing and optional explicit
+  or predefined bitmap section
 
 ## Not Yet Supported
 
 - Remaining GRIB2 grid templates beyond 3.0, 3.10, 3.20, 3.30, and 3.31
 - Writer GRIB2 row-by-row complex packing
-- Writer GRIB1 predefined bitmap references
 
 Unsupported cases fail explicitly with typed errors.
 Calendar-dependent forecast units such as months and years are exposed through

@@ -63,7 +63,7 @@ pub struct Grib1FieldBuilder {
     grid: Option<GridDefinition>,
     packing: Option<PackingStrategy>,
     values: Option<Vec<f64>>,
-    bitmap: Option<Vec<bool>>,
+    bitmap: Option<Grib1BitmapDefinition>,
     value_order: ValueOrder,
 }
 
@@ -96,7 +96,22 @@ impl Grib1FieldBuilder {
     }
 
     pub fn bitmap(mut self, bitmap: &[bool]) -> Self {
-        self.bitmap = Some(bitmap.to_vec());
+        self.bitmap = Some(Grib1BitmapDefinition {
+            present: bitmap.to_vec(),
+            table_reference: None,
+        });
+        self
+    }
+
+    /// Use a GRIB1 predefined bitmap table reference.
+    ///
+    /// The bitmap is used to pack only present values. The written message
+    /// contains the nonzero table reference, not the bitmap payload itself.
+    pub fn predefined_bitmap(mut self, table_reference: u16, bitmap: &[bool]) -> Self {
+        self.bitmap = Some(Grib1BitmapDefinition {
+            present: bitmap.to_vec(),
+            table_reference: Some(table_reference),
+        });
         self
     }
 
@@ -130,22 +145,34 @@ impl Grib1FieldBuilder {
             });
         }
         if let Some(bitmap) = &bitmap {
-            if bitmap.len() != expected {
+            if bitmap.present.len() != expected {
                 return Err(Error::DataLengthMismatch {
                     expected,
-                    actual: bitmap.len(),
+                    actual: bitmap.present.len(),
                 });
+            }
+            if bitmap.table_reference == Some(0) {
+                return Err(Error::Other(
+                    "GRIB1 predefined bitmap table reference must be nonzero".into(),
+                ));
             }
         }
 
         if self.value_order == ValueOrder::LogicalRowMajor {
-            reorder_field_to_grib_scan_order(&grid, &mut values, bitmap.as_deref_mut())?;
+            reorder_field_to_grib_scan_order(
+                &grid,
+                &mut values,
+                bitmap.as_mut().map(|bitmap| bitmap.present.as_mut_slice()),
+            )?;
         }
 
-        let packed = match packing {
+        let bitmap_mask = bitmap.as_ref().map(|bitmap| bitmap.present.as_slice());
+        let predefined_bitmap_reference = bitmap.as_ref().and_then(|bitmap| bitmap.table_reference);
+
+        let mut packed = match packing {
             PackingStrategy::SimpleAuto { decimal_scale } => {
                 product.decimal_scale = decimal_scale;
-                pack_simple_auto(&values, bitmap.as_deref(), decimal_scale)?
+                pack_simple_auto(&values, bitmap_mask, decimal_scale)?
             }
             PackingStrategy::ComplexAuto { .. } => {
                 return Err(Error::Other(
@@ -163,15 +190,26 @@ impl Grib1FieldBuilder {
                 ));
             }
         };
+        if predefined_bitmap_reference.is_some() {
+            packed.bitmap_payload = None;
+        }
         product.has_grid_definition = true;
-        product.has_bitmap = packed.bitmap_payload.is_some();
+        product.has_bitmap =
+            packed.bitmap_payload.is_some() || predefined_bitmap_reference.is_some();
 
         Ok(Grib1Field {
             product,
             grid,
             packed,
+            predefined_bitmap_reference,
         })
     }
+}
+
+#[derive(Debug, Clone)]
+struct Grib1BitmapDefinition {
+    present: Vec<bool>,
+    table_reference: Option<u16>,
 }
 
 /// A validated, packed GRIB1 field ready for message serialization.
@@ -180,6 +218,7 @@ pub struct Grib1Field {
     product: Grib1ProductDefinition,
     grid: GridDefinition,
     packed: PackedField,
+    predefined_bitmap_reference: Option<u16>,
 }
 
 impl Grib1Field {
@@ -375,7 +414,9 @@ impl<'a, W: Write> GribWriter<'a, W> {
         let mut body = Vec::new();
         write_grib1_product_section(&mut body, &field.product)?;
         write_grib1_grid_section(&mut body, &field.grid)?;
-        if let Some(bitmap) = &field.packed.bitmap_payload {
+        if let Some(table_reference) = field.predefined_bitmap_reference {
+            write_grib1_predefined_bitmap_section(&mut body, table_reference)?;
+        } else if let Some(bitmap) = &field.packed.bitmap_payload {
             write_grib1_bitmap_section(&mut body, bitmap, field.grid.num_points())?;
         }
         write_grib1_data_section(&mut body, &field.packed, 0)?;
@@ -1553,6 +1594,18 @@ fn write_grib1_bitmap_section(
     Ok(())
 }
 
+fn write_grib1_predefined_bitmap_section(out: &mut Vec<u8>, table_reference: u16) -> Result<()> {
+    if table_reference == 0 {
+        return Err(Error::Other(
+            "GRIB1 predefined bitmap table reference must be nonzero".into(),
+        ));
+    }
+    write_u24_be(out, 6)?;
+    write_u8_be(out, 0)?;
+    write_u16_be(out, table_reference)?;
+    Ok(())
+}
+
 fn write_grib1_data_section(out: &mut Vec<u8>, packed: &PackedField, flags: u8) -> Result<()> {
     validate_grib1_binary_data_flags(flags)?;
     let DataRepresentation::SimplePacking(params) = &packed.representation else {
@@ -2269,7 +2322,7 @@ mod tests {
         PolarStereographicGrid, ProductDefinition, ProductDefinitionTemplate,
     };
     use grib_reader::sections::scan_sections;
-    use grib_reader::GribFile;
+    use grib_reader::{GribFile, OpenOptions, PredefinedBitmap};
     use serde::Deserialize;
 
     fn identification() -> Identification {
@@ -2587,6 +2640,70 @@ mod tests {
         assert!(decoded[1].is_nan());
         assert_eq!(decoded[2], 7.0);
         assert_eq!(decoded[3], 8.0);
+    }
+
+    #[test]
+    fn writes_grib1_predefined_bitmap_reference() {
+        let bitmap = [true, false, true, false];
+        let field = Grib1FieldBuilder::new()
+            .product(grib1_product())
+            .grid(grid())
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[9.0, 999.0, 7.0, 999.0])
+            .predefined_bitmap(300, &bitmap)
+            .build()
+            .unwrap();
+        let bytes = write_grib1_message(field);
+
+        let bitmap_offset = 8 + 28 + 32;
+        assert_eq!(
+            &bytes[bitmap_offset..bitmap_offset + 6],
+            &[0, 0, 6, 0, 1, 44]
+        );
+
+        let err = match GribFile::from_bytes(bytes.clone()) {
+            Ok(_) => panic!("expected unsupported predefined bitmap"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err,
+            grib_core::Error::UnsupportedBitmapIndicator(300)
+        ));
+
+        let bitmap_payload = [0b1010_0000];
+        let predefined = [PredefinedBitmap {
+            center_id: 7,
+            subcenter_id: Some(0),
+            table_reference: 300,
+            bitmap: &bitmap_payload,
+        }];
+        let file = GribFile::from_bytes_with_grib1_predefined_bitmaps(
+            bytes,
+            OpenOptions::default(),
+            &predefined,
+        )
+        .unwrap();
+        let decoded = file.message(0).unwrap().read_flat_data_as_f64().unwrap();
+        assert_eq!(decoded[0], 9.0);
+        assert!(decoded[1].is_nan());
+        assert_eq!(decoded[2], 7.0);
+        assert!(decoded[3].is_nan());
+    }
+
+    #[test]
+    fn rejects_zero_grib1_predefined_bitmap_reference() {
+        let err = Grib1FieldBuilder::new()
+            .product(grib1_product())
+            .grid(grid())
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[1.0, 999.0, 3.0, 999.0])
+            .predefined_bitmap(0, &[true, false, true, false])
+            .build()
+            .unwrap_err();
+
+        assert!(
+            matches!(err, grib_core::Error::Other(message) if message.contains("must be nonzero"))
+        );
     }
 
     #[test]
