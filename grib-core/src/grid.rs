@@ -14,6 +14,10 @@ use crate::util::grib_i32;
 pub enum GridDefinition {
     /// Template 3.0: Regular latitude/longitude (equidistant cylindrical).
     LatLon(LatLonGrid),
+    /// Template 3.10: Mercator.
+    Mercator(MercatorGrid),
+    /// Template 3.31: Albers equal-area.
+    AlbersEqualArea(AlbersEqualAreaGrid),
     /// Template 3.30: Lambert conformal.
     LambertConformal(LambertConformalGrid),
     /// Template 3.20: Polar stereographic projection.
@@ -36,9 +40,62 @@ pub struct LatLonGrid {
     pub scanning_mode: u8,
 }
 
+/// Template 3.10: Mercator grid.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MercatorGrid {
+    pub number_of_points: u32,
+    pub shape_of_earth: u8,
+    pub scale_factor_radius: u8,
+    pub scaled_value_radius: u32,
+    pub scale_factor_major_axis: u8,
+    pub scaled_value_major_axis: u32,
+    pub scale_factor_minor_axis: u8,
+    pub scaled_value_minor_axis: u32,
+    pub ni: u32,
+    pub nj: u32,
+    pub lat_first: i32,
+    pub lon_first: i32,
+    pub resolution_and_component_flags: u8,
+    pub lat_d: i32,
+    pub lat_last: i32,
+    pub lon_last: i32,
+    pub scanning_mode: u8,
+    pub orientation_of_grid: u32,
+    pub di: u32,
+    pub dj: u32,
+}
+
 /// Template 3.30: Lambert conformal grid.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LambertConformalGrid {
+    pub number_of_points: u32,
+    pub shape_of_earth: u8,
+    pub scale_factor_radius: u8,
+    pub scaled_value_radius: u32,
+    pub scale_factor_major_axis: u8,
+    pub scaled_value_major_axis: u32,
+    pub scale_factor_minor_axis: u8,
+    pub scaled_value_minor_axis: u32,
+    pub nx: u32,
+    pub ny: u32,
+    pub lat_first: i32,
+    pub lon_first: u32,
+    pub resolution_and_component_flags: u8,
+    pub lat_d: i32,
+    pub lon_v: u32,
+    pub dx: u32,
+    pub dy: u32,
+    pub projection_center_flag: u8,
+    pub scanning_mode: u8,
+    pub latin1: i32,
+    pub latin2: i32,
+    pub lat_southern_pole: i32,
+    pub lon_southern_pole: u32,
+}
+
+/// Template 3.31: Albers equal-area grid.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlbersEqualAreaGrid {
     pub number_of_points: u32,
     pub shape_of_earth: u8,
     pub scale_factor_radius: u8,
@@ -96,8 +153,10 @@ impl GridDefinition {
     pub fn template_number(&self) -> u16 {
         match self {
             Self::LatLon(_) => 0,
+            Self::Mercator(_) => 10,
             Self::PolarStereographic(_) => 20,
             Self::LambertConformal(_) => 30,
+            Self::AlbersEqualArea(_) => 31,
             Self::Unsupported(template) => *template,
         }
     }
@@ -116,9 +175,23 @@ impl GridDefinition {
         }
     }
 
+    pub fn as_mercator(&self) -> Option<&MercatorGrid> {
+        match self {
+            Self::Mercator(grid) => Some(grid),
+            _ => None,
+        }
+    }
+
     pub fn as_lambert_conformal(&self) -> Option<&LambertConformalGrid> {
         match self {
             Self::LambertConformal(grid) => Some(grid),
+            _ => None,
+        }
+    }
+
+    pub fn as_albers_equal_area(&self) -> Option<&AlbersEqualAreaGrid> {
+        match self {
+            Self::AlbersEqualArea(grid) => Some(grid),
             _ => None,
         }
     }
@@ -133,8 +206,10 @@ impl GridDefinition {
     pub fn shape(&self) -> (usize, usize) {
         match self {
             Self::LatLon(g) => (g.ni as usize, g.nj as usize),
+            Self::Mercator(g) => (g.ni as usize, g.nj as usize),
             Self::PolarStereographic(g) => (g.nx as usize, g.ny as usize),
             Self::LambertConformal(g) => (g.nx as usize, g.ny as usize),
+            Self::AlbersEqualArea(g) => (g.nx as usize, g.ny as usize),
             Self::Unsupported(_) => (0, 0),
         }
     }
@@ -142,7 +217,11 @@ impl GridDefinition {
     pub fn ndarray_shape(&self) -> Vec<usize> {
         let (ni, nj) = self.shape();
         match self {
-            Self::LatLon(_) | Self::PolarStereographic(_) | Self::LambertConformal(_)
+            Self::LatLon(_)
+            | Self::Mercator(_)
+            | Self::PolarStereographic(_)
+            | Self::LambertConformal(_)
+            | Self::AlbersEqualArea(_)
                 if ni > 0 && nj > 0 =>
             {
                 vec![nj, ni]
@@ -157,8 +236,10 @@ impl GridDefinition {
                 let (ni, nj) = self.shape();
                 ni.saturating_mul(nj)
             }
+            Self::Mercator(g) => g.number_of_points as usize,
             Self::PolarStereographic(g) => g.number_of_points as usize,
             Self::LambertConformal(g) => g.number_of_points as usize,
+            Self::AlbersEqualArea(g) => g.number_of_points as usize,
             Self::Unsupported(_) => 0,
         }
     }
@@ -169,8 +250,10 @@ impl GridDefinition {
     /// [`LatLonGrid::longitudes`] for those grids.
     pub fn projected_x_coordinates(&self) -> Option<Vec<f64>> {
         match self {
+            Self::Mercator(grid) => Some(grid.x_coordinates()),
             Self::PolarStereographic(grid) => Some(grid.x_coordinates()),
             Self::LambertConformal(grid) => Some(grid.x_coordinates()),
+            Self::AlbersEqualArea(grid) => Some(grid.x_coordinates()),
             _ => None,
         }
     }
@@ -181,8 +264,10 @@ impl GridDefinition {
     /// [`LatLonGrid::latitudes`] for those grids.
     pub fn projected_y_coordinates(&self) -> Option<Vec<f64>> {
         match self {
+            Self::Mercator(grid) => Some(grid.y_coordinates()),
             Self::PolarStereographic(grid) => Some(grid.y_coordinates()),
             Self::LambertConformal(grid) => Some(grid.y_coordinates()),
+            Self::AlbersEqualArea(grid) => Some(grid.y_coordinates()),
             _ => None,
         }
     }
@@ -190,8 +275,10 @@ impl GridDefinition {
     pub fn validate_supported_scan_order(&self) -> Result<()> {
         match self {
             Self::LatLon(grid) => grid.validate_supported_scan_order(),
+            Self::Mercator(grid) => grid.validate_supported_scan_order(),
             Self::PolarStereographic(grid) => grid.validate_supported_scan_order(),
             Self::LambertConformal(grid) => grid.validate_supported_scan_order(),
+            Self::AlbersEqualArea(grid) => grid.validate_supported_scan_order(),
             Self::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
         }
     }
@@ -199,8 +286,10 @@ impl GridDefinition {
     pub fn reorder_for_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
         match self {
             Self::LatLon(grid) => grid.reorder_for_ndarray_in_place(values),
+            Self::Mercator(grid) => grid.reorder_for_ndarray_in_place(values),
             Self::PolarStereographic(grid) => grid.reorder_for_ndarray_in_place(values),
             Self::LambertConformal(grid) => grid.reorder_for_ndarray_in_place(values),
+            Self::AlbersEqualArea(grid) => grid.reorder_for_ndarray_in_place(values),
             Self::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
         }
     }
@@ -222,8 +311,10 @@ impl GridDefinition {
         let template = u16::from_be_bytes(section_bytes[12..14].try_into().unwrap());
         match template {
             0 => parse_latlon(section_bytes),
+            10 => parse_mercator(section_bytes),
             20 => parse_polar_stereographic(section_bytes),
             30 => parse_lambert_conformal(section_bytes),
+            31 => parse_albers_equal_area(section_bytes),
             _ => Ok(Self::Unsupported(template)),
         }
     }
@@ -298,7 +389,53 @@ impl LatLonGrid {
     }
 }
 
+impl MercatorGrid {
+    pub fn x_coordinates(&self) -> Vec<f64> {
+        projected_x_coordinates(self.ni, self.di, self.scanning_mode)
+    }
+
+    pub fn y_coordinates(&self) -> Vec<f64> {
+        projected_y_coordinates(self.nj, self.dj, self.scanning_mode)
+    }
+
+    pub fn reorder_for_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
+        transform_supported_scan_order_in_place(
+            values,
+            self.ni as usize,
+            self.nj as usize,
+            self.scanning_mode,
+        )
+    }
+
+    pub fn validate_supported_scan_order(&self) -> Result<()> {
+        validate_supported_scan_order(self.scanning_mode)
+    }
+}
+
 impl LambertConformalGrid {
+    pub fn x_coordinates(&self) -> Vec<f64> {
+        projected_x_coordinates(self.nx, self.dx, self.scanning_mode)
+    }
+
+    pub fn y_coordinates(&self) -> Vec<f64> {
+        projected_y_coordinates(self.ny, self.dy, self.scanning_mode)
+    }
+
+    pub fn reorder_for_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
+        transform_supported_scan_order_in_place(
+            values,
+            self.nx as usize,
+            self.ny as usize,
+            self.scanning_mode,
+        )
+    }
+
+    pub fn validate_supported_scan_order(&self) -> Result<()> {
+        validate_supported_scan_order(self.scanning_mode)
+    }
+}
+
+impl AlbersEqualAreaGrid {
     pub fn x_coordinates(&self) -> Vec<f64> {
         projected_x_coordinates(self.nx, self.dx, self.scanning_mode)
     }
@@ -449,6 +586,38 @@ fn parse_latlon(data: &[u8]) -> Result<GridDefinition> {
     }))
 }
 
+fn parse_mercator(data: &[u8]) -> Result<GridDefinition> {
+    if data.len() < 72 {
+        return Err(Error::InvalidSection {
+            section: 3,
+            reason: format!("template 3.10 requires 72 bytes, got {}", data.len()),
+        });
+    }
+
+    Ok(GridDefinition::Mercator(MercatorGrid {
+        number_of_points: u32::from_be_bytes(data[6..10].try_into().unwrap()),
+        shape_of_earth: data[14],
+        scale_factor_radius: data[15],
+        scaled_value_radius: u32::from_be_bytes(data[16..20].try_into().unwrap()),
+        scale_factor_major_axis: data[20],
+        scaled_value_major_axis: u32::from_be_bytes(data[21..25].try_into().unwrap()),
+        scale_factor_minor_axis: data[25],
+        scaled_value_minor_axis: u32::from_be_bytes(data[26..30].try_into().unwrap()),
+        ni: u32::from_be_bytes(data[30..34].try_into().unwrap()),
+        nj: u32::from_be_bytes(data[34..38].try_into().unwrap()),
+        lat_first: grib_i32(&data[38..42]).unwrap(),
+        lon_first: grib_i32(&data[42..46]).unwrap(),
+        resolution_and_component_flags: data[46],
+        lat_d: grib_i32(&data[47..51]).unwrap(),
+        lat_last: grib_i32(&data[51..55]).unwrap(),
+        lon_last: grib_i32(&data[55..59]).unwrap(),
+        scanning_mode: data[59],
+        orientation_of_grid: u32::from_be_bytes(data[60..64].try_into().unwrap()),
+        di: u32::from_be_bytes(data[64..68].try_into().unwrap()),
+        dj: u32::from_be_bytes(data[68..72].try_into().unwrap()),
+    }))
+}
+
 fn parse_polar_stereographic(data: &[u8]) -> Result<GridDefinition> {
     if data.len() < 65 {
         return Err(Error::InvalidSection {
@@ -477,6 +646,41 @@ fn parse_polar_stereographic(data: &[u8]) -> Result<GridDefinition> {
         dy: u32::from_be_bytes(data[59..63].try_into().unwrap()),
         projection_center_flag: data[63],
         scanning_mode: data[64],
+    }))
+}
+
+fn parse_albers_equal_area(data: &[u8]) -> Result<GridDefinition> {
+    if data.len() < 81 {
+        return Err(Error::InvalidSection {
+            section: 3,
+            reason: format!("template 3.31 requires 81 bytes, got {}", data.len()),
+        });
+    }
+
+    Ok(GridDefinition::AlbersEqualArea(AlbersEqualAreaGrid {
+        number_of_points: u32::from_be_bytes(data[6..10].try_into().unwrap()),
+        shape_of_earth: data[14],
+        scale_factor_radius: data[15],
+        scaled_value_radius: u32::from_be_bytes(data[16..20].try_into().unwrap()),
+        scale_factor_major_axis: data[20],
+        scaled_value_major_axis: u32::from_be_bytes(data[21..25].try_into().unwrap()),
+        scale_factor_minor_axis: data[25],
+        scaled_value_minor_axis: u32::from_be_bytes(data[26..30].try_into().unwrap()),
+        nx: u32::from_be_bytes(data[30..34].try_into().unwrap()),
+        ny: u32::from_be_bytes(data[34..38].try_into().unwrap()),
+        lat_first: grib_i32(&data[38..42]).unwrap(),
+        lon_first: u32::from_be_bytes(data[42..46].try_into().unwrap()),
+        resolution_and_component_flags: data[46],
+        lat_d: grib_i32(&data[47..51]).unwrap(),
+        lon_v: u32::from_be_bytes(data[51..55].try_into().unwrap()),
+        dx: u32::from_be_bytes(data[55..59].try_into().unwrap()),
+        dy: u32::from_be_bytes(data[59..63].try_into().unwrap()),
+        projection_center_flag: data[63],
+        scanning_mode: data[64],
+        latin1: grib_i32(&data[65..69]).unwrap(),
+        latin2: grib_i32(&data[69..73]).unwrap(),
+        lat_southern_pole: grib_i32(&data[73..77]).unwrap(),
+        lon_southern_pole: u32::from_be_bytes(data[77..81].try_into().unwrap()),
     }))
 }
 
@@ -517,7 +721,10 @@ fn parse_lambert_conformal(data: &[u8]) -> Result<GridDefinition> {
 
 #[cfg(test)]
 mod tests {
-    use super::{GridDefinition, LambertConformalGrid, LatLonGrid, PolarStereographicGrid};
+    use super::{
+        AlbersEqualAreaGrid, GridDefinition, LambertConformalGrid, LatLonGrid, MercatorGrid,
+        PolarStereographicGrid,
+    };
     use crate::binary::encode_wmo_i32;
 
     #[test]
@@ -538,8 +745,10 @@ mod tests {
         assert_eq!(grid.ndarray_shape(), vec![2, 3]);
         assert_eq!(grid.template_number(), 0);
         assert!(grid.as_lat_lon().is_some());
+        assert!(grid.as_mercator().is_none());
         assert!(grid.as_polar_stereographic().is_none());
         assert!(grid.as_lambert_conformal().is_none());
+        assert!(grid.as_albers_equal_area().is_none());
         assert_eq!(grid.unsupported_template(), None);
         match grid {
             GridDefinition::LatLon(ref latlon) => {
@@ -547,6 +756,40 @@ mod tests {
                 assert_eq!(latlon.latitudes(), vec![50.0, 49.0]);
             }
             other => panic!("expected lat/lon grid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_mercator_template() {
+        let section = build_mercator_section(0);
+        let grid = GridDefinition::parse(&section).unwrap();
+
+        assert_eq!(grid.shape(), (3, 2));
+        assert_eq!(grid.ndarray_shape(), vec![2, 3]);
+        assert_eq!(grid.num_points(), 6);
+        assert_eq!(grid.template_number(), 10);
+        assert!(grid.as_lat_lon().is_none());
+        assert!(grid.as_mercator().is_some());
+        assert!(grid.as_lambert_conformal().is_none());
+        assert_eq!(grid.unsupported_template(), None);
+        match grid {
+            GridDefinition::Mercator(mercator) => {
+                assert_eq!(mercator.number_of_points, 6);
+                assert_eq!(mercator.shape_of_earth, 6);
+                assert_eq!(mercator.ni, 3);
+                assert_eq!(mercator.nj, 2);
+                assert_eq!(mercator.lat_first, -20_000_000);
+                assert_eq!(mercator.lon_first, -100_000_000);
+                assert_eq!(mercator.resolution_and_component_flags, 0x08);
+                assert_eq!(mercator.lat_d, 0);
+                assert_eq!(mercator.lat_last, 20_000_000);
+                assert_eq!(mercator.lon_last, -98_000_000);
+                assert_eq!(mercator.scanning_mode, 0);
+                assert_eq!(mercator.orientation_of_grid, 0);
+                assert_eq!(mercator.di, 1_000_000);
+                assert_eq!(mercator.dj, 2_000_000);
+            }
+            other => panic!("expected Mercator grid, got {other:?}"),
         }
     }
 
@@ -560,8 +803,10 @@ mod tests {
         assert_eq!(grid.num_points(), 6);
         assert_eq!(grid.template_number(), 20);
         assert!(grid.as_lat_lon().is_none());
+        assert!(grid.as_mercator().is_none());
         assert!(grid.as_polar_stereographic().is_some());
         assert!(grid.as_lambert_conformal().is_none());
+        assert!(grid.as_albers_equal_area().is_none());
         assert_eq!(grid.unsupported_template(), None);
         match grid {
             GridDefinition::PolarStereographic(polar) => {
@@ -584,6 +829,42 @@ mod tests {
     }
 
     #[test]
+    fn parses_albers_equal_area_template() {
+        let section = build_albers_section();
+        let grid = GridDefinition::parse(&section).unwrap();
+
+        assert_eq!(grid.shape(), (3, 2));
+        assert_eq!(grid.ndarray_shape(), vec![2, 3]);
+        assert_eq!(grid.num_points(), 6);
+        assert_eq!(grid.template_number(), 31);
+        assert!(grid.as_lat_lon().is_none());
+        assert!(grid.as_albers_equal_area().is_some());
+        assert_eq!(grid.unsupported_template(), None);
+        match grid {
+            GridDefinition::AlbersEqualArea(albers) => {
+                assert_eq!(albers.number_of_points, 6);
+                assert_eq!(albers.shape_of_earth, 6);
+                assert_eq!(albers.nx, 3);
+                assert_eq!(albers.ny, 2);
+                assert_eq!(albers.lat_first, 23_000_000);
+                assert_eq!(albers.lon_first, 240_000_000);
+                assert_eq!(albers.resolution_and_component_flags, 0x08);
+                assert_eq!(albers.lat_d, 25_000_000);
+                assert_eq!(albers.lon_v, 265_000_000);
+                assert_eq!(albers.dx, 4_000_000);
+                assert_eq!(albers.dy, 5_000_000);
+                assert_eq!(albers.projection_center_flag, 0);
+                assert_eq!(albers.scanning_mode, 0);
+                assert_eq!(albers.latin1, 29_500_000);
+                assert_eq!(albers.latin2, 45_500_000);
+                assert_eq!(albers.lat_southern_pole, -90_000_000);
+                assert_eq!(albers.lon_southern_pole, 0);
+            }
+            other => panic!("expected Albers equal-area grid, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_lambert_conformal_template() {
         let section = build_lambert_section();
         let grid = GridDefinition::parse(&section).unwrap();
@@ -594,6 +875,7 @@ mod tests {
         assert_eq!(grid.template_number(), 30);
         assert!(grid.as_lat_lon().is_none());
         assert!(grid.as_lambert_conformal().is_some());
+        assert!(grid.as_albers_equal_area().is_none());
         assert_eq!(grid.unsupported_template(), None);
         match grid {
             GridDefinition::LambertConformal(lambert) => {
@@ -626,8 +908,10 @@ mod tests {
 
         assert_eq!(grid.template_number(), 3_276);
         assert!(grid.as_lat_lon().is_none());
+        assert!(grid.as_mercator().is_none());
         assert!(grid.as_polar_stereographic().is_none());
         assert!(grid.as_lambert_conformal().is_none());
+        assert!(grid.as_albers_equal_area().is_none());
         assert_eq!(grid.unsupported_template(), Some(3_276));
     }
 
@@ -701,6 +985,36 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_mercator_alternating_row_scan() {
+        let grid = MercatorGrid {
+            number_of_points: 6,
+            shape_of_earth: 6,
+            scale_factor_radius: 0,
+            scaled_value_radius: 0,
+            scale_factor_major_axis: 0,
+            scaled_value_major_axis: 0,
+            scale_factor_minor_axis: 0,
+            scaled_value_minor_axis: 0,
+            ni: 3,
+            nj: 2,
+            lat_first: 0,
+            lon_first: 0,
+            resolution_and_component_flags: 0,
+            lat_d: 0,
+            lat_last: 0,
+            lon_last: 0,
+            scanning_mode: 0b0001_0000,
+            orientation_of_grid: 0,
+            di: 1,
+            dj: 1,
+        };
+
+        let mut values = vec![1.0, 2.0, 3.0, 6.0, 5.0, 4.0];
+        grid.reorder_for_ndarray_in_place(&mut values).unwrap();
+        assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
     fn normalizes_lambert_alternating_row_scan() {
         let grid = LambertConformalGrid {
             number_of_points: 6,
@@ -734,7 +1048,71 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_albers_alternating_row_scan() {
+        let grid = AlbersEqualAreaGrid {
+            number_of_points: 6,
+            shape_of_earth: 6,
+            scale_factor_radius: 0,
+            scaled_value_radius: 0,
+            scale_factor_major_axis: 0,
+            scaled_value_major_axis: 0,
+            scale_factor_minor_axis: 0,
+            scaled_value_minor_axis: 0,
+            nx: 3,
+            ny: 2,
+            lat_first: 0,
+            lon_first: 0,
+            resolution_and_component_flags: 0,
+            lat_d: 0,
+            lon_v: 0,
+            dx: 1,
+            dy: 1,
+            projection_center_flag: 0,
+            scanning_mode: 0b0001_0000,
+            latin1: 0,
+            latin2: 0,
+            lat_southern_pole: 0,
+            lon_southern_pole: 0,
+        };
+
+        let mut values = vec![1.0, 2.0, 3.0, 6.0, 5.0, 4.0];
+        grid.reorder_for_ndarray_in_place(&mut values).unwrap();
+        assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
     fn generates_projected_coordinate_offsets() {
+        let mercator = GridDefinition::Mercator(MercatorGrid {
+            number_of_points: 6,
+            shape_of_earth: 6,
+            scale_factor_radius: 0,
+            scaled_value_radius: 0,
+            scale_factor_major_axis: 0,
+            scaled_value_major_axis: 0,
+            scale_factor_minor_axis: 0,
+            scaled_value_minor_axis: 0,
+            ni: 3,
+            nj: 2,
+            lat_first: 0,
+            lon_first: 0,
+            resolution_and_component_flags: 0,
+            lat_d: 0,
+            lat_last: 0,
+            lon_last: 0,
+            scanning_mode: 0,
+            orientation_of_grid: 0,
+            di: 1_000_000,
+            dj: 2_000_000,
+        });
+        assert_eq!(
+            mercator.projected_x_coordinates().unwrap(),
+            vec![0.0, 1_000.0, 2_000.0]
+        );
+        assert_eq!(
+            mercator.projected_y_coordinates().unwrap(),
+            vec![-0.0, -2_000.0]
+        );
+
         let polar = GridDefinition::PolarStereographic(PolarStereographicGrid {
             number_of_points: 6,
             shape_of_earth: 6,
@@ -797,6 +1175,40 @@ mod tests {
         assert_eq!(
             lambert.projected_y_coordinates().unwrap(),
             vec![0.0, 2_539.703]
+        );
+
+        let albers = GridDefinition::AlbersEqualArea(AlbersEqualAreaGrid {
+            number_of_points: 6,
+            shape_of_earth: 6,
+            scale_factor_radius: 0,
+            scaled_value_radius: 0,
+            scale_factor_major_axis: 0,
+            scaled_value_major_axis: 0,
+            scale_factor_minor_axis: 0,
+            scaled_value_minor_axis: 0,
+            nx: 3,
+            ny: 2,
+            lat_first: 0,
+            lon_first: 0,
+            resolution_and_component_flags: 0,
+            lat_d: 0,
+            lon_v: 0,
+            dx: 4_000_000,
+            dy: 5_000_000,
+            projection_center_flag: 0,
+            scanning_mode: 0b1100_0000,
+            latin1: 0,
+            latin2: 0,
+            lat_southern_pole: 0,
+            lon_southern_pole: 0,
+        });
+        assert_eq!(
+            albers.projected_x_coordinates().unwrap(),
+            vec![-0.0, -4_000.0, -8_000.0]
+        );
+        assert_eq!(
+            albers.projected_y_coordinates().unwrap(),
+            vec![0.0, 5_000.0]
         );
     }
 
@@ -870,6 +1282,27 @@ mod tests {
         section
     }
 
+    fn build_mercator_section(scanning_mode: u8) -> Vec<u8> {
+        let mut section = vec![0u8; 72];
+        section[..4].copy_from_slice(&72u32.to_be_bytes());
+        section[4] = 3;
+        section[6..10].copy_from_slice(&6u32.to_be_bytes());
+        section[12..14].copy_from_slice(&10u16.to_be_bytes());
+        section[14] = 6;
+        section[30..34].copy_from_slice(&3u32.to_be_bytes());
+        section[34..38].copy_from_slice(&2u32.to_be_bytes());
+        section[38..42].copy_from_slice(&encode_wmo_i32(-20_000_000).unwrap());
+        section[42..46].copy_from_slice(&encode_wmo_i32(-100_000_000).unwrap());
+        section[46] = 0x08;
+        section[47..51].copy_from_slice(&encode_wmo_i32(0).unwrap());
+        section[51..55].copy_from_slice(&encode_wmo_i32(20_000_000).unwrap());
+        section[55..59].copy_from_slice(&encode_wmo_i32(-98_000_000).unwrap());
+        section[59] = scanning_mode;
+        section[64..68].copy_from_slice(&1_000_000u32.to_be_bytes());
+        section[68..72].copy_from_slice(&2_000_000u32.to_be_bytes());
+        section
+    }
+
     fn build_lambert_section() -> Vec<u8> {
         let mut section = vec![0u8; 81];
         section[..4].copy_from_slice(&81u32.to_be_bytes());
@@ -889,6 +1322,28 @@ mod tests {
         section[59..63].copy_from_slice(&2_539_703u32.to_be_bytes());
         section[65..69].copy_from_slice(&encode_wmo_i32(25_000_000).unwrap());
         section[69..73].copy_from_slice(&encode_wmo_i32(25_000_000).unwrap());
+        section[73..77].copy_from_slice(&encode_wmo_i32(-90_000_000).unwrap());
+        section
+    }
+
+    fn build_albers_section() -> Vec<u8> {
+        let mut section = vec![0u8; 81];
+        section[..4].copy_from_slice(&81u32.to_be_bytes());
+        section[4] = 3;
+        section[6..10].copy_from_slice(&6u32.to_be_bytes());
+        section[12..14].copy_from_slice(&31u16.to_be_bytes());
+        section[14] = 6;
+        section[30..34].copy_from_slice(&3u32.to_be_bytes());
+        section[34..38].copy_from_slice(&2u32.to_be_bytes());
+        section[38..42].copy_from_slice(&encode_wmo_i32(23_000_000).unwrap());
+        section[42..46].copy_from_slice(&240_000_000u32.to_be_bytes());
+        section[46] = 0x08;
+        section[47..51].copy_from_slice(&encode_wmo_i32(25_000_000).unwrap());
+        section[51..55].copy_from_slice(&265_000_000u32.to_be_bytes());
+        section[55..59].copy_from_slice(&4_000_000u32.to_be_bytes());
+        section[59..63].copy_from_slice(&5_000_000u32.to_be_bytes());
+        section[65..69].copy_from_slice(&encode_wmo_i32(29_500_000).unwrap());
+        section[69..73].copy_from_slice(&encode_wmo_i32(45_500_000).unwrap());
         section[73..77].copy_from_slice(&encode_wmo_i32(-90_000_000).unwrap());
         section
     }

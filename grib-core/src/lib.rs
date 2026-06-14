@@ -18,7 +18,10 @@ pub use data::{
     PngPackingParams, SimplePackingParams, SpatialDifferencingParams,
 };
 pub use error::{Error, Result};
-pub use grid::{GridDefinition, LambertConformalGrid, LatLonGrid, PolarStereographicGrid};
+pub use grid::{
+    AlbersEqualAreaGrid, GridDefinition, LambertConformalGrid, LatLonGrid, MercatorGrid,
+    PolarStereographicGrid,
+};
 pub use metadata::{ForecastTimeUnit, Parameter, ParameterTableSource, ReferenceTime};
 pub use parameter::{
     LocalParameterEntry, LocalParameterTable, OwnedLocalParameterEntry, BUILTIN_LOCAL_PARAMETERS,

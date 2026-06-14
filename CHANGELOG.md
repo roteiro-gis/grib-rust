@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- add GRIB2 Mercator grid template 3.10 and Albers equal-area grid template
+  3.31 reader metadata parsing, scan-order normalization, projected coordinate
+  offsets, flat data decode, and writer roundtrip support
+
 ## 0.5.0 - 2026-05-18
 
 - add GRIB2 JPEG2000 template 5.40 and PNG template 5.41 reader decode support behind optional feature flags
