@@ -214,6 +214,17 @@ impl GridDefinition {
         }
     }
 
+    pub fn shape_num_points(&self) -> Result<usize> {
+        match self {
+            Self::LatLon(g) => checked_grid_point_count(g.ni, g.nj),
+            Self::Mercator(g) => checked_grid_point_count(g.ni, g.nj),
+            Self::PolarStereographic(g) => checked_grid_point_count(g.nx, g.ny),
+            Self::LambertConformal(g) => checked_grid_point_count(g.nx, g.ny),
+            Self::AlbersEqualArea(g) => checked_grid_point_count(g.nx, g.ny),
+            Self::Unsupported(_) => Ok(0),
+        }
+    }
+
     pub fn ndarray_shape(&self) -> Vec<usize> {
         let (ni, nj) = self.shape();
         match self {
@@ -231,16 +242,27 @@ impl GridDefinition {
     }
 
     pub fn num_points(&self) -> usize {
+        self.checked_num_points().unwrap_or(usize::MAX)
+    }
+
+    pub fn checked_num_points(&self) -> Result<usize> {
         match self {
-            Self::LatLon(_) => {
-                let (ni, nj) = self.shape();
-                ni.saturating_mul(nj)
-            }
-            Self::Mercator(g) => g.number_of_points as usize,
-            Self::PolarStereographic(g) => g.number_of_points as usize,
-            Self::LambertConformal(g) => g.number_of_points as usize,
-            Self::AlbersEqualArea(g) => g.number_of_points as usize,
-            Self::Unsupported(_) => 0,
+            Self::LatLon(_) => self.shape_num_points(),
+            Self::Mercator(g) => Ok(g.number_of_points as usize),
+            Self::PolarStereographic(g) => Ok(g.number_of_points as usize),
+            Self::LambertConformal(g) => Ok(g.number_of_points as usize),
+            Self::AlbersEqualArea(g) => Ok(g.number_of_points as usize),
+            Self::Unsupported(_) => Ok(0),
+        }
+    }
+
+    pub fn declared_num_points(&self) -> Option<usize> {
+        match self {
+            Self::Mercator(g) => Some(g.number_of_points as usize),
+            Self::PolarStereographic(g) => Some(g.number_of_points as usize),
+            Self::LambertConformal(g) => Some(g.number_of_points as usize),
+            Self::AlbersEqualArea(g) => Some(g.number_of_points as usize),
+            Self::LatLon(_) | Self::Unsupported(_) => None,
         }
     }
 
@@ -248,13 +270,26 @@ impl GridDefinition {
     ///
     /// Regular latitude/longitude grids return `None`; use
     /// [`LatLonGrid::longitudes`] for those grids.
-    pub fn projected_x_coordinates(&self) -> Option<Vec<f64>> {
+    pub fn projected_x_coordinates(&self) -> Result<Option<Vec<f64>>> {
+        self.projected_x_coordinates_with_limit(None)
+    }
+
+    pub fn projected_x_coordinates_with_limit(
+        &self,
+        max_axis_points: Option<usize>,
+    ) -> Result<Option<Vec<f64>>> {
         match self {
-            Self::Mercator(grid) => Some(grid.x_coordinates()),
-            Self::PolarStereographic(grid) => Some(grid.x_coordinates()),
-            Self::LambertConformal(grid) => Some(grid.x_coordinates()),
-            Self::AlbersEqualArea(grid) => Some(grid.x_coordinates()),
-            _ => None,
+            Self::Mercator(grid) => Ok(Some(grid.x_coordinates_with_limit(max_axis_points)?)),
+            Self::PolarStereographic(grid) => {
+                Ok(Some(grid.x_coordinates_with_limit(max_axis_points)?))
+            }
+            Self::LambertConformal(grid) => {
+                Ok(Some(grid.x_coordinates_with_limit(max_axis_points)?))
+            }
+            Self::AlbersEqualArea(grid) => {
+                Ok(Some(grid.x_coordinates_with_limit(max_axis_points)?))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -262,13 +297,26 @@ impl GridDefinition {
     ///
     /// Regular latitude/longitude grids return `None`; use
     /// [`LatLonGrid::latitudes`] for those grids.
-    pub fn projected_y_coordinates(&self) -> Option<Vec<f64>> {
+    pub fn projected_y_coordinates(&self) -> Result<Option<Vec<f64>>> {
+        self.projected_y_coordinates_with_limit(None)
+    }
+
+    pub fn projected_y_coordinates_with_limit(
+        &self,
+        max_axis_points: Option<usize>,
+    ) -> Result<Option<Vec<f64>>> {
         match self {
-            Self::Mercator(grid) => Some(grid.y_coordinates()),
-            Self::PolarStereographic(grid) => Some(grid.y_coordinates()),
-            Self::LambertConformal(grid) => Some(grid.y_coordinates()),
-            Self::AlbersEqualArea(grid) => Some(grid.y_coordinates()),
-            _ => None,
+            Self::Mercator(grid) => Ok(Some(grid.y_coordinates_with_limit(max_axis_points)?)),
+            Self::PolarStereographic(grid) => {
+                Ok(Some(grid.y_coordinates_with_limit(max_axis_points)?))
+            }
+            Self::LambertConformal(grid) => {
+                Ok(Some(grid.y_coordinates_with_limit(max_axis_points)?))
+            }
+            Self::AlbersEqualArea(grid) => {
+                Ok(Some(grid.y_coordinates_with_limit(max_axis_points)?))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -321,22 +369,38 @@ impl GridDefinition {
 }
 
 impl LatLonGrid {
-    pub fn longitudes(&self) -> Vec<f64> {
+    pub fn longitudes(&self) -> Result<Vec<f64>> {
+        self.longitudes_with_limit(None)
+    }
+
+    pub fn longitudes_with_limit(&self, max_axis_points: Option<usize>) -> Result<Vec<f64>> {
         let step = self.di as f64 / 1_000_000.0;
         let signed_step = if self.i_scans_positive() { step } else { -step };
         let start = self.lon_first as f64 / 1_000_000.0;
-        (0..self.ni)
-            .map(|index| start + signed_step * index as f64)
-            .collect()
+        linear_axis(
+            self.ni,
+            start,
+            signed_step,
+            max_axis_points,
+            "longitude axis",
+        )
     }
 
-    pub fn latitudes(&self) -> Vec<f64> {
+    pub fn latitudes(&self) -> Result<Vec<f64>> {
+        self.latitudes_with_limit(None)
+    }
+
+    pub fn latitudes_with_limit(&self, max_axis_points: Option<usize>) -> Result<Vec<f64>> {
         let step = self.dj as f64 / 1_000_000.0;
         let signed_step = if self.j_scans_positive() { step } else { -step };
         let start = self.lat_first as f64 / 1_000_000.0;
-        (0..self.nj)
-            .map(|index| start + signed_step * index as f64)
-            .collect()
+        linear_axis(
+            self.nj,
+            start,
+            signed_step,
+            max_axis_points,
+            "latitude axis",
+        )
     }
 
     pub fn reorder_for_ndarray<T>(&self, mut values: Vec<T>) -> Result<Vec<T>> {
@@ -390,12 +454,20 @@ impl LatLonGrid {
 }
 
 impl MercatorGrid {
-    pub fn x_coordinates(&self) -> Vec<f64> {
-        projected_x_coordinates(self.ni, self.di, self.scanning_mode)
+    pub fn x_coordinates(&self) -> Result<Vec<f64>> {
+        self.x_coordinates_with_limit(None)
     }
 
-    pub fn y_coordinates(&self) -> Vec<f64> {
-        projected_y_coordinates(self.nj, self.dj, self.scanning_mode)
+    pub fn x_coordinates_with_limit(&self, max_axis_points: Option<usize>) -> Result<Vec<f64>> {
+        projected_x_coordinates(self.ni, self.di, self.scanning_mode, max_axis_points)
+    }
+
+    pub fn y_coordinates(&self) -> Result<Vec<f64>> {
+        self.y_coordinates_with_limit(None)
+    }
+
+    pub fn y_coordinates_with_limit(&self, max_axis_points: Option<usize>) -> Result<Vec<f64>> {
+        projected_y_coordinates(self.nj, self.dj, self.scanning_mode, max_axis_points)
     }
 
     pub fn reorder_for_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
@@ -413,12 +485,20 @@ impl MercatorGrid {
 }
 
 impl LambertConformalGrid {
-    pub fn x_coordinates(&self) -> Vec<f64> {
-        projected_x_coordinates(self.nx, self.dx, self.scanning_mode)
+    pub fn x_coordinates(&self) -> Result<Vec<f64>> {
+        self.x_coordinates_with_limit(None)
     }
 
-    pub fn y_coordinates(&self) -> Vec<f64> {
-        projected_y_coordinates(self.ny, self.dy, self.scanning_mode)
+    pub fn x_coordinates_with_limit(&self, max_axis_points: Option<usize>) -> Result<Vec<f64>> {
+        projected_x_coordinates(self.nx, self.dx, self.scanning_mode, max_axis_points)
+    }
+
+    pub fn y_coordinates(&self) -> Result<Vec<f64>> {
+        self.y_coordinates_with_limit(None)
+    }
+
+    pub fn y_coordinates_with_limit(&self, max_axis_points: Option<usize>) -> Result<Vec<f64>> {
+        projected_y_coordinates(self.ny, self.dy, self.scanning_mode, max_axis_points)
     }
 
     pub fn reorder_for_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
@@ -436,12 +516,20 @@ impl LambertConformalGrid {
 }
 
 impl AlbersEqualAreaGrid {
-    pub fn x_coordinates(&self) -> Vec<f64> {
-        projected_x_coordinates(self.nx, self.dx, self.scanning_mode)
+    pub fn x_coordinates(&self) -> Result<Vec<f64>> {
+        self.x_coordinates_with_limit(None)
     }
 
-    pub fn y_coordinates(&self) -> Vec<f64> {
-        projected_y_coordinates(self.ny, self.dy, self.scanning_mode)
+    pub fn x_coordinates_with_limit(&self, max_axis_points: Option<usize>) -> Result<Vec<f64>> {
+        projected_x_coordinates(self.nx, self.dx, self.scanning_mode, max_axis_points)
+    }
+
+    pub fn y_coordinates(&self) -> Result<Vec<f64>> {
+        self.y_coordinates_with_limit(None)
+    }
+
+    pub fn y_coordinates_with_limit(&self, max_axis_points: Option<usize>) -> Result<Vec<f64>> {
+        projected_y_coordinates(self.ny, self.dy, self.scanning_mode, max_axis_points)
     }
 
     pub fn reorder_for_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
@@ -459,12 +547,20 @@ impl AlbersEqualAreaGrid {
 }
 
 impl PolarStereographicGrid {
-    pub fn x_coordinates(&self) -> Vec<f64> {
-        projected_x_coordinates(self.nx, self.dx, self.scanning_mode)
+    pub fn x_coordinates(&self) -> Result<Vec<f64>> {
+        self.x_coordinates_with_limit(None)
     }
 
-    pub fn y_coordinates(&self) -> Vec<f64> {
-        projected_y_coordinates(self.ny, self.dy, self.scanning_mode)
+    pub fn x_coordinates_with_limit(&self, max_axis_points: Option<usize>) -> Result<Vec<f64>> {
+        projected_x_coordinates(self.nx, self.dx, self.scanning_mode, max_axis_points)
+    }
+
+    pub fn y_coordinates(&self) -> Result<Vec<f64>> {
+        self.y_coordinates_with_limit(None)
+    }
+
+    pub fn y_coordinates_with_limit(&self, max_axis_points: Option<usize>) -> Result<Vec<f64>> {
+        projected_y_coordinates(self.ny, self.dy, self.scanning_mode, max_axis_points)
     }
 
     pub fn reorder_for_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
@@ -488,9 +584,12 @@ fn transform_supported_scan_order_in_place<T>(
     scanning_mode: u8,
 ) -> Result<()> {
     validate_supported_scan_order(scanning_mode)?;
-    if values.len() != ni * nj {
+    let expected = ni
+        .checked_mul(nj)
+        .ok_or_else(|| Error::Other("grid point count overflow".into()))?;
+    if values.len() != expected {
         return Err(Error::DataLengthMismatch {
-            expected: ni * nj,
+            expected,
             actual: values.len(),
         });
     }
@@ -526,20 +625,81 @@ fn adjacent_rows_alternate_direction(scanning_mode: u8) -> bool {
     scanning_mode & 0b0001_0000 != 0
 }
 
-fn projected_x_coordinates(count: u32, spacing_millimetres: u32, scanning_mode: u8) -> Vec<f64> {
-    projected_axis(count, spacing_millimetres, i_scans_positive(scanning_mode))
+fn projected_x_coordinates(
+    count: u32,
+    spacing_millimetres: u32,
+    scanning_mode: u8,
+    max_axis_points: Option<usize>,
+) -> Result<Vec<f64>> {
+    projected_axis(
+        count,
+        spacing_millimetres,
+        i_scans_positive(scanning_mode),
+        max_axis_points,
+        "projected x axis",
+    )
 }
 
-fn projected_y_coordinates(count: u32, spacing_millimetres: u32, scanning_mode: u8) -> Vec<f64> {
-    projected_axis(count, spacing_millimetres, j_scans_positive(scanning_mode))
+fn projected_y_coordinates(
+    count: u32,
+    spacing_millimetres: u32,
+    scanning_mode: u8,
+    max_axis_points: Option<usize>,
+) -> Result<Vec<f64>> {
+    projected_axis(
+        count,
+        spacing_millimetres,
+        j_scans_positive(scanning_mode),
+        max_axis_points,
+        "projected y axis",
+    )
 }
 
-fn projected_axis(count: u32, spacing_millimetres: u32, scans_positive: bool) -> Vec<f64> {
+fn projected_axis(
+    count: u32,
+    spacing_millimetres: u32,
+    scans_positive: bool,
+    max_axis_points: Option<usize>,
+    what: &'static str,
+) -> Result<Vec<f64>> {
     let step = f64::from(spacing_millimetres) / 1_000.0;
     let signed_step = if scans_positive { step } else { -step };
-    (0..count)
-        .map(|index| signed_step * f64::from(index))
-        .collect()
+    linear_axis(count, 0.0, signed_step, max_axis_points, what)
+}
+
+fn linear_axis(
+    count: u32,
+    start: f64,
+    signed_step: f64,
+    max_axis_points: Option<usize>,
+    what: &'static str,
+) -> Result<Vec<f64>> {
+    let count = count as usize;
+    ensure_limit(what, count, max_axis_points)?;
+    let mut axis = Vec::new();
+    axis.try_reserve(count)
+        .map_err(|e| Error::Other(format!("failed to reserve {count} {what} coordinates: {e}")))?;
+    axis.extend((0..count).map(|index| start + signed_step * index as f64));
+    Ok(axis)
+}
+
+fn checked_grid_point_count(nx: u32, ny: u32) -> Result<usize> {
+    let count = u64::from(nx) * u64::from(ny);
+    usize::try_from(count)
+        .map_err(|_| Error::Other(format!("grid point count {count} does not fit in usize")))
+}
+
+fn ensure_limit(what: &'static str, requested: usize, limit: Option<usize>) -> Result<()> {
+    if let Some(limit) = limit {
+        if requested > limit {
+            return Err(Error::LimitExceeded {
+                what,
+                requested,
+                limit,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn reverse_alternating_rows<T>(values: &mut [T], ni: usize, nj: usize, i_scans_positive: bool) {
@@ -752,8 +912,8 @@ mod tests {
         assert_eq!(grid.unsupported_template(), None);
         match grid {
             GridDefinition::LatLon(ref latlon) => {
-                assert_eq!(latlon.longitudes(), vec![-120.0, -119.0, -118.0]);
-                assert_eq!(latlon.latitudes(), vec![50.0, 49.0]);
+                assert_eq!(latlon.longitudes().unwrap(), vec![-120.0, -119.0, -118.0]);
+                assert_eq!(latlon.latitudes().unwrap(), vec![50.0, 49.0]);
             }
             other => panic!("expected lat/lon grid, got {other:?}"),
         }
@@ -1105,11 +1265,11 @@ mod tests {
             dj: 2_000_000,
         });
         assert_eq!(
-            mercator.projected_x_coordinates().unwrap(),
+            mercator.projected_x_coordinates().unwrap().unwrap(),
             vec![0.0, 1_000.0, 2_000.0]
         );
         assert_eq!(
-            mercator.projected_y_coordinates().unwrap(),
+            mercator.projected_y_coordinates().unwrap().unwrap(),
             vec![-0.0, -2_000.0]
         );
 
@@ -1135,11 +1295,11 @@ mod tests {
             scanning_mode: 0,
         });
         assert_eq!(
-            polar.projected_x_coordinates().unwrap(),
+            polar.projected_x_coordinates().unwrap().unwrap(),
             vec![0.0, 3_000.0, 6_000.0]
         );
         assert_eq!(
-            polar.projected_y_coordinates().unwrap(),
+            polar.projected_y_coordinates().unwrap().unwrap(),
             vec![-0.0, -6_000.0]
         );
 
@@ -1169,11 +1329,11 @@ mod tests {
             lon_southern_pole: 0,
         });
         assert_eq!(
-            lambert.projected_x_coordinates().unwrap(),
+            lambert.projected_x_coordinates().unwrap().unwrap(),
             vec![-0.0, -2_539.703, -5_079.406]
         );
         assert_eq!(
-            lambert.projected_y_coordinates().unwrap(),
+            lambert.projected_y_coordinates().unwrap().unwrap(),
             vec![0.0, 2_539.703]
         );
 
@@ -1203,11 +1363,11 @@ mod tests {
             lon_southern_pole: 0,
         });
         assert_eq!(
-            albers.projected_x_coordinates().unwrap(),
+            albers.projected_x_coordinates().unwrap().unwrap(),
             vec![-0.0, -4_000.0, -8_000.0]
         );
         assert_eq!(
-            albers.projected_y_coordinates().unwrap(),
+            albers.projected_y_coordinates().unwrap().unwrap(),
             vec![0.0, 5_000.0]
         );
     }

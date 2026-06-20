@@ -78,6 +78,8 @@ use crate::sections::{index_fields, FieldSections, SectionRef};
 use rayon::prelude::*;
 
 const GRIB_MAGIC: &[u8; 4] = b"GRIB";
+pub const DEFAULT_MAX_DECODED_POINTS: usize = 25_000_000;
+pub const DEFAULT_MAX_AXIS_POINTS: usize = 1_000_000;
 
 /// Configuration for opening GRIB data.
 #[derive(Debug, Clone, Copy)]
@@ -88,11 +90,54 @@ pub struct OpenOptions {
     /// scanning continues. Once a candidate has a valid indicator, message
     /// length, and end marker, any indexing or decoding error is returned.
     pub strict: bool,
+    /// Maximum grid points a decoded field may contain.
+    ///
+    /// This is checked while indexing and before convenience decode methods
+    /// allocate their output buffer. `None` disables the decoded-point limit.
+    pub max_decoded_points: Option<usize>,
+    /// Maximum points a coordinate-axis helper may allocate.
+    ///
+    /// This applies to latitude, longitude, projected x, and projected y axis
+    /// vectors produced through [`Message`] helpers. `None` disables the axis
+    /// limit.
+    pub max_axis_points: Option<usize>,
 }
 
 impl Default for OpenOptions {
     fn default() -> Self {
-        Self { strict: true }
+        Self {
+            strict: true,
+            max_decoded_points: Some(DEFAULT_MAX_DECODED_POINTS),
+            max_axis_points: Some(DEFAULT_MAX_AXIS_POINTS),
+        }
+    }
+}
+
+impl OpenOptions {
+    pub fn with_max_decoded_points(mut self, max: usize) -> Self {
+        self.max_decoded_points = Some(max);
+        self
+    }
+
+    pub fn with_max_axis_points(mut self, max: usize) -> Self {
+        self.max_axis_points = Some(max);
+        self
+    }
+
+    pub fn without_decoded_point_limit(mut self) -> Self {
+        self.max_decoded_points = None;
+        self
+    }
+
+    pub fn without_axis_point_limit(mut self) -> Self {
+        self.max_axis_points = None;
+        self
+    }
+
+    pub fn without_limits(mut self) -> Self {
+        self.max_decoded_points = None;
+        self.max_axis_points = None;
+        self
     }
 }
 
@@ -134,6 +179,7 @@ pub struct MessageMetadata {
 pub struct GribFile {
     data: GribData,
     messages: Vec<MessageIndex>,
+    options: OpenOptions,
 }
 
 #[derive(Clone)]
@@ -299,7 +345,11 @@ impl GribFile {
         if messages.is_empty() {
             return Err(Error::NoMessages);
         }
-        Ok(Self { data, messages })
+        Ok(Self {
+            data,
+            messages,
+            options,
+        })
     }
 
     /// Returns the GRIB edition of the first field.
@@ -327,6 +377,7 @@ impl GribFile {
             bytes,
             metadata: &record.metadata,
             decode_plan: record.decode_plan.clone(),
+            options: self.options,
         })
     }
 
@@ -378,6 +429,7 @@ pub struct Message<'a> {
     bytes: &'a [u8],
     metadata: &'a MessageMetadata,
     decode_plan: DecodePlan,
+    options: OpenOptions,
     index: usize,
 }
 
@@ -459,24 +511,43 @@ impl<'a> Message<'a> {
         self.metadata.grid.shape()
     }
 
-    pub fn latitudes(&self) -> Option<Vec<f64>> {
-        self.metadata.grid.as_lat_lon().map(LatLonGrid::latitudes)
+    pub fn latitudes(&self) -> Result<Option<Vec<f64>>> {
+        self.metadata
+            .grid
+            .as_lat_lon()
+            .map(|grid| grid.latitudes_with_limit(self.options.max_axis_points))
+            .transpose()
     }
 
-    pub fn longitudes(&self) -> Option<Vec<f64>> {
-        self.metadata.grid.as_lat_lon().map(LatLonGrid::longitudes)
+    pub fn longitudes(&self) -> Result<Option<Vec<f64>>> {
+        self.metadata
+            .grid
+            .as_lat_lon()
+            .map(|grid| grid.longitudes_with_limit(self.options.max_axis_points))
+            .transpose()
     }
 
-    pub fn projected_x_coordinates(&self) -> Option<Vec<f64>> {
-        self.metadata.grid.projected_x_coordinates()
+    pub fn projected_x_coordinates(&self) -> Result<Option<Vec<f64>>> {
+        self.metadata
+            .grid
+            .projected_x_coordinates_with_limit(self.options.max_axis_points)
     }
 
-    pub fn projected_y_coordinates(&self) -> Option<Vec<f64>> {
-        self.metadata.grid.projected_y_coordinates()
+    pub fn projected_y_coordinates(&self) -> Result<Option<Vec<f64>>> {
+        self.metadata
+            .grid
+            .projected_y_coordinates_with_limit(self.options.max_axis_points)
     }
 
     pub fn decode_into<T: DecodeSample>(&self, out: &mut [T]) -> Result<()> {
         self.metadata.grid.validate_supported_scan_order()?;
+        let num_grid_points = self.checked_num_points()?;
+        if out.len() != num_grid_points {
+            return Err(Error::DataLengthMismatch {
+                expected: num_grid_points,
+                actual: out.len(),
+            });
+        }
 
         match &self.decode_plan {
             DecodePlan::Grib2(field) => {
@@ -489,7 +560,7 @@ impl<'a> Message<'a> {
                     data_section,
                     &self.metadata.data_representation,
                     bitmap_section,
-                    self.metadata.grid.num_points(),
+                    num_grid_points,
                     out,
                 )?
             }
@@ -512,7 +583,7 @@ impl<'a> Message<'a> {
                     &data_section[11..],
                     &self.metadata.data_representation,
                     bitmap_section,
-                    self.metadata.grid.num_points(),
+                    num_grid_points,
                     out,
                 )?
             }
@@ -522,13 +593,15 @@ impl<'a> Message<'a> {
     }
 
     pub fn read_flat_data_as_f64(&self) -> Result<Vec<f64>> {
-        let mut decoded = vec![0.0; self.metadata.grid.num_points()];
+        let num_grid_points = self.checked_num_points()?;
+        let mut decoded = zeroed_vec(num_grid_points, 0.0_f64, "decoded f64 field")?;
         self.decode_into(&mut decoded)?;
         Ok(decoded)
     }
 
     pub fn read_flat_data_as_f32(&self) -> Result<Vec<f32>> {
-        let mut decoded = vec![0.0_f32; self.metadata.grid.num_points()];
+        let num_grid_points = self.checked_num_points()?;
+        let mut decoded = zeroed_vec(num_grid_points, 0.0_f32, "decoded f32 field")?;
         self.decode_into(&mut decoded)?;
         Ok(decoded)
     }
@@ -547,6 +620,16 @@ impl<'a> Message<'a> {
 
     pub fn raw_bytes(&self) -> &[u8] {
         self.bytes
+    }
+
+    fn checked_num_points(&self) -> Result<usize> {
+        let num_grid_points = self.metadata.grid.checked_num_points()?;
+        ensure_limit(
+            "decoded grid points",
+            num_grid_points,
+            self.options.max_decoded_points,
+        )?;
+        Ok(num_grid_points)
     }
 }
 
@@ -571,6 +654,27 @@ impl<'a> Iterator for MessageIter<'a> {
 
 fn section_bytes(msg_bytes: &[u8], section: SectionRef) -> &[u8] {
     &msg_bytes[section.offset..section.offset + section.length]
+}
+
+fn zeroed_vec<T: Copy>(len: usize, value: T, what: &'static str) -> Result<Vec<T>> {
+    let mut out = Vec::new();
+    out.try_reserve(len)
+        .map_err(|e| Error::Other(format!("failed to reserve {len} {what} values: {e}")))?;
+    out.resize(len, value);
+    Ok(out)
+}
+
+fn ensure_limit(what: &'static str, requested: usize, limit: Option<usize>) -> Result<()> {
+    if let Some(limit) = limit {
+        if requested > limit {
+            return Err(Error::LimitExceeded {
+                what,
+                requested,
+                limit,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn scan_messages(
@@ -599,8 +703,8 @@ fn scan_messages(
 
         let message_bytes = &data[pos..next_pos];
         let indexed = match indicator.edition {
-            1 => index_grib1_message(message_bytes, pos, predefined_bitmaps)?,
-            2 => index_grib2_message(message_bytes, pos, &indicator, local_parameters)?,
+            1 => index_grib1_message(message_bytes, pos, options, predefined_bitmaps)?,
+            2 => index_grib2_message(message_bytes, pos, options, &indicator, local_parameters)?,
             other => return Err(Error::UnsupportedEdition(other)),
         };
 
@@ -643,6 +747,7 @@ fn locate_message(data: &[u8], pos: usize) -> Result<(Indicator, usize)> {
 fn index_grib1_message(
     message_bytes: &[u8],
     offset: usize,
+    options: OpenOptions,
     predefined_bitmaps: &[PredefinedBitmap<'_>],
 ) -> Result<Vec<MessageIndex>> {
     let sections = grib1::parse_message_sections(message_bytes)?;
@@ -653,6 +758,7 @@ fn index_grib1_message(
     })?;
     let grid_description = GridDescription::parse(section_bytes(message_bytes, grid_ref))?;
     let grid = grid_description.grid;
+    let num_grid_points = validate_grid_limits(&grid, options)?;
 
     let bitmap = match sections.bitmap {
         Some(section) => {
@@ -677,12 +783,12 @@ fn index_grib1_message(
         Some(Grib1BitmapSource::Explicit(section)) => {
             let bitmap_payload = grib1::bitmap_payload(section_bytes(message_bytes, *section))?
                 .ok_or(Error::MissingBitmap)?;
-            count_bitmap_present_points(bitmap_payload, grid.num_points())?
+            count_bitmap_present_points(bitmap_payload, num_grid_points)?
         }
         Some(Grib1BitmapSource::Predefined(payload)) => {
-            count_bitmap_present_points(payload, grid.num_points())?
+            count_bitmap_present_points(payload, num_grid_points)?
         }
-        None => grid.num_points(),
+        None => num_grid_points,
     };
 
     let (_bds, data_representation) = BinaryDataSection::parse(
@@ -744,9 +850,37 @@ fn resolve_predefined_bitmap<'a>(
         .ok_or(Error::UnsupportedBitmapIndicator(table_reference))
 }
 
+fn validate_grid_limits(grid: &GridDefinition, options: OpenOptions) -> Result<usize> {
+    let num_grid_points = grid.checked_num_points()?;
+    ensure_limit(
+        "decoded grid points",
+        num_grid_points,
+        options.max_decoded_points,
+    )?;
+    Ok(num_grid_points)
+}
+
+fn validate_grib2_grid_points(grid: &GridDefinition) -> Result<()> {
+    let Some(declared) = grid.declared_num_points() else {
+        return Ok(());
+    };
+    let projected = grid.shape_num_points()?;
+    if declared != projected {
+        return Err(Error::InvalidSection {
+            section: 3,
+            reason: format!(
+                "grid template 3.{} declares {declared} points but Nx*Ny is {projected}",
+                grid.template_number()
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn index_grib2_message(
     message_bytes: &[u8],
     offset: usize,
+    options: OpenOptions,
     indicator: &Indicator,
     local_parameters: &[LocalParameterEntry<'_>],
 ) -> Result<Vec<MessageIndex>> {
@@ -756,7 +890,10 @@ fn index_grib2_message(
     for (field_index_in_message, field_sections) in fields.into_iter().enumerate() {
         let identification =
             Identification::parse(section_bytes(message_bytes, field_sections.identification))?;
-        let grid = GridDefinition::parse(section_bytes(message_bytes, field_sections.grid))?;
+        let grid_section = section_bytes(message_bytes, field_sections.grid);
+        let grid = GridDefinition::parse(grid_section)?;
+        validate_grib2_grid_points(&grid)?;
+        validate_grid_limits(&grid, options)?;
         let product =
             ProductDefinition::parse(section_bytes(message_bytes, field_sections.product))?;
         let data_representation = DataRepresentation::parse(section_bytes(

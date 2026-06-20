@@ -58,6 +58,13 @@ pub enum Error {
     #[error("decoded data length mismatch: expected {expected}, got {actual}")]
     DataLengthMismatch { expected: usize, actual: usize },
 
+    #[error("{what} limit exceeded: requested {requested}, limit {limit}")]
+    LimitExceeded {
+        what: &'static str,
+        requested: usize,
+        limit: usize,
+    },
+
     #[error("bitmap indicates missing values but no bitmap section present")]
     MissingBitmap,
 

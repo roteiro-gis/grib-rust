@@ -96,14 +96,14 @@ fn open_grib2_lambert_conformal_field_and_decode_flat_data() {
     let field = opened.message(0).unwrap();
 
     assert_eq!(field.grid_shape(), (3, 2));
-    assert_eq!(field.latitudes(), None);
-    assert_eq!(field.longitudes(), None);
+    assert_eq!(field.latitudes().unwrap(), None);
+    assert_eq!(field.longitudes().unwrap(), None);
     assert_eq!(
-        field.projected_x_coordinates().unwrap(),
+        field.projected_x_coordinates().unwrap().unwrap(),
         vec![0.0, 2_539.703, 5_079.406]
     );
     assert_eq!(
-        field.projected_y_coordinates().unwrap(),
+        field.projected_y_coordinates().unwrap().unwrap(),
         vec![-0.0, -2_539.703]
     );
     match field.grid_definition() {
@@ -138,6 +138,60 @@ fn open_grib2_lambert_conformal_field_and_decode_flat_data() {
 }
 
 #[test]
+fn open_rejects_grid_above_configured_decoded_point_limit() {
+    let err = match GribFile::from_bytes_with_options(
+        build_grib2_message(&[1, 2, 3, 4]),
+        OpenOptions::default().with_max_decoded_points(3),
+    ) {
+        Ok(_) => panic!("expected decoded point limit error"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(
+        err,
+        Error::LimitExceeded {
+            what: "decoded grid points",
+            requested: 4,
+            limit: 3,
+        }
+    ));
+}
+
+#[test]
+fn projected_coordinate_helpers_enforce_axis_limit() {
+    let opened = GribFile::from_bytes_with_options(
+        build_grib2_lambert_message(),
+        OpenOptions::default().with_max_axis_points(2),
+    )
+    .unwrap();
+    let field = opened.message(0).unwrap();
+
+    let err = field.projected_x_coordinates().unwrap_err();
+    assert!(matches!(
+        err,
+        Error::LimitExceeded {
+            what: "projected x axis",
+            requested: 3,
+            limit: 2,
+        }
+    ));
+}
+
+#[test]
+fn open_rejects_projected_grid_point_count_mismatch() {
+    let mut bytes = build_grib2_lambert_message();
+    let grid_offset = 16 + 21;
+    bytes[grid_offset + 6..grid_offset + 10].copy_from_slice(&5u32.to_be_bytes());
+
+    let err = match GribFile::from_bytes(bytes) {
+        Ok(_) => panic!("expected projected grid point count mismatch"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, Error::InvalidSection { section: 3, .. }));
+    assert!(err.to_string().contains("declares 5 points"));
+}
+
+#[test]
 fn open_grib2_lambert_conformal_normalizes_alternating_scan_rows() {
     let opened = GribFile::from_bytes(build_grib2_lambert_alternating_message()).unwrap();
     let field = opened.message(0).unwrap();
@@ -154,14 +208,14 @@ fn open_grib2_polar_stereographic_field_and_decode_flat_data() {
     let field = opened.message(0).unwrap();
 
     assert_eq!(field.grid_shape(), (3, 2));
-    assert_eq!(field.latitudes(), None);
-    assert_eq!(field.longitudes(), None);
+    assert_eq!(field.latitudes().unwrap(), None);
+    assert_eq!(field.longitudes().unwrap(), None);
     assert_eq!(
-        field.projected_x_coordinates().unwrap(),
+        field.projected_x_coordinates().unwrap().unwrap(),
         vec![0.0, 3_000.0, 6_000.0]
     );
     assert_eq!(
-        field.projected_y_coordinates().unwrap(),
+        field.projected_y_coordinates().unwrap().unwrap(),
         vec![-0.0, -3_000.0]
     );
     match field.grid_definition() {
@@ -419,7 +473,14 @@ fn tolerant_open_skips_malformed_candidates() {
     let mut bytes = b"junkGRIB\x00\x00\x00\x02not-a-real-message".to_vec();
     bytes.extend_from_slice(&build_grib2_message(&[9, 8, 7, 6]));
 
-    let opened = GribFile::from_bytes_with_options(bytes, OpenOptions { strict: false }).unwrap();
+    let opened = GribFile::from_bytes_with_options(
+        bytes,
+        OpenOptions {
+            strict: false,
+            ..OpenOptions::default()
+        },
+    )
+    .unwrap();
 
     assert_eq!(opened.message_count(), 1);
     assert_eq!(
@@ -442,7 +503,13 @@ fn tolerant_open_still_reports_unsupported_messages() {
     bytes[product_offset + 7..product_offset + 9].copy_from_slice(&8u16.to_be_bytes());
     bytes.extend_from_slice(&build_grib2_message(&[9, 8, 7, 6]));
 
-    let err = match GribFile::from_bytes_with_options(bytes, OpenOptions { strict: false }) {
+    let err = match GribFile::from_bytes_with_options(
+        bytes,
+        OpenOptions {
+            strict: false,
+            ..OpenOptions::default()
+        },
+    ) {
         Ok(_) => panic!("expected unsupported product template error"),
         Err(err) => err,
     };

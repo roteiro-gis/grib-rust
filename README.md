@@ -63,10 +63,17 @@ println!("ndarray shape: {:?}", data.shape());
 
 let tolerant = GribFile::from_bytes_with_options(
     std::fs::read("mixed.bin")?,
-    grib_reader::OpenOptions { strict: false },
+    grib_reader::OpenOptions {
+        strict: false,
+        ..grib_reader::OpenOptions::default()
+    },
 )?;
 println!("recoverable messages: {}", tolerant.message_count());
 ```
+
+`OpenOptions` also bounds decoded-field and coordinate-axis allocations by
+default. Tune `max_decoded_points` and `max_axis_points`, or use the
+`without_*_limit` helpers, when intentionally reading unusually large grids.
 
 Custom GRIB2 local parameter tables can be authored as CSV and supplied as an
 overlay. The reader checks WMO Code Table 4.2 first for standard parameters,
