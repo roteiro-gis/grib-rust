@@ -2790,11 +2790,11 @@ mod tests {
         let message = file.message(0).unwrap();
         assert_eq!(message.grid_shape(), (3, 2));
         assert_eq!(
-            message.projected_x_coordinates().unwrap(),
+            message.projected_x_coordinates().unwrap().unwrap(),
             vec![0.0, 3_000.0, 6_000.0]
         );
         assert_eq!(
-            message.projected_y_coordinates().unwrap(),
+            message.projected_y_coordinates().unwrap().unwrap(),
             vec![-0.0, -3_000.0]
         );
         match message.grid_definition() {
@@ -2831,11 +2831,11 @@ mod tests {
         let message = file.message(0).unwrap();
         assert_eq!(message.grid_shape(), (3, 2));
         assert_eq!(
-            message.projected_x_coordinates().unwrap(),
+            message.projected_x_coordinates().unwrap().unwrap(),
             vec![0.0, 1_000.0, 2_000.0]
         );
         assert_eq!(
-            message.projected_y_coordinates().unwrap(),
+            message.projected_y_coordinates().unwrap().unwrap(),
             vec![-0.0, -2_000.0]
         );
         match message.grid_definition() {
@@ -2873,11 +2873,11 @@ mod tests {
         let message = file.message(0).unwrap();
         assert_eq!(message.grid_shape(), (3, 2));
         assert_eq!(
-            message.projected_x_coordinates().unwrap(),
+            message.projected_x_coordinates().unwrap().unwrap(),
             vec![0.0, 2_539.703, 5_079.406]
         );
         assert_eq!(
-            message.projected_y_coordinates().unwrap(),
+            message.projected_y_coordinates().unwrap().unwrap(),
             vec![-0.0, -2_539.703]
         );
         match message.grid_definition() {
@@ -2917,11 +2917,11 @@ mod tests {
         let message = file.message(0).unwrap();
         assert_eq!(message.grid_shape(), (3, 2));
         assert_eq!(
-            message.projected_x_coordinates().unwrap(),
+            message.projected_x_coordinates().unwrap().unwrap(),
             vec![0.0, 4_000.0, 8_000.0]
         );
         assert_eq!(
-            message.projected_y_coordinates().unwrap(),
+            message.projected_y_coordinates().unwrap().unwrap(),
             vec![-0.0, -5_000.0]
         );
         match message.grid_definition() {

@@ -33,6 +33,15 @@ impl DecodeSample for f64 {
     }
 }
 
+fn filled_vec<T: Copy>(len: usize, value: T, what: &'static str) -> Result<Vec<T>> {
+    let mut values = Vec::new();
+    values
+        .try_reserve(len)
+        .map_err(|e| Error::Other(format!("failed to reserve {len} {what} values: {e}")))?;
+    values.resize(len, value);
+    Ok(values)
+}
+
 /// Decode Section 7 payload into field values, applying Section 6 bitmap when present.
 pub fn decode_field(
     data_section: &[u8],
@@ -86,7 +95,7 @@ pub(crate) fn decode_payload(
     bitmap_section: Option<&[u8]>,
     num_grid_points: usize,
 ) -> Result<Vec<f64>> {
-    let mut values = vec![0.0; num_grid_points];
+    let mut values = filled_vec(num_grid_points, 0.0, "decoded field")?;
     decode_payload_into(
         payload,
         representation,
@@ -212,7 +221,7 @@ pub fn unpack_simple(
     params: &SimplePackingParams,
     num_values: usize,
 ) -> Result<Vec<f64>> {
-    let mut values = vec![0.0; num_values];
+    let mut values = filled_vec(num_values, 0.0, "simple-packed field")?;
     let mut output = OutputCursor::new(&mut values, None);
     unpack_simple_into(data_bytes, params, num_values, &mut output)?;
     output.finish()?;
@@ -368,7 +377,7 @@ fn unpack_png_into<T: DecodeSample>(
     let buffer_size = reader
         .output_buffer_size()
         .ok_or_else(|| Error::Other("PNG output buffer size overflow".into()))?;
-    let mut buffer = vec![0; buffer_size];
+    let mut buffer = filled_vec(buffer_size, 0, "PNG output buffer")?;
     let info = reader
         .next_frame(&mut buffer)
         .map_err(|err| Error::Other(format!("PNG decode failed: {err}")))?;
@@ -576,7 +585,7 @@ fn scale_image_value<T: DecodeSample>(params: &ImagePackingParams, raw: u64) -> 
 
 #[cfg(test)]
 fn unpack_complex(data_bytes: &[u8], params: &ComplexPackingParams) -> Result<Vec<f64>> {
-    let mut values = vec![0.0; params.encoded_values];
+    let mut values = filled_vec(params.encoded_values, 0.0, "complex-packed field")?;
     let mut output = OutputCursor::new(&mut values, None);
     unpack_complex_into(data_bytes, params, &mut output)?;
     output.finish()?;
