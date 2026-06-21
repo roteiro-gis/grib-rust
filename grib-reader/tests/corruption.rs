@@ -4,13 +4,25 @@ use common::{
     build_grib1_message, build_grib2_complex_packing_message, build_grib2_message,
     build_grib2_spatial_differencing_message,
 };
-use grib_reader::{Error, GribFile};
+use grib_reader::{Error, GribFile, OpenOptions};
 
 fn expect_err(bytes: Vec<u8>) -> Error {
     match GribFile::from_bytes(bytes) {
         Ok(_) => panic!("expected error, got Ok"),
         Err(err) => err,
     }
+}
+
+fn build_valid_unsupported_edition_message(edition: u8) -> Vec<u8> {
+    let total_len = 20usize;
+    let mut message = Vec::new();
+    message.extend_from_slice(b"GRIB");
+    message.extend_from_slice(&[0, 0]);
+    message.push(0);
+    message.push(edition);
+    message.extend_from_slice(&(total_len as u64).to_be_bytes());
+    message.extend_from_slice(b"7777");
+    message
 }
 
 #[test]
@@ -54,6 +66,30 @@ fn rejects_impossibly_short_reported_message_length() {
     message[8..16].copy_from_slice(&8u64.to_be_bytes());
     let err = expect_err(message);
     assert!(matches!(err, Error::InvalidMessage(_)));
+}
+
+#[test]
+fn strict_open_reports_validly_framed_unsupported_edition() {
+    let err = expect_err(build_valid_unsupported_edition_message(3));
+    assert!(matches!(err, Error::UnsupportedEdition(3)));
+}
+
+#[test]
+fn tolerant_open_reports_validly_framed_unsupported_edition() {
+    let mut bytes = build_valid_unsupported_edition_message(3);
+    bytes.extend_from_slice(&build_grib2_message(&[1, 2, 3, 4]));
+
+    let err = match GribFile::from_bytes_with_options(
+        bytes,
+        OpenOptions {
+            strict: false,
+            ..OpenOptions::default()
+        },
+    ) {
+        Ok(_) => panic!("expected unsupported edition error"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, Error::UnsupportedEdition(3)));
 }
 
 #[test]

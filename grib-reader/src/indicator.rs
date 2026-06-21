@@ -14,13 +14,18 @@ pub struct Indicator {
 }
 
 impl Indicator {
-    /// Parse from the first bytes of a GRIB message.
-    pub fn parse(data: &[u8]) -> Option<Self> {
+    /// Read the GRIB edition byte without interpreting edition-specific length
+    /// fields.
+    pub fn edition(data: &[u8]) -> Option<u8> {
         if data.len() < 8 || &data[0..4] != b"GRIB" {
             return None;
         }
+        Some(data[7])
+    }
 
-        let edition = data[7];
+    /// Parse from the first bytes of a GRIB message.
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        let edition = Self::edition(data)?;
         match edition {
             1 => {
                 let length = u64::from(read_u24_be(&data[4..7])?);
@@ -81,5 +86,19 @@ mod tests {
     #[test]
     fn reject_invalid_magic() {
         assert!(Indicator::parse(b"NOPE1234").is_none());
+        assert_eq!(Indicator::edition(b"NOPE1234"), None);
+    }
+
+    #[test]
+    fn reads_unsupported_edition_without_parsing_indicator() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"GRIB");
+        data.extend_from_slice(&[0, 0]);
+        data.push(0);
+        data.push(3);
+        data.extend_from_slice(&20u64.to_be_bytes());
+
+        assert_eq!(Indicator::edition(&data), Some(3));
+        assert!(Indicator::parse(&data).is_none());
     }
 }
