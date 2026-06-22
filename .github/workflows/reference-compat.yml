@@ -1,10 +1,16 @@
 name: Reference Compat
 
 on:
+  pull_request:
   push:
+    branches:
+      - main
+      - master
     tags:
       - "v*"
       - "grib-reader-v*"
+  schedule:
+    - cron: "17 5 * * 1"
   workflow_dispatch:
     inputs:
       run_benchmarks:
@@ -44,7 +50,7 @@ jobs:
   benchmarks:
     runs-on: ubuntu-24.04
     needs: parity
-    if: ${{ inputs.run_benchmarks }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_benchmarks }}
 
     steps:
       - name: Checkout

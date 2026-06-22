@@ -225,12 +225,16 @@ cargo run -p grib-reader --example sync_corpus
 git diff --exit-code
 cargo test --workspace --all-features
 cargo test -p grib-reader --no-default-features
+./scripts/run-reference-parity.sh
 cargo check --manifest-path grib-reader/fuzz/Cargo.toml --bins
 cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins -- -D warnings
 cargo package --workspace --locked
 ```
 
-Reference compatibility checks are intentionally outside default PR CI:
+The `Reference Compat` workflow runs the Dockerized ecCodes parity suite for
+pull requests, `main`/`master` pushes, release tags, and a weekly scheduled
+check. The reader and writer parity tests stay `#[ignore]` for normal local
+`cargo test` because they require the ecCodes helper; CI invokes them through:
 
 ```sh
 ./scripts/run-reference-parity.sh
@@ -265,7 +269,9 @@ git push origin v<version>
 
 ## Reference Checks
 
-- `./scripts/run-reference-parity.sh` runs the Dockerized ecCodes parity suite.
+- `./scripts/run-reference-parity.sh` runs the Dockerized ecCodes parity suite;
+  it is mandatory in the `Reference Compat` workflow for pull requests,
+  `main`/`master` pushes, release tags, and weekly scheduled verification.
 - `grib-writer` has a versioned dev-dependency on `grib-reader` for local
   validation tests and benchmarks, so dry-run and publish it after
   `grib-reader` v0.5.0 is visible in the crates.io index.
