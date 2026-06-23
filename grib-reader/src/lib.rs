@@ -720,6 +720,13 @@ fn is_recoverable_candidate_error(err: &Error) -> bool {
 }
 
 fn locate_message(data: &[u8], pos: usize) -> Result<(Indicator, usize)> {
+    let edition = Indicator::edition(&data[pos..]).ok_or_else(|| {
+        Error::InvalidMessage(format!("failed to parse indicator at byte offset {pos}"))
+    })?;
+    if !matches!(edition, 1 | 2) {
+        return Err(Error::UnsupportedEdition(edition));
+    }
+
     let indicator = Indicator::parse(&data[pos..]).ok_or_else(|| {
         Error::InvalidMessage(format!("failed to parse indicator at byte offset {pos}"))
     })?;
