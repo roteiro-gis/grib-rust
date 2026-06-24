@@ -51,7 +51,7 @@ impl ProductDefinition {
             parameter_number: section_bytes[8],
             level_type: section_bytes[9],
             level_value: u16::from_be_bytes(section_bytes[10..12].try_into().unwrap()),
-            reference_time: parse_reference_time(section_bytes),
+            reference_time: parse_reference_time(section_bytes)?,
             forecast_time_unit: section_bytes[17],
             p1: section_bytes[18],
             p2: section_bytes[19],
@@ -179,7 +179,7 @@ impl BinaryDataSection {
     }
 }
 
-fn parse_reference_time(section_bytes: &[u8]) -> ReferenceTime {
+fn parse_reference_time(section_bytes: &[u8]) -> Result<ReferenceTime> {
     let century = section_bytes[24];
     let year_of_century = u16::from(section_bytes[12]);
     let year = match century {
@@ -187,14 +187,16 @@ fn parse_reference_time(section_bytes: &[u8]) -> ReferenceTime {
         c => (u16::from(c) - 1) * 100 + year_of_century,
     };
 
-    ReferenceTime {
+    let reference_time = ReferenceTime {
         year,
         month: section_bytes[13],
         day: section_bytes[14],
         hour: section_bytes[15],
         minute: section_bytes[16],
         second: 0,
-    }
+    };
+    reference_time.validate_in_section(1)?;
+    Ok(reference_time)
 }
 
 fn parse_latlon_grid(section_bytes: &[u8]) -> GridDefinition {
@@ -228,6 +230,7 @@ fn parse_latlon_grid(section_bytes: &[u8]) -> GridDefinition {
 #[cfg(test)]
 mod tests {
     use super::ProductDefinition;
+    use crate::error::Error;
     use crate::metadata::ReferenceTime;
 
     #[test]
@@ -262,5 +265,50 @@ mod tests {
         };
 
         assert_eq!(product.forecast_time(), Some(300));
+    }
+
+    #[test]
+    fn rejects_invalid_product_definition_reference_time() {
+        let mut section = valid_product_definition_section();
+        section[13] = 2;
+        section[14] = 29;
+        let err = ProductDefinition::parse(&section).unwrap_err();
+        assert!(matches!(err, Error::InvalidSection { section: 1, .. }));
+        assert!(err.to_string().contains("invalid reference timestamp"));
+
+        let mut section = valid_product_definition_section();
+        section[15] = 24;
+        let err = ProductDefinition::parse(&section).unwrap_err();
+        assert!(matches!(err, Error::InvalidSection { section: 1, .. }));
+
+        let mut section = valid_product_definition_section();
+        section[16] = 60;
+        let err = ProductDefinition::parse(&section).unwrap_err();
+        assert!(matches!(err, Error::InvalidSection { section: 1, .. }));
+    }
+
+    fn valid_product_definition_section() -> Vec<u8> {
+        let mut section = vec![0u8; 28];
+        section[..3].copy_from_slice(&[0, 0, 28]);
+        section[3] = 2;
+        section[4] = 7;
+        section[5] = 255;
+        section[6] = 0;
+        section[7] = 0b1000_0000;
+        section[8] = 11;
+        section[9] = 100;
+        section[10..12].copy_from_slice(&850u16.to_be_bytes());
+        section[12] = 26;
+        section[13] = 3;
+        section[14] = 20;
+        section[15] = 12;
+        section[16] = 0;
+        section[17] = 1;
+        section[18] = 0;
+        section[19] = 0;
+        section[20] = 0;
+        section[24] = 21;
+        section[25] = 0;
+        section
     }
 }

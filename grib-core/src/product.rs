@@ -1,6 +1,7 @@
 //! GRIB2 metadata carried by Sections 1 and 4.
 
 use crate::error::{Error, Result};
+use crate::metadata::ReferenceTime;
 use crate::parameter;
 use crate::util::{grib_i32, grib_i8};
 
@@ -37,18 +38,28 @@ impl Identification {
             });
         }
 
+        let reference_time = ReferenceTime {
+            year: u16::from_be_bytes(section_bytes[12..14].try_into().unwrap()),
+            month: section_bytes[14],
+            day: section_bytes[15],
+            hour: section_bytes[16],
+            minute: section_bytes[17],
+            second: section_bytes[18],
+        };
+        reference_time.validate_in_section(1)?;
+
         Ok(Self {
             center_id: u16::from_be_bytes(section_bytes[5..7].try_into().unwrap()),
             subcenter_id: u16::from_be_bytes(section_bytes[7..9].try_into().unwrap()),
             master_table_version: section_bytes[9],
             local_table_version: section_bytes[10],
             significance_of_reference_time: section_bytes[11],
-            reference_year: u16::from_be_bytes(section_bytes[12..14].try_into().unwrap()),
-            reference_month: section_bytes[14],
-            reference_day: section_bytes[15],
-            reference_hour: section_bytes[16],
-            reference_minute: section_bytes[17],
-            reference_second: section_bytes[18],
+            reference_year: reference_time.year,
+            reference_month: reference_time.month,
+            reference_day: reference_time.day,
+            reference_hour: reference_time.hour,
+            reference_minute: reference_time.minute,
+            reference_second: reference_time.second,
             production_status: section_bytes[19],
             processed_data_type: section_bytes[20],
         })
@@ -239,27 +250,27 @@ mod tests {
 
     #[test]
     fn parses_identification_section() {
-        let mut section = vec![0u8; 21];
-        section[..4].copy_from_slice(&(21u32).to_be_bytes());
-        section[4] = 1;
-        section[5..7].copy_from_slice(&7u16.to_be_bytes());
-        section[7..9].copy_from_slice(&14u16.to_be_bytes());
-        section[9] = 35;
-        section[10] = 1;
-        section[11] = 1;
-        section[12..14].copy_from_slice(&2026u16.to_be_bytes());
-        section[14] = 3;
-        section[15] = 20;
-        section[16] = 12;
-        section[17] = 30;
-        section[18] = 45;
-        section[19] = 0;
-        section[20] = 1;
+        let section = valid_identification_section();
 
         let id = Identification::parse(&section).unwrap();
         assert_eq!(id.center_id, 7);
         assert_eq!(id.reference_year, 2026);
         assert_eq!(id.reference_hour, 12);
+    }
+
+    #[test]
+    fn rejects_invalid_identification_reference_time() {
+        let mut section = valid_identification_section();
+        section[14] = 2;
+        section[15] = 29;
+        let err = Identification::parse(&section).unwrap_err();
+        assert!(matches!(err, Error::InvalidSection { section: 1, .. }));
+        assert!(err.to_string().contains("invalid reference timestamp"));
+
+        let mut section = valid_identification_section();
+        section[18] = 60;
+        let err = Identification::parse(&section).unwrap_err();
+        assert!(matches!(err, Error::InvalidSection { section: 1, .. }));
     }
 
     #[test]
@@ -320,5 +331,25 @@ mod tests {
 
         let err = ProductDefinition::parse(&section).unwrap_err();
         assert!(matches!(err, Error::InvalidSection { section: 4, .. }));
+    }
+
+    fn valid_identification_section() -> Vec<u8> {
+        let mut section = vec![0u8; 21];
+        section[..4].copy_from_slice(&(21u32).to_be_bytes());
+        section[4] = 1;
+        section[5..7].copy_from_slice(&7u16.to_be_bytes());
+        section[7..9].copy_from_slice(&14u16.to_be_bytes());
+        section[9] = 35;
+        section[10] = 1;
+        section[11] = 1;
+        section[12..14].copy_from_slice(&2026u16.to_be_bytes());
+        section[14] = 3;
+        section[15] = 20;
+        section[16] = 12;
+        section[17] = 30;
+        section[18] = 45;
+        section[19] = 0;
+        section[20] = 1;
+        section
     }
 }
