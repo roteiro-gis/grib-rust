@@ -174,6 +174,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Feature-gated reader GRIB2 JPEG2000 template 5.40 and PNG template 5.41 packed data decode
 - WMO parameter table lookups (Code Table 4.2) plus center/subcenter/local-table-aware GRIB2 local parameter entries and CSV authoring helpers
 - Typed metadata access for reference time, parameter identity, product metadata, grid geometry, and lat/lon coordinates
+- Reader GRIB2 product definition templates 4.0, 4.1, 4.8, and 4.11
 - Forecast valid-time helpers for supported fixed-width GRIB1/GRIB2 time units
 - `OpenOptions` for strict or tolerant scanning
 - Bitmap application with missing values surfaced as `NaN`
@@ -193,6 +194,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 ## Not Yet Supported
 
 - Remaining GRIB2 grid templates beyond 3.0, 3.10, 3.20, 3.30, and 3.31
+- Remaining GRIB2 product definition templates beyond 4.0, 4.1, 4.8, and 4.11
 - Writer GRIB2 row-by-row complex packing
 
 Unsupported cases fail explicitly with typed errors.

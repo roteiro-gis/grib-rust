@@ -56,8 +56,9 @@ pub use parameter::{
     LOCAL_PARAMETER_TABLE_CSV_HEADER,
 };
 pub use product::{
-    AnalysisOrForecastTemplate, FixedSurface, Identification, ProductDefinition,
-    ProductDefinitionTemplate,
+    AnalysisOrForecastTemplate, EnsembleStatisticalProcessTemplate, FixedSurface, Identification,
+    IndividualEnsembleForecastTemplate, ProductDefinition, ProductDefinitionTemplate,
+    StatisticalProcessTemplate, StatisticalTimeRange,
 };
 
 use std::path::Path;
@@ -500,6 +501,15 @@ impl<'a> Message<'a> {
     }
 
     pub fn valid_time(&self) -> Option<ReferenceTime> {
+        if let Some(end) = self
+            .metadata
+            .grib2_product
+            .as_ref()
+            .and_then(ProductDefinition::end_of_overall_time_interval)
+        {
+            return Some(end);
+        }
+
         let unit = self.metadata.forecast_time_unit?;
         let lead = self.metadata.forecast_time?;
         self.metadata
