@@ -1,5 +1,7 @@
 //! Edition-independent field metadata.
 
+use crate::error::{Error, Result};
+
 use std::borrow::Cow;
 
 /// Semantic forecast-time units shared across GRIB editions.
@@ -101,6 +103,25 @@ pub struct ReferenceTime {
 }
 
 impl ReferenceTime {
+    /// Return whether this timestamp has valid calendar and time-of-day fields.
+    pub fn is_valid(&self) -> bool {
+        self.seconds_since_epoch().is_some()
+    }
+
+    pub(crate) fn validate_in_section(&self, section: u8) -> Result<()> {
+        if self.is_valid() {
+            return Ok(());
+        }
+
+        Err(Error::InvalidSection {
+            section,
+            reason: format!(
+                "invalid reference timestamp {:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                self.year, self.month, self.day, self.hour, self.minute, self.second
+            ),
+        })
+    }
+
     /// Add a GRIB forecast lead using a semantic forecast-time unit.
     ///
     /// Returns `None` for calendar-dependent units or invalid timestamps.
@@ -388,6 +409,47 @@ mod tests {
         }
         .checked_add_forecast_time(3, 1)
         .is_none());
+    }
+
+    #[test]
+    fn validates_calendar_and_time_ranges() {
+        assert!(ReferenceTime {
+            year: 2024,
+            month: 2,
+            day: 29,
+            hour: 23,
+            minute: 59,
+            second: 59,
+        }
+        .is_valid());
+
+        assert!(!ReferenceTime {
+            year: 2026,
+            month: 2,
+            day: 29,
+            hour: 12,
+            minute: 0,
+            second: 0,
+        }
+        .is_valid());
+        assert!(!ReferenceTime {
+            year: 2026,
+            month: 13,
+            day: 1,
+            hour: 0,
+            minute: 0,
+            second: 0,
+        }
+        .is_valid());
+        assert!(!ReferenceTime {
+            year: 2026,
+            month: 3,
+            day: 20,
+            hour: 24,
+            minute: 0,
+            second: 0,
+        }
+        .is_valid());
     }
 
     #[test]

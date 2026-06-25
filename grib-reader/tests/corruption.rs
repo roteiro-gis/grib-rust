@@ -69,6 +69,29 @@ fn rejects_impossibly_short_reported_message_length() {
 }
 
 #[test]
+fn rejects_invalid_grib2_reference_timestamp() {
+    let mut message = build_grib2_message(&[1, 2, 3, 4]);
+    let section1_offset = 16;
+    message[section1_offset + 18] = 60;
+
+    let err = expect_err(message);
+    assert!(matches!(err, Error::InvalidSection { section: 1, .. }));
+    assert!(err.to_string().contains("invalid reference timestamp"));
+}
+
+#[test]
+fn rejects_invalid_grib1_reference_timestamp() {
+    let mut message = build_grib1_message(&[1, 2, 3, 4]);
+    let pds_offset = 8;
+    message[pds_offset + 13] = 2;
+    message[pds_offset + 14] = 29;
+
+    let err = expect_err(message);
+    assert!(matches!(err, Error::InvalidSection { section: 1, .. }));
+    assert!(err.to_string().contains("invalid reference timestamp"));
+}
+
+#[test]
 fn strict_open_reports_validly_framed_unsupported_edition() {
     let err = expect_err(build_valid_unsupported_edition_message(3));
     assert!(matches!(err, Error::UnsupportedEdition(3)));

@@ -149,6 +149,10 @@ mod tests {
         let mut pds = vec![0u8; 28];
         pds[..3].copy_from_slice(&[0, 0, 28]);
         pds[7] = 0b1000_0000;
+        pds[12] = 26;
+        pds[13] = 3;
+        pds[14] = 20;
+        pds[15] = 12;
         pds[24] = 21;
         message.extend_from_slice(&pds);
         let mut gds = vec![0u8; 32];
@@ -173,6 +177,10 @@ mod tests {
         let mut pds = vec![0u8; 28];
         pds[..3].copy_from_slice(&[0, 0, 28]);
         pds[7] = 0b1000_0000;
+        pds[12] = 26;
+        pds[13] = 3;
+        pds[14] = 20;
+        pds[15] = 12;
         pds[24] = 21;
         message.extend_from_slice(&pds);
         let mut gds = vec![0u8; 32];
