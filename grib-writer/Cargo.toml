@@ -13,7 +13,7 @@ keywords = ["grib", "grib2", "weather", "climate", "encoder"]
 categories = ["science", "encoding"]
 
 [dependencies]
-grib-core = { path = "../grib-core", version = "0.5.0" }
+grib-core = { path = "../grib-core", version = "0.6.0" }
 openjp2 = { version = "0.6.1", default-features = false, features = ["file-io", "std"], optional = true }
 png = { version = "0.18.1", optional = true }
 tempfile = { version = "3", optional = true }
@@ -26,7 +26,7 @@ codecs = ["jpeg2000", "png"]
 
 [dev-dependencies]
 criterion = "0.5"
-grib-reader = { path = "../grib-reader", version = "0.5.0", features = ["codecs"] }
+grib-reader = { path = "../grib-reader", version = "0.6.0", features = ["codecs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"

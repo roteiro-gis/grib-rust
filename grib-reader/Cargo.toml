@@ -14,7 +14,7 @@ categories = ["science", "parser-implementations"]
 exclude = ["tests/corpus/interop/samples/.gitkeep"]
 
 [dependencies]
-grib-core = { path = "../grib-core", version = "0.5.0" }
+grib-core = { path = "../grib-core", version = "0.6.0" }
 ndarray = { workspace = true }
 memmap2 = { workspace = true }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
