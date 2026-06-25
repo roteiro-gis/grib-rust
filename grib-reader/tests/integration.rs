@@ -11,7 +11,7 @@ use common::{
 };
 use grib_reader::{
     Error, ForecastTimeUnit, GribFile, GridDefinition, LocalParameterEntry, OpenOptions,
-    ParameterTableSource,
+    ParameterTableSource, ProductDefinitionTemplate,
 };
 
 #[test]
@@ -375,6 +375,79 @@ fn computes_grib2_second_valid_time() {
 }
 
 #[test]
+fn opens_grib2_individual_ensemble_product_template() {
+    let opened = GribFile::from_bytes(replace_grib2_product_section(
+        build_grib2_message(&[1, 2, 3, 4]),
+        product_section_template_one(),
+    ))
+    .unwrap();
+    let field = opened.message(0).unwrap();
+
+    assert_eq!(field.product_definition().unwrap().template_number(), 1);
+    match &field.product_definition().unwrap().template {
+        ProductDefinitionTemplate::IndividualEnsembleForecast(template) => {
+            assert_eq!(template.type_of_ensemble_forecast, 1);
+            assert_eq!(template.perturbation_number, 2);
+            assert_eq!(template.number_of_forecasts_in_ensemble, 20);
+        }
+        other => panic!("expected template 4.1, got {other:?}"),
+    }
+    assert_eq!(
+        field.read_flat_data_as_f64().unwrap(),
+        vec![1.0, 2.0, 3.0, 4.0]
+    );
+}
+
+#[test]
+fn opens_grib2_statistical_process_product_template() {
+    let opened = GribFile::from_bytes(replace_grib2_product_section(
+        build_grib2_message(&[1, 2, 3, 4]),
+        product_section_template_eight(),
+    ))
+    .unwrap();
+    let field = opened.message(0).unwrap();
+
+    assert_eq!(field.product_definition().unwrap().template_number(), 8);
+    let valid = field.valid_time().unwrap();
+    assert_eq!(valid.year, 2026);
+    assert_eq!(valid.month, 3);
+    assert_eq!(valid.day, 20);
+    assert_eq!(valid.hour, 18);
+    match &field.product_definition().unwrap().template {
+        ProductDefinitionTemplate::StatisticalProcess(template) => {
+            assert_eq!(template.time_ranges.len(), 1);
+            assert_eq!(template.time_ranges[0].type_of_statistical_processing, 1);
+            assert_eq!(template.time_ranges[0].time_range_length, 6);
+        }
+        other => panic!("expected template 4.8, got {other:?}"),
+    }
+}
+
+#[test]
+fn opens_grib2_ensemble_statistical_process_product_template() {
+    let opened = GribFile::from_bytes(replace_grib2_product_section(
+        build_grib2_message(&[1, 2, 3, 4]),
+        product_section_template_eleven(),
+    ))
+    .unwrap();
+    let field = opened.message(0).unwrap();
+
+    assert_eq!(field.product_definition().unwrap().template_number(), 11);
+    let valid = field.valid_time().unwrap();
+    assert_eq!(valid.year, 2026);
+    assert_eq!(valid.month, 3);
+    assert_eq!(valid.day, 20);
+    assert_eq!(valid.hour, 18);
+    match &field.product_definition().unwrap().template {
+        ProductDefinitionTemplate::EnsembleStatisticalProcess(template) => {
+            assert_eq!(template.ensemble.perturbation_number, 3);
+            assert_eq!(template.time_ranges.len(), 1);
+        }
+        other => panic!("expected template 4.11, got {other:?}"),
+    }
+}
+
+#[test]
 fn iterates_multifield_grib2_message() {
     let opened = GribFile::from_bytes(build_grib2_multifield_message()).unwrap();
     let names = opened
@@ -500,7 +573,7 @@ fn tolerant_open_skips_malformed_candidates() {
 fn tolerant_open_still_reports_unsupported_messages() {
     let mut bytes = build_grib2_message(&[1, 2, 3, 4]);
     let product_offset = 16 + 21 + 72;
-    bytes[product_offset + 7..product_offset + 9].copy_from_slice(&8u16.to_be_bytes());
+    bytes[product_offset + 7..product_offset + 9].copy_from_slice(&99u16.to_be_bytes());
     bytes.extend_from_slice(&build_grib2_message(&[9, 8, 7, 6]));
 
     let err = match GribFile::from_bytes_with_options(
@@ -514,7 +587,7 @@ fn tolerant_open_still_reports_unsupported_messages() {
         Err(err) => err,
     };
 
-    assert!(matches!(err, Error::UnsupportedProductTemplate(8)));
+    assert!(matches!(err, Error::UnsupportedProductTemplate(99)));
 }
 
 #[test]
@@ -587,6 +660,63 @@ fn open_grib2_spatial_differencing_field_and_decode() {
         .collect::<Vec<_>>();
 
     assert_eq!(decoded, vec![10.0, 12.0, 15.0, 19.0]);
+}
+
+fn replace_grib2_product_section(mut bytes: Vec<u8>, section: Vec<u8>) -> Vec<u8> {
+    let offset = grib2_section_offset(&bytes, 4);
+    let old_len = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+    bytes.splice(offset..offset + old_len, section);
+    let total_len = bytes.len() as u64;
+    bytes[8..16].copy_from_slice(&total_len.to_be_bytes());
+    bytes
+}
+
+fn base_product_section() -> Vec<u8> {
+    let bytes = build_grib2_message(&[1, 2, 3, 4]);
+    let offset = grib2_section_offset(&bytes, 4);
+    let len = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+    bytes[offset..offset + len].to_vec()
+}
+
+fn product_section_template_one() -> Vec<u8> {
+    let mut section = base_product_section();
+    section.resize(37, 0);
+    section[..4].copy_from_slice(&37u32.to_be_bytes());
+    section[7..9].copy_from_slice(&1u16.to_be_bytes());
+    section[34] = 1;
+    section[35] = 2;
+    section[36] = 20;
+    section
+}
+
+fn product_section_template_eight() -> Vec<u8> {
+    let mut section = base_product_section();
+    section.resize(58, 0);
+    section[..4].copy_from_slice(&58u32.to_be_bytes());
+    section[7..9].copy_from_slice(&8u16.to_be_bytes());
+    section[34..36].copy_from_slice(&2026u16.to_be_bytes());
+    section[36] = 3;
+    section[37] = 20;
+    section[38] = 18;
+    section[41] = 1;
+    section[46] = 1;
+    section[47] = 2;
+    section[48] = 1;
+    section[49..53].copy_from_slice(&6u32.to_be_bytes());
+    section[53] = 255;
+    section
+}
+
+fn product_section_template_eleven() -> Vec<u8> {
+    let mut section = product_section_template_eight();
+    section.resize(61, 0);
+    section[..4].copy_from_slice(&61u32.to_be_bytes());
+    section[7..9].copy_from_slice(&11u16.to_be_bytes());
+    section.copy_within(34..58, 37);
+    section[34] = 1;
+    section[35] = 3;
+    section[36] = 20;
+    section
 }
 
 fn set_grib2_identification(

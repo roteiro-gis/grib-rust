@@ -2017,7 +2017,9 @@ fn write_projected_grid_shape_of_earth(section: &mut [u8], shape: ProjectedGridS
 }
 
 fn write_product_section(out: &mut Vec<u8>, product: &ProductDefinition) -> Result<()> {
-    let ProductDefinitionTemplate::AnalysisOrForecast(template) = &product.template;
+    let ProductDefinitionTemplate::AnalysisOrForecast(template) = &product.template else {
+        return Err(Error::UnsupportedProductTemplate(product.template_number()));
+    };
 
     write_u32_be(out, 34)?;
     write_u8_be(out, 4)?;
@@ -2301,8 +2303,9 @@ fn validate_supported_grib1_grid(grid: &GridDefinition) -> Result<()> {
 }
 
 fn validate_supported_product(product: &ProductDefinition) -> Result<()> {
-    match product.template {
+    match &product.template {
         ProductDefinitionTemplate::AnalysisOrForecast(_) => Ok(()),
+        _ => Err(Error::UnsupportedProductTemplate(product.template_number())),
     }
 }
 
