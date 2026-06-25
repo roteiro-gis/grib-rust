@@ -174,14 +174,15 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Feature-gated reader GRIB2 JPEG2000 template 5.40 and PNG template 5.41 packed data decode
 - WMO parameter table lookups (Code Table 4.2) plus center/subcenter/local-table-aware GRIB2 local parameter entries and CSV authoring helpers
 - Typed metadata access for reference time, parameter identity, product metadata, grid geometry, and lat/lon coordinates
-- Reader GRIB2 product definition templates 4.0, 4.1, 4.8, and 4.11
+- Reader and writer GRIB2 product definition templates 4.0, 4.1, 4.8, and 4.11
 - Forecast valid-time helpers for supported fixed-width GRIB1/GRIB2 time units
 - `OpenOptions` for strict or tolerant scanning
 - Bitmap application with missing values surfaced as `NaN`
 - Parallel field decoding via Rayon
 - Output: caller-owned `&mut [f32]`/`&mut [f64]`, flat `Vec<f32>`/`Vec<f64>`, or `ndarray::ArrayD<f32>`/`ArrayD<f64>`
 - Memory-mapped I/O or owned byte buffers
-- Writer GRIB2 regular lat/lon fields with product template 4.0, simple packing template 5.0, complex packing template 5.2, and spatial differencing template 5.3
+- Writer GRIB2 regular lat/lon fields with simple packing template 5.0,
+  complex packing template 5.2, and spatial differencing template 5.3
 - Writer GRIB2 Mercator grid template 3.10, polar stereographic grid template
   3.20, Lambert conformal grid template 3.30, and Albers equal-area grid
   template 3.31 fields

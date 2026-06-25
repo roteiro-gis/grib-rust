@@ -5,6 +5,8 @@
 - prepare the workspace crates for the 0.6.0 release line so package
   verification resolves against matching internal crate APIs
 - update `memmap2` to 0.9.11 to pick up the fix for RUSTSEC-2026-0186
+- add GRIB2 writer support for product definition templates 4.1, 4.8, and
+  4.11, matching the reader product-surface support
 - add GRIB2 Mercator grid template 3.10 and Albers equal-area grid template
   3.31 reader metadata parsing, scan-order normalization, projected coordinate
   offsets, flat data decode, and writer roundtrip support

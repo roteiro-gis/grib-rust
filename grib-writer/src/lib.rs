@@ -10,10 +10,11 @@ use grib_core::binary::{
 };
 use grib_core::bit::BitWriter;
 use grib_core::{
-    AlbersEqualAreaGrid, ComplexPackingParams, DataRepresentation, FixedSurface, GridDefinition,
-    Identification, ImagePackingParams, Jpeg2000PackingParams, LambertConformalGrid, LatLonGrid,
-    MercatorGrid, PngPackingParams, PolarStereographicGrid, ProductDefinition,
-    ProductDefinitionTemplate, SimplePackingParams, SpatialDifferencingParams,
+    AlbersEqualAreaGrid, AnalysisOrForecastTemplate, ComplexPackingParams, DataRepresentation,
+    FixedSurface, GridDefinition, Identification, ImagePackingParams, Jpeg2000PackingParams,
+    LambertConformalGrid, LatLonGrid, MercatorGrid, PngPackingParams, PolarStereographicGrid,
+    ProductDefinition, ProductDefinitionTemplate, ReferenceTime, SimplePackingParams,
+    SpatialDifferencingParams, StatisticalTimeRange,
 };
 
 pub use grib_core::grib1::ProductDefinition as Grib1ProductDefinition;
@@ -2017,14 +2018,53 @@ fn write_projected_grid_shape_of_earth(section: &mut [u8], shape: ProjectedGridS
 }
 
 fn write_product_section(out: &mut Vec<u8>, product: &ProductDefinition) -> Result<()> {
-    let ProductDefinitionTemplate::AnalysisOrForecast(template) = &product.template else {
-        return Err(Error::UnsupportedProductTemplate(product.template_number()));
-    };
+    match &product.template {
+        ProductDefinitionTemplate::AnalysisOrForecast(template) => {
+            write_product_template_prefix(out, product, 0, 34, template)
+        }
+        ProductDefinitionTemplate::IndividualEnsembleForecast(template) => {
+            write_product_template_prefix(out, product, 1, 37, &template.base)?;
+            write_ensemble_product_extra(out, template)
+        }
+        ProductDefinitionTemplate::StatisticalProcess(template) => {
+            let range_count = checked_time_range_count(template.time_ranges.len())?;
+            let section_length = statistical_product_section_len(46, range_count)?;
+            write_product_template_prefix(out, product, 8, section_length, &template.base)?;
+            write_reference_time(out, template.end_of_overall_time_interval)?;
+            write_u8_be(out, range_count)?;
+            write_u32_be(out, template.number_of_missing_in_statistical_process)?;
+            write_statistical_time_ranges(out, &template.time_ranges)
+        }
+        ProductDefinitionTemplate::EnsembleStatisticalProcess(template) => {
+            let range_count = checked_time_range_count(template.time_ranges.len())?;
+            let section_length = statistical_product_section_len(49, range_count)?;
+            write_product_template_prefix(
+                out,
+                product,
+                11,
+                section_length,
+                &template.ensemble.base,
+            )?;
+            write_ensemble_product_extra(out, &template.ensemble)?;
+            write_reference_time(out, template.end_of_overall_time_interval)?;
+            write_u8_be(out, range_count)?;
+            write_u32_be(out, template.number_of_missing_in_statistical_process)?;
+            write_statistical_time_ranges(out, &template.time_ranges)
+        }
+    }
+}
 
-    write_u32_be(out, 34)?;
+fn write_product_template_prefix(
+    out: &mut Vec<u8>,
+    product: &ProductDefinition,
+    template_number: u16,
+    section_length: u32,
+    template: &AnalysisOrForecastTemplate,
+) -> Result<()> {
+    write_u32_be(out, section_length)?;
     write_u8_be(out, 4)?;
     write_u16_be(out, 0)?;
-    write_u16_be(out, 0)?;
+    write_u16_be(out, template_number)?;
     write_u8_be(out, product.parameter_category)?;
     write_u8_be(out, product.parameter_number)?;
     write_u8_be(out, template.generating_process)?;
@@ -2036,6 +2076,72 @@ fn write_product_section(out: &mut Vec<u8>, product: &ProductDefinition) -> Resu
     write_u32_be(out, template.forecast_time)?;
     write_surface(out, template.first_surface.as_ref())?;
     write_surface(out, template.second_surface.as_ref())
+}
+
+fn write_ensemble_product_extra(
+    out: &mut Vec<u8>,
+    template: &grib_core::IndividualEnsembleForecastTemplate,
+) -> Result<()> {
+    write_u8_be(out, template.type_of_ensemble_forecast)?;
+    write_u8_be(out, template.perturbation_number)?;
+    write_u8_be(out, template.number_of_forecasts_in_ensemble)
+}
+
+fn write_reference_time(out: &mut Vec<u8>, reference_time: ReferenceTime) -> Result<()> {
+    validate_reference_time(reference_time)?;
+
+    write_u16_be(out, reference_time.year)?;
+    write_u8_be(out, reference_time.month)?;
+    write_u8_be(out, reference_time.day)?;
+    write_u8_be(out, reference_time.hour)?;
+    write_u8_be(out, reference_time.minute)?;
+    write_u8_be(out, reference_time.second)
+}
+
+fn validate_reference_time(reference_time: ReferenceTime) -> Result<()> {
+    if reference_time.is_valid() {
+        return Ok(());
+    }
+
+    Err(Error::InvalidSection {
+        section: 4,
+        reason: format!(
+            "invalid reference timestamp {:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+            reference_time.year,
+            reference_time.month,
+            reference_time.day,
+            reference_time.hour,
+            reference_time.minute,
+            reference_time.second
+        ),
+    })
+}
+
+fn checked_time_range_count(range_count: usize) -> Result<u8> {
+    u8::try_from(range_count).map_err(|_| {
+        Error::Other(format!(
+            "statistical product time-range count ({range_count}) exceeds GRIB2 u8 limit"
+        ))
+    })
+}
+
+fn statistical_product_section_len(base_len: u32, range_count: u8) -> Result<u32> {
+    u32::from(range_count)
+        .checked_mul(12)
+        .and_then(|ranges_len| base_len.checked_add(ranges_len))
+        .ok_or_else(|| Error::Other("statistical product section length overflow".into()))
+}
+
+fn write_statistical_time_ranges(out: &mut Vec<u8>, ranges: &[StatisticalTimeRange]) -> Result<()> {
+    for range in ranges {
+        write_u8_be(out, range.type_of_statistical_processing)?;
+        write_u8_be(out, range.type_of_time_increment)?;
+        write_u8_be(out, range.time_range_unit)?;
+        write_u32_be(out, range.time_range_length)?;
+        write_u8_be(out, range.time_increment_unit)?;
+        write_u32_be(out, range.time_increment)?;
+    }
+    Ok(())
 }
 
 fn write_surface(out: &mut Vec<u8>, surface: Option<&FixedSurface>) -> Result<()> {
@@ -2305,7 +2411,15 @@ fn validate_supported_grib1_grid(grid: &GridDefinition) -> Result<()> {
 fn validate_supported_product(product: &ProductDefinition) -> Result<()> {
     match &product.template {
         ProductDefinitionTemplate::AnalysisOrForecast(_) => Ok(()),
-        _ => Err(Error::UnsupportedProductTemplate(product.template_number())),
+        ProductDefinitionTemplate::IndividualEnsembleForecast(_) => Ok(()),
+        ProductDefinitionTemplate::StatisticalProcess(template) => {
+            checked_time_range_count(template.time_ranges.len())?;
+            validate_reference_time(template.end_of_overall_time_interval)
+        }
+        ProductDefinitionTemplate::EnsembleStatisticalProcess(template) => {
+            checked_time_range_count(template.time_ranges.len())?;
+            validate_reference_time(template.end_of_overall_time_interval)
+        }
     }
 }
 
@@ -2320,9 +2434,11 @@ mod tests {
     use grib_core::binary::decode_ibm_f32;
     use grib_core::metadata::ReferenceTime;
     use grib_core::{
-        AlbersEqualAreaGrid, AnalysisOrForecastTemplate, DataRepresentation, FixedSurface,
-        GridDefinition, Identification, LambertConformalGrid, LatLonGrid, MercatorGrid,
+        AlbersEqualAreaGrid, AnalysisOrForecastTemplate, DataRepresentation,
+        EnsembleStatisticalProcessTemplate, FixedSurface, GridDefinition, Identification,
+        IndividualEnsembleForecastTemplate, LambertConformalGrid, LatLonGrid, MercatorGrid,
         PolarStereographicGrid, ProductDefinition, ProductDefinitionTemplate,
+        StatisticalProcessTemplate, StatisticalTimeRange,
     };
     use grib_reader::sections::scan_sections;
     use grib_reader::{GribFile, OpenOptions, PredefinedBitmap};
@@ -2523,17 +2639,43 @@ mod tests {
         ProductDefinition {
             parameter_category,
             parameter_number,
-            template: ProductDefinitionTemplate::AnalysisOrForecast(AnalysisOrForecastTemplate {
-                generating_process: 2,
-                forecast_time_unit: 1,
-                forecast_time: 6,
-                first_surface: Some(FixedSurface {
-                    surface_type: 103,
-                    scale_factor: 0,
-                    scaled_value: 850,
-                }),
-                second_surface: None,
+            template: ProductDefinitionTemplate::AnalysisOrForecast(analysis_or_forecast_template()),
+        }
+    }
+
+    fn analysis_or_forecast_template() -> AnalysisOrForecastTemplate {
+        AnalysisOrForecastTemplate {
+            generating_process: 2,
+            forecast_time_unit: 1,
+            forecast_time: 6,
+            first_surface: Some(FixedSurface {
+                surface_type: 103,
+                scale_factor: 0,
+                scaled_value: 850,
             }),
+            second_surface: None,
+        }
+    }
+
+    fn statistical_time_range() -> StatisticalTimeRange {
+        StatisticalTimeRange {
+            type_of_statistical_processing: 1,
+            type_of_time_increment: 2,
+            time_range_unit: 1,
+            time_range_length: 6,
+            time_increment_unit: 255,
+            time_increment: 0,
+        }
+    }
+
+    fn interval_end_time() -> ReferenceTime {
+        ReferenceTime {
+            year: 2026,
+            month: 3,
+            day: 20,
+            hour: 18,
+            minute: 0,
+            second: 0,
         }
     }
 
@@ -2775,6 +2917,217 @@ mod tests {
         assert_eq!(message.grid_shape(), (2, 2));
         assert_eq!(message.forecast_time(), Some(6));
         assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+
+    #[test]
+    fn writes_individual_ensemble_product_template_readable_by_reader() {
+        let values = [1.0, 2.0, 3.0, 4.0];
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(ProductDefinition {
+                parameter_category: 0,
+                parameter_number: 0,
+                template: ProductDefinitionTemplate::IndividualEnsembleForecast(
+                    IndividualEnsembleForecastTemplate {
+                        base: analysis_or_forecast_template(),
+                        type_of_ensemble_forecast: 1,
+                        perturbation_number: 2,
+                        number_of_forecasts_in_ensemble: 20,
+                    },
+                ),
+            })
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        let bytes = write_message([field]);
+        let product_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 4)
+            .unwrap();
+        assert_eq!(product_section.length, 37);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        let product = message.product_definition().unwrap();
+        assert_eq!(product.template_number(), 1);
+        match &product.template {
+            ProductDefinitionTemplate::IndividualEnsembleForecast(template) => {
+                assert_eq!(template.type_of_ensemble_forecast, 1);
+                assert_eq!(template.perturbation_number, 2);
+                assert_eq!(template.number_of_forecasts_in_ensemble, 20);
+                assert_eq!(template.base.forecast_time, 6);
+            }
+            other => panic!("expected template 4.1, got {other:?}"),
+        }
+        assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+
+    #[test]
+    fn writes_statistical_product_template_readable_by_reader() {
+        let values = [1.0, 2.0, 3.0, 4.0];
+        let mut base = analysis_or_forecast_template();
+        base.forecast_time = 1;
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(ProductDefinition {
+                parameter_category: 0,
+                parameter_number: 1,
+                template: ProductDefinitionTemplate::StatisticalProcess(
+                    StatisticalProcessTemplate {
+                        base,
+                        end_of_overall_time_interval: interval_end_time(),
+                        number_of_missing_in_statistical_process: 0,
+                        time_ranges: vec![statistical_time_range()],
+                    },
+                ),
+            })
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        let bytes = write_message([field]);
+        let product_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 4)
+            .unwrap();
+        assert_eq!(product_section.length, 58);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        assert_eq!(message.valid_time(), Some(interval_end_time()));
+        let product = message.product_definition().unwrap();
+        assert_eq!(product.template_number(), 8);
+        match &product.template {
+            ProductDefinitionTemplate::StatisticalProcess(template) => {
+                assert_eq!(template.base.forecast_time, 1);
+                assert_eq!(template.end_of_overall_time_interval, interval_end_time());
+                assert_eq!(template.time_ranges, vec![statistical_time_range()]);
+            }
+            other => panic!("expected template 4.8, got {other:?}"),
+        }
+        assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+
+    #[test]
+    fn writes_ensemble_statistical_product_template_readable_by_reader() {
+        let values = [1.0, 2.0, 3.0, 4.0];
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(ProductDefinition {
+                parameter_category: 0,
+                parameter_number: 2,
+                template: ProductDefinitionTemplate::EnsembleStatisticalProcess(
+                    EnsembleStatisticalProcessTemplate {
+                        ensemble: IndividualEnsembleForecastTemplate {
+                            base: analysis_or_forecast_template(),
+                            type_of_ensemble_forecast: 1,
+                            perturbation_number: 3,
+                            number_of_forecasts_in_ensemble: 30,
+                        },
+                        end_of_overall_time_interval: interval_end_time(),
+                        number_of_missing_in_statistical_process: 0,
+                        time_ranges: vec![statistical_time_range()],
+                    },
+                ),
+            })
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        let bytes = write_message([field]);
+        let product_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 4)
+            .unwrap();
+        assert_eq!(product_section.length, 61);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        assert_eq!(message.valid_time(), Some(interval_end_time()));
+        let product = message.product_definition().unwrap();
+        assert_eq!(product.template_number(), 11);
+        match &product.template {
+            ProductDefinitionTemplate::EnsembleStatisticalProcess(template) => {
+                assert_eq!(template.ensemble.type_of_ensemble_forecast, 1);
+                assert_eq!(template.ensemble.perturbation_number, 3);
+                assert_eq!(template.ensemble.number_of_forecasts_in_ensemble, 30);
+                assert_eq!(template.end_of_overall_time_interval, interval_end_time());
+                assert_eq!(template.time_ranges, vec![statistical_time_range()]);
+            }
+            other => panic!("expected template 4.11, got {other:?}"),
+        }
+        assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+
+    #[test]
+    fn rejects_too_many_statistical_time_ranges() {
+        let err = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(ProductDefinition {
+                parameter_category: 0,
+                parameter_number: 1,
+                template: ProductDefinitionTemplate::StatisticalProcess(
+                    StatisticalProcessTemplate {
+                        base: analysis_or_forecast_template(),
+                        end_of_overall_time_interval: interval_end_time(),
+                        number_of_missing_in_statistical_process: 0,
+                        time_ranges: vec![statistical_time_range(); 256],
+                    },
+                ),
+            })
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[1.0, 2.0, 3.0, 4.0])
+            .build()
+            .unwrap_err();
+
+        assert!(
+            matches!(err, grib_core::Error::Other(message) if message.contains("time-range count"))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_statistical_product_end_time() {
+        let err = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(ProductDefinition {
+                parameter_category: 0,
+                parameter_number: 1,
+                template: ProductDefinitionTemplate::StatisticalProcess(
+                    StatisticalProcessTemplate {
+                        base: analysis_or_forecast_template(),
+                        end_of_overall_time_interval: ReferenceTime {
+                            year: 2026,
+                            month: 13,
+                            day: 20,
+                            hour: 18,
+                            minute: 0,
+                            second: 0,
+                        },
+                        number_of_missing_in_statistical_process: 0,
+                        time_ranges: vec![statistical_time_range()],
+                    },
+                ),
+            })
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[1.0, 2.0, 3.0, 4.0])
+            .build()
+            .unwrap_err();
+
+        assert!(
+            matches!(err, grib_core::Error::InvalidSection { section: 4, reason } if reason.contains("invalid reference timestamp"))
+        );
     }
 
     #[test]
