@@ -13,4 +13,4 @@ homepage = "https://github.com/roteiro-gis/grib-rust"
 [workspace.dependencies]
 ndarray = "0.17"
 thiserror = "2"
-memmap2 = "0.9"
+memmap2 = "0.9.11"
