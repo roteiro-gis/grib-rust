@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 - 2026-06-25
 
 - prepare the workspace crates for the 0.6.0 release line so package
   verification resolves against matching internal crate APIs
