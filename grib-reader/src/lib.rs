@@ -713,8 +713,8 @@ fn scan_messages(
 
         let message_bytes = &data[pos..next_pos];
         let indexed = match indicator.edition {
-            1 => index_grib1_message(message_bytes, pos, options, predefined_bitmaps)?,
-            2 => index_grib2_message(message_bytes, pos, options, &indicator, local_parameters)?,
+            1 => index_grib1_message(message_bytes, pos, predefined_bitmaps)?,
+            2 => index_grib2_message(message_bytes, pos, &indicator, local_parameters)?,
             other => return Err(Error::UnsupportedEdition(other)),
         };
 
@@ -726,7 +726,10 @@ fn scan_messages(
 }
 
 fn is_recoverable_candidate_error(err: &Error) -> bool {
-    matches!(err, Error::InvalidMessage(_) | Error::Truncated { .. })
+    matches!(
+        err,
+        Error::InvalidMessage(_) | Error::Truncated { .. } | Error::UnsupportedEdition(_)
+    )
 }
 
 fn locate_message(data: &[u8], pos: usize) -> Result<(Indicator, usize)> {
@@ -740,7 +743,11 @@ fn locate_message(data: &[u8], pos: usize) -> Result<(Indicator, usize)> {
     let indicator = Indicator::parse(&data[pos..]).ok_or_else(|| {
         Error::InvalidMessage(format!("failed to parse indicator at byte offset {pos}"))
     })?;
-    let length = indicator.total_length as usize;
+    let length = usize::try_from(indicator.total_length).map_err(|_| {
+        Error::InvalidMessage(format!(
+            "message at byte offset {pos} reports a length that exceeds usize"
+        ))
+    })?;
     if length < 12 {
         return Err(Error::InvalidMessage(format!(
             "message at byte offset {pos} reports impossible length {length}"
@@ -764,7 +771,6 @@ fn locate_message(data: &[u8], pos: usize) -> Result<(Indicator, usize)> {
 fn index_grib1_message(
     message_bytes: &[u8],
     offset: usize,
-    options: OpenOptions,
     predefined_bitmaps: &[PredefinedBitmap<'_>],
 ) -> Result<Vec<MessageIndex>> {
     let sections = grib1::parse_message_sections(message_bytes)?;
@@ -775,7 +781,7 @@ fn index_grib1_message(
     })?;
     let grid_description = GridDescription::parse(section_bytes(message_bytes, grid_ref))?;
     let grid = grid_description.grid;
-    let num_grid_points = validate_grid_limits(&grid, options)?;
+    let num_grid_points = grid.checked_num_points()?;
 
     let bitmap = match sections.bitmap {
         Some(section) => {
@@ -867,16 +873,6 @@ fn resolve_predefined_bitmap<'a>(
         .ok_or(Error::UnsupportedBitmapIndicator(table_reference))
 }
 
-fn validate_grid_limits(grid: &GridDefinition, options: OpenOptions) -> Result<usize> {
-    let num_grid_points = grid.checked_num_points()?;
-    ensure_limit(
-        "decoded grid points",
-        num_grid_points,
-        options.max_decoded_points,
-    )?;
-    Ok(num_grid_points)
-}
-
 fn validate_grib2_grid_points(grid: &GridDefinition) -> Result<()> {
     let Some(declared) = grid.declared_num_points() else {
         return Ok(());
@@ -897,7 +893,6 @@ fn validate_grib2_grid_points(grid: &GridDefinition) -> Result<()> {
 fn index_grib2_message(
     message_bytes: &[u8],
     offset: usize,
-    options: OpenOptions,
     indicator: &Indicator,
     local_parameters: &[LocalParameterEntry<'_>],
 ) -> Result<Vec<MessageIndex>> {
@@ -910,7 +905,6 @@ fn index_grib2_message(
         let grid_section = section_bytes(message_bytes, field_sections.grid);
         let grid = GridDefinition::parse(grid_section)?;
         validate_grib2_grid_points(&grid)?;
-        validate_grid_limits(&grid, options)?;
         let product =
             ProductDefinition::parse(section_bytes(message_bytes, field_sections.product))?;
         let data_representation = DataRepresentation::parse(section_bytes(

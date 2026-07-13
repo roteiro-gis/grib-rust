@@ -138,15 +138,15 @@ fn open_grib2_lambert_conformal_field_and_decode_flat_data() {
 }
 
 #[test]
-fn open_rejects_grid_above_configured_decoded_point_limit() {
-    let err = match GribFile::from_bytes_with_options(
+fn over_limit_grid_opens_but_decode_enforces_configured_point_limit() {
+    let opened = GribFile::from_bytes_with_options(
         build_grib2_message(&[1, 2, 3, 4]),
         OpenOptions::default().with_max_decoded_points(3),
-    ) {
-        Ok(_) => panic!("expected decoded point limit error"),
-        Err(err) => err,
-    };
+    )
+    .unwrap();
+    assert_eq!(opened.message_count(), 1);
 
+    let err = opened.message(0).unwrap().read_data_as_f64().unwrap_err();
     assert!(matches!(
         err,
         Error::LimitExceeded {

@@ -104,7 +104,7 @@ impl GridDescription {
 
         let data_representation_type = section_bytes[5];
         let grid = match data_representation_type {
-            0 => parse_latlon_grid(section_bytes),
+            0 => parse_latlon_grid(section_bytes)?,
             other => GridDefinition::Unsupported(u16::from(other)),
         };
 
@@ -163,7 +163,10 @@ impl BinaryDataSection {
             binary_scale,
             decimal_scale,
             bits_per_value,
-            original_field_type: if flags & 0b0010_0000 != 0 { 1 } else { 0 },
+            // The integer-field flag (0b0010 after shifting the flag nibble)
+            // is rejected above, so every field reaching this point is
+            // represented as floating point.
+            original_field_type: 0,
         };
 
         Ok((
@@ -199,13 +202,13 @@ fn parse_reference_time(section_bytes: &[u8]) -> Result<ReferenceTime> {
     Ok(reference_time)
 }
 
-fn parse_latlon_grid(section_bytes: &[u8]) -> GridDefinition {
+fn parse_latlon_grid(section_bytes: &[u8]) -> Result<GridDefinition> {
     let ni = u32::from(u16::from_be_bytes(section_bytes[6..8].try_into().unwrap()));
     let nj = u32::from(u16::from_be_bytes(section_bytes[8..10].try_into().unwrap()));
-    let lat_first = grib_i24(&section_bytes[10..13]).unwrap() * 1_000;
-    let lon_first = grib_i24(&section_bytes[13..16]).unwrap() * 1_000;
-    let lat_last = grib_i24(&section_bytes[17..20]).unwrap() * 1_000;
-    let lon_last = grib_i24(&section_bytes[20..23]).unwrap() * 1_000;
+    let lat_first = parse_coordinate(&section_bytes[10..13], 90_000_000, "first latitude")?;
+    let lon_first = parse_coordinate(&section_bytes[13..16], 360_000_000, "first longitude")?;
+    let lat_last = parse_coordinate(&section_bytes[17..20], 90_000_000, "last latitude")?;
+    let lon_last = parse_coordinate(&section_bytes[20..23], 360_000_000, "last longitude")?;
     let di = u32::from(u16::from_be_bytes(
         section_bytes[23..25].try_into().unwrap(),
     )) * 1_000;
@@ -214,7 +217,7 @@ fn parse_latlon_grid(section_bytes: &[u8]) -> GridDefinition {
     )) * 1_000;
     let scanning_mode = section_bytes[27];
 
-    GridDefinition::LatLon(LatLonGrid {
+    Ok(GridDefinition::LatLon(LatLonGrid {
         ni,
         nj,
         lat_first,
@@ -224,12 +227,33 @@ fn parse_latlon_grid(section_bytes: &[u8]) -> GridDefinition {
         di,
         dj,
         scanning_mode,
+    }))
+}
+
+fn parse_coordinate(bytes: &[u8], absolute_limit: i64, name: &str) -> Result<i32> {
+    let millidegrees = grib_i24(bytes).ok_or_else(|| Error::InvalidSection {
+        section: 2,
+        reason: format!("truncated {name}"),
+    })?;
+    let microdegrees = i64::from(millidegrees) * 1_000;
+    if microdegrees.abs() > absolute_limit {
+        return Err(Error::InvalidSection {
+            section: 2,
+            reason: format!(
+                "{name} {microdegrees} microdegrees is outside the valid range -{absolute_limit}..={absolute_limit}"
+            ),
+        });
+    }
+
+    i32::try_from(microdegrees).map_err(|_| Error::InvalidSection {
+        section: 2,
+        reason: format!("{name} does not fit the internal microdegree representation"),
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ProductDefinition;
+    use super::{GridDescription, ProductDefinition};
     use crate::error::Error;
     use crate::metadata::ReferenceTime;
 
@@ -287,6 +311,23 @@ mod tests {
         assert!(matches!(err, Error::InvalidSection { section: 1, .. }));
     }
 
+    #[test]
+    fn rejects_grib1_coordinates_outside_geographic_bounds_without_overflowing() {
+        let mut section = valid_grid_description_section();
+        section[10..13].copy_from_slice(&[0x7f, 0xff, 0xff]);
+
+        let err = GridDescription::parse(&section).unwrap_err();
+        assert!(matches!(err, Error::InvalidSection { section: 2, .. }));
+        assert!(err.to_string().contains("first latitude"));
+
+        let mut section = valid_grid_description_section();
+        section[13..16].copy_from_slice(&[0xff, 0xff, 0xff]);
+
+        let err = GridDescription::parse(&section).unwrap_err();
+        assert!(matches!(err, Error::InvalidSection { section: 2, .. }));
+        assert!(err.to_string().contains("first longitude"));
+    }
+
     fn valid_product_definition_section() -> Vec<u8> {
         let mut section = vec![0u8; 28];
         section[..3].copy_from_slice(&[0, 0, 28]);
@@ -309,6 +350,21 @@ mod tests {
         section[20] = 0;
         section[24] = 21;
         section[25] = 0;
+        section
+    }
+
+    fn valid_grid_description_section() -> Vec<u8> {
+        let mut section = vec![0u8; 32];
+        section[..3].copy_from_slice(&[0, 0, 32]);
+        section[5] = 0;
+        section[6..8].copy_from_slice(&2u16.to_be_bytes());
+        section[8..10].copy_from_slice(&2u16.to_be_bytes());
+        section[10..13].copy_from_slice(&[0, 0, 0]);
+        section[13..16].copy_from_slice(&[0, 0, 0]);
+        section[17..20].copy_from_slice(&[0, 3, 0xe8]);
+        section[20..23].copy_from_slice(&[0, 3, 0xe8]);
+        section[23..25].copy_from_slice(&1_000u16.to_be_bytes());
+        section[25..27].copy_from_slice(&1_000u16.to_be_bytes());
         section
     }
 }
