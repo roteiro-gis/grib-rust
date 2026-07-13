@@ -18,7 +18,7 @@ grib-core = { path = "../grib-core", version = "0.6.0" }
 ndarray = { workspace = true }
 memmap2 = { workspace = true }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-jpeg2k = { version = "0.10.1", default-features = false, features = ["openjp2"], optional = true }
+jpeg2k = { version = "0.10.1", default-features = false, features = ["openjpeg-sys"], optional = true }
 png = { version = "0.18.1", optional = true }
 
 [dev-dependencies]

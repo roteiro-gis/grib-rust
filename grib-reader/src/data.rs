@@ -288,6 +288,37 @@ fn unpack_jpeg2000_into<T: DecodeSample>(
 ) -> Result<()> {
     validate_jpeg2000_bits(params.packing.bits_per_value)?;
 
+    // Parse the SIZ marker in safe Rust before OpenJPEG allocates or decodes
+    // sample data. jpeg2k's header-only DumpImage path currently frees a null
+    // OpenJPEG code-block pointer on some valid codestreams, so it cannot be
+    // used as the validation boundary.
+    let header = parse_jpeg2000_header(data_bytes)?;
+    if header.components != 1 {
+        return Err(Error::Other(format!(
+            "JPEG 2000 GRIB packing requires one component, got {}",
+            header.components
+        )));
+    }
+    if header.is_signed {
+        return Err(Error::Other(
+            "JPEG 2000 GRIB packing requires unsigned component data".into(),
+        ));
+    }
+    if header.precision > params.packing.bits_per_value {
+        return Err(Error::Other(format!(
+            "JPEG 2000 component precision {} exceeds GRIB bits-per-value {}",
+            header.precision, params.packing.bits_per_value
+        )));
+    }
+
+    let sample_count = image_sample_count(header.width, header.height)?;
+    if sample_count != num_values {
+        return Err(Error::DataLengthMismatch {
+            expected: num_values,
+            actual: sample_count,
+        });
+    }
+
     let image = jpeg2k::Image::from_bytes(data_bytes)
         .map_err(|err| Error::Other(format!("JPEG 2000 decode failed: {err}")))?;
     if image.num_components() != 1 {
@@ -296,7 +327,6 @@ fn unpack_jpeg2000_into<T: DecodeSample>(
             image.num_components()
         )));
     }
-
     let component = image
         .components()
         .first()
@@ -313,12 +343,11 @@ fn unpack_jpeg2000_into<T: DecodeSample>(
             params.packing.bits_per_value
         )));
     }
-
-    let sample_count = image_sample_count(component.width(), component.height())?;
-    if sample_count != num_values {
+    let decoded_sample_count = image_sample_count(component.width(), component.height())?;
+    if decoded_sample_count != num_values {
         return Err(Error::DataLengthMismatch {
             expected: num_values,
-            actual: sample_count,
+            actual: decoded_sample_count,
         });
     }
 
@@ -328,6 +357,146 @@ fn unpack_jpeg2000_into<T: DecodeSample>(
     }
 
     Ok(())
+}
+
+#[cfg(feature = "jpeg2000")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Jpeg2000Header {
+    width: u32,
+    height: u32,
+    components: u16,
+    precision: u8,
+    is_signed: bool,
+}
+
+#[cfg(feature = "jpeg2000")]
+fn parse_jpeg2000_header(data: &[u8]) -> Result<Jpeg2000Header> {
+    let codestream = jpeg2000_codestream(data)?;
+    if codestream.get(..4) != Some(&[0xff, 0x4f, 0xff, 0x51]) {
+        return Err(invalid_jpeg2000_header(
+            "codestream does not begin with SOC followed by SIZ",
+        ));
+    }
+
+    let segment_length = usize::from(u16::from_be_bytes(codestream[4..6].try_into().unwrap()));
+    let segment_end = 4usize
+        .checked_add(segment_length)
+        .ok_or_else(|| invalid_jpeg2000_header("SIZ segment length overflow"))?;
+    let segment = codestream
+        .get(4..segment_end)
+        .ok_or_else(|| invalid_jpeg2000_header("truncated SIZ segment"))?;
+    if segment.len() < 38 {
+        return Err(invalid_jpeg2000_header("SIZ segment is too short"));
+    }
+
+    let components = u16::from_be_bytes(segment[36..38].try_into().unwrap());
+    let required_length = usize::from(components)
+        .checked_mul(3)
+        .and_then(|component_bytes| 38usize.checked_add(component_bytes))
+        .ok_or_else(|| invalid_jpeg2000_header("SIZ component table length overflow"))?;
+    if segment_length != required_length {
+        return Err(invalid_jpeg2000_header(format!(
+            "SIZ length {segment_length} does not match {components} components"
+        )));
+    }
+    if components == 0 {
+        return Err(invalid_jpeg2000_header("SIZ declares zero components"));
+    }
+
+    let xsiz = u32::from_be_bytes(segment[4..8].try_into().unwrap());
+    let ysiz = u32::from_be_bytes(segment[8..12].try_into().unwrap());
+    let xosiz = u32::from_be_bytes(segment[12..16].try_into().unwrap());
+    let yosiz = u32::from_be_bytes(segment[16..20].try_into().unwrap());
+    let xrsiz = u32::from(segment[39]);
+    let yrsiz = u32::from(segment[40]);
+    if xrsiz == 0 || yrsiz == 0 {
+        return Err(invalid_jpeg2000_header(
+            "SIZ component subsampling factors must be nonzero",
+        ));
+    }
+    let width = ceil_div_u32(xsiz, xrsiz)
+        .checked_sub(ceil_div_u32(xosiz, xrsiz))
+        .filter(|width| *width > 0)
+        .ok_or_else(|| invalid_jpeg2000_header("SIZ has an invalid horizontal extent"))?;
+    let height = ceil_div_u32(ysiz, yrsiz)
+        .checked_sub(ceil_div_u32(yosiz, yrsiz))
+        .filter(|height| *height > 0)
+        .ok_or_else(|| invalid_jpeg2000_header("SIZ has an invalid vertical extent"))?;
+    let sample_format = segment[38];
+
+    Ok(Jpeg2000Header {
+        width,
+        height,
+        components,
+        precision: (sample_format & 0x7f) + 1,
+        is_signed: sample_format & 0x80 != 0,
+    })
+}
+
+#[cfg(feature = "jpeg2000")]
+fn jpeg2000_codestream(data: &[u8]) -> Result<&[u8]> {
+    if data.starts_with(&[0xff, 0x4f]) {
+        return Ok(data);
+    }
+
+    let mut offset = 0usize;
+    while offset
+        .checked_add(8)
+        .is_some_and(|header_end| header_end <= data.len())
+    {
+        let short_length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap());
+        let box_type = &data[offset + 4..offset + 8];
+        let (header_length, box_length) = match short_length {
+            0 => (8usize, data.len() - offset),
+            1 => {
+                let extended_end = offset
+                    .checked_add(16)
+                    .ok_or_else(|| invalid_jpeg2000_header("JP2 box header overflow"))?;
+                let extended = data
+                    .get(offset + 8..extended_end)
+                    .ok_or_else(|| invalid_jpeg2000_header("truncated extended JP2 box"))?;
+                let length = usize::try_from(u64::from_be_bytes(extended.try_into().unwrap()))
+                    .map_err(|_| invalid_jpeg2000_header("JP2 box length exceeds usize"))?;
+                (16usize, length)
+            }
+            length => (8usize, length as usize),
+        };
+        if box_length < header_length {
+            return Err(invalid_jpeg2000_header(
+                "JP2 box is shorter than its header",
+            ));
+        }
+        let box_end = offset
+            .checked_add(box_length)
+            .filter(|end| *end <= data.len())
+            .ok_or_else(|| invalid_jpeg2000_header("JP2 box extends past the payload"))?;
+        if box_type == b"jp2c" {
+            return data
+                .get(offset + header_length..box_end)
+                .ok_or_else(|| invalid_jpeg2000_header("truncated JP2 codestream box"));
+        }
+        if short_length == 0 {
+            break;
+        }
+        offset = box_end;
+    }
+
+    Err(invalid_jpeg2000_header(
+        "payload is neither a raw codestream nor a JP2 file with a codestream box",
+    ))
+}
+
+#[cfg(feature = "jpeg2000")]
+const fn ceil_div_u32(value: u32, divisor: u32) -> u32 {
+    value / divisor + (value % divisor != 0) as u32
+}
+
+#[cfg(feature = "jpeg2000")]
+fn invalid_jpeg2000_header(reason: impl Into<String>) -> Error {
+    Error::InvalidSection {
+        section: 7,
+        reason: format!("invalid JPEG 2000 header: {}", reason.into()),
+    }
 }
 
 #[cfg(not(feature = "jpeg2000"))]
@@ -374,6 +543,13 @@ fn unpack_png_into<T: DecodeSample>(
     let mut reader = decoder
         .read_info()
         .map_err(|err| Error::Other(format!("PNG decode failed: {err}")))?;
+    let header_sample_count = image_sample_count(reader.info().width, reader.info().height)?;
+    if header_sample_count != num_values {
+        return Err(Error::DataLengthMismatch {
+            expected: num_values,
+            actual: header_sample_count,
+        });
+    }
     let buffer_size = reader
         .output_buffer_size()
         .ok_or_else(|| Error::Other("PNG output buffer size overflow".into()))?;
@@ -1379,6 +1555,72 @@ mod tests {
         assert_eq!(decoded[3], 30.0);
     }
 
+    #[cfg(feature = "png")]
+    #[test]
+    fn rejects_png_header_dimension_mismatch_before_allocating_frame_buffer() {
+        let mut payload = encode_png(1, 1, png::ColorType::Grayscale, png::BitDepth::Eight, &[1]);
+        payload[16..20].copy_from_slice(&100_000u32.to_be_bytes());
+        payload[20..24].copy_from_slice(&100_000u32.to_be_bytes());
+        let crc = test_crc32(&payload[12..29]);
+        payload[29..33].copy_from_slice(&crc.to_be_bytes());
+
+        let representation = DataRepresentation::PngPacking(PngPackingParams {
+            packing: ImagePackingParams {
+                encoded_values: 1,
+                reference_value: 0.0,
+                binary_scale: 0,
+                decimal_scale: 0,
+                bits_per_value: 8,
+                original_field_type: 0,
+            },
+        });
+
+        let err = decode_payload(&payload, &representation, None, 1).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::DataLengthMismatch {
+                expected: 1,
+                actual: 10_000_000_000,
+            }
+        ));
+    }
+
+    #[cfg(feature = "jpeg2000")]
+    #[test]
+    fn rejects_jpeg2000_header_dimension_mismatch_before_decoding_codestream() {
+        let mut payload = vec![0u8; 45];
+        payload[..4].copy_from_slice(&[0xff, 0x4f, 0xff, 0x51]);
+        payload[4..6].copy_from_slice(&41u16.to_be_bytes());
+        payload[8..12].copy_from_slice(&100_000u32.to_be_bytes());
+        payload[12..16].copy_from_slice(&100_000u32.to_be_bytes());
+        payload[40..42].copy_from_slice(&1u16.to_be_bytes());
+        payload[42] = 7;
+        payload[43] = 1;
+        payload[44] = 1;
+
+        let representation = DataRepresentation::Jpeg2000Packing(super::Jpeg2000PackingParams {
+            packing: ImagePackingParams {
+                encoded_values: 1,
+                reference_value: 0.0,
+                binary_scale: 0,
+                decimal_scale: 0,
+                bits_per_value: 8,
+                original_field_type: 0,
+            },
+            compression_type: 0,
+            target_compression_ratio: 0,
+        });
+
+        let err = decode_payload(&payload, &representation, None, 1).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::DataLengthMismatch {
+                expected: 1,
+                actual: 10_000_000_000,
+            }
+        ));
+    }
+
     #[cfg(not(feature = "png"))]
     #[test]
     fn png_packing_requires_png_feature() {
@@ -1622,6 +1864,19 @@ mod tests {
             writer.write_image_data(data).unwrap();
         }
         payload
+    }
+
+    #[cfg(feature = "png")]
+    fn test_crc32(bytes: &[u8]) -> u32 {
+        let mut crc = u32::MAX;
+        for &byte in bytes {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                let mask = 0u32.wrapping_sub(crc & 1);
+                crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+            }
+        }
+        !crc
     }
 
     #[cfg(feature = "png")]
