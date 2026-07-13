@@ -70,14 +70,40 @@ impl Identification {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FixedSurface {
     pub surface_type: u8,
+    /// The numeric level, or `None` when either WMO numeric component is
+    /// encoded with its missing-value sentinel.
+    pub value: Option<ScaledValue>,
+}
+
+/// The scale/value pair used to encode a fixed-surface numeric level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScaledValue {
     pub scale_factor: i16,
     pub scaled_value: i32,
 }
 
 impl FixedSurface {
-    pub fn scaled_value_f64(&self) -> f64 {
-        let factor = 10.0_f64.powi(-(self.scale_factor as i32));
-        self.scaled_value as f64 * factor
+    pub const fn with_value(surface_type: u8, scale_factor: i16, scaled_value: i32) -> Self {
+        Self {
+            surface_type,
+            value: Some(ScaledValue {
+                scale_factor,
+                scaled_value,
+            }),
+        }
+    }
+
+    pub const fn without_value(surface_type: u8) -> Self {
+        Self {
+            surface_type,
+            value: None,
+        }
+    }
+
+    pub fn scaled_value_f64(&self) -> Option<f64> {
+        let value = self.value?;
+        let factor = 10.0_f64.powi(-i32::from(value.scale_factor));
+        Some(f64::from(value.scaled_value) * factor)
     }
 }
 
@@ -91,11 +117,19 @@ pub struct ProductDefinition {
 
 /// Typed GRIB2 Product Definition templates.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ProductDefinitionTemplate {
     AnalysisOrForecast(AnalysisOrForecastTemplate),
     IndividualEnsembleForecast(IndividualEnsembleForecastTemplate),
     StatisticalProcess(StatisticalProcessTemplate),
     EnsembleStatisticalProcess(EnsembleStatisticalProcessTemplate),
+    /// A well-framed Section 4 whose template is not interpreted by this
+    /// version of the library. `raw` contains the template-specific bytes
+    /// following the common parameter category and number.
+    Unsupported {
+        number: u16,
+        raw: Vec<u8>,
+    },
 }
 
 /// Product Definition Template 4.0: analysis or forecast at a horizontal level.
@@ -186,23 +220,27 @@ impl ProductDefinition {
     }
 
     pub fn generating_process(&self) -> Option<u8> {
-        Some(self.template.base().generating_process)
+        self.template.base().map(|base| base.generating_process)
     }
 
     pub fn forecast_time_unit(&self) -> Option<u8> {
-        Some(self.template.base().forecast_time_unit)
+        self.template.base().map(|base| base.forecast_time_unit)
     }
 
     pub fn forecast_time(&self) -> Option<u32> {
-        Some(self.template.base().forecast_time)
+        self.template.base().map(|base| base.forecast_time)
     }
 
     pub fn first_surface(&self) -> Option<&FixedSurface> {
-        self.template.base().first_surface.as_ref()
+        self.template
+            .base()
+            .and_then(|base| base.first_surface.as_ref())
     }
 
     pub fn second_surface(&self) -> Option<&FixedSurface> {
-        self.template.base().second_surface.as_ref()
+        self.template
+            .base()
+            .and_then(|base| base.second_surface.as_ref())
     }
 
     pub fn end_of_overall_time_interval(&self) -> Option<ReferenceTime> {
@@ -225,7 +263,17 @@ impl ProductDefinitionTemplate {
             11 => Ok(Self::EnsembleStatisticalProcess(
                 EnsembleStatisticalProcessTemplate::parse(section_bytes)?,
             )),
-            other => Err(Error::UnsupportedProductTemplate(other)),
+            number => {
+                let raw_len = section_bytes.len() - 11;
+                let mut raw = Vec::new();
+                raw.try_reserve(raw_len).map_err(|err| {
+                    Error::Other(format!(
+                        "failed to reserve {raw_len} unsupported product-template bytes: {err}"
+                    ))
+                })?;
+                raw.extend_from_slice(&section_bytes[11..]);
+                Ok(Self::Unsupported { number, raw })
+            }
         }
     }
 
@@ -235,16 +283,18 @@ impl ProductDefinitionTemplate {
             Self::IndividualEnsembleForecast(_) => 1,
             Self::StatisticalProcess(_) => 8,
             Self::EnsembleStatisticalProcess(_) => 11,
+            Self::Unsupported { number, .. } => *number,
         }
     }
 
-    fn base(&self) -> &AnalysisOrForecastTemplate {
-        match self {
+    fn base(&self) -> Option<&AnalysisOrForecastTemplate> {
+        Some(match self {
             Self::AnalysisOrForecast(template) => template,
             Self::IndividualEnsembleForecast(template) => &template.base,
             Self::StatisticalProcess(template) => &template.base,
             Self::EnsembleStatisticalProcess(template) => &template.ensemble.base,
-        }
+            Self::Unsupported { .. } => return None,
+        })
     }
 
     fn end_of_overall_time_interval(&self) -> Option<ReferenceTime> {
@@ -254,6 +304,7 @@ impl ProductDefinitionTemplate {
                 Some(template.end_of_overall_time_interval)
             }
             Self::AnalysisOrForecast(_) | Self::IndividualEnsembleForecast(_) => None,
+            Self::Unsupported { .. } => None,
         }
     }
 }
@@ -398,10 +449,18 @@ fn parse_surface(section_bytes: &[u8]) -> Option<FixedSurface> {
         return None;
     }
 
+    let value = if section_bytes[1] == 0xff || section_bytes[2..6] == [0xff; 4] {
+        None
+    } else {
+        Some(ScaledValue {
+            scale_factor: grib_i8(section_bytes[1]),
+            scaled_value: grib_i32(&section_bytes[2..6])?,
+        })
+    };
+
     Some(FixedSurface {
         surface_type,
-        scale_factor: grib_i8(section_bytes[1]),
-        scaled_value: grib_i32(&section_bytes[2..6])?,
+        value,
     })
 }
 
@@ -447,7 +506,10 @@ mod tests {
         assert_eq!(product.parameter_number, 3);
         assert_eq!(product.template_number(), 0);
         assert_eq!(product.forecast_time(), Some(6));
-        assert_eq!(product.first_surface().unwrap().scaled_value_f64(), 850.0);
+        assert_eq!(
+            product.first_surface().unwrap().scaled_value_f64(),
+            Some(850.0)
+        );
         assert_eq!(
             product.template,
             ProductDefinitionTemplate::AnalysisOrForecast(AnalysisOrForecastTemplate {
@@ -557,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_product_definition_templates() {
+    fn preserves_unsupported_product_definition_templates() {
         let mut section = vec![0u8; 34];
         section[..4].copy_from_slice(&(34u32).to_be_bytes());
         section[4] = 4;
@@ -565,8 +627,30 @@ mod tests {
         section[9] = 2;
         section[10] = 3;
 
-        let err = ProductDefinition::parse(&section).unwrap_err();
-        assert!(matches!(err, Error::UnsupportedProductTemplate(99)));
+        section[11..].copy_from_slice(&[0x5a; 23]);
+
+        let product = ProductDefinition::parse(&section).unwrap();
+        assert_eq!(product.template_number(), 99);
+        assert_eq!(product.forecast_time(), None);
+        assert_eq!(product.first_surface(), None);
+        assert!(matches!(
+            product.template,
+            ProductDefinitionTemplate::Unsupported { number: 99, ref raw }
+                if raw == &[0x5a; 23]
+        ));
+    }
+
+    #[test]
+    fn preserves_surface_type_when_numeric_level_is_missing() {
+        let mut section = product_section_template_zero();
+        section[23] = 0xff;
+        section[24..28].copy_from_slice(&[0xff; 4]);
+
+        let product = ProductDefinition::parse(&section).unwrap();
+        let surface = product.first_surface().unwrap();
+        assert_eq!(surface.surface_type, 103);
+        assert_eq!(surface.value, None);
+        assert_eq!(surface.scaled_value_f64(), None);
     }
 
     #[test]
