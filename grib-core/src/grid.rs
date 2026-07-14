@@ -1,7 +1,8 @@
 //! Grid Definition Section (Section 3) parsing.
 
+use crate::binary::decode_wmo_i32;
+use crate::ensure_limit;
 use crate::error::{Error, Result};
-use crate::util::grib_i32;
 
 /// Grid definition extracted from Section 3.
 ///
@@ -629,7 +630,7 @@ fn linear_axis(
     ensure_limit(what, count, max_axis_points)?;
     let mut axis = Vec::new();
     axis.try_reserve(count)
-        .map_err(|e| Error::Other(format!("failed to reserve {count} {what} coordinates: {e}")))?;
+        .map_err(|error| Error::allocation(format!("{what} coordinates"), count, error))?;
     axis.extend((0..count).map(|index| start + signed_step * index as f64));
     Ok(axis)
 }
@@ -638,19 +639,6 @@ fn checked_grid_point_count(nx: u32, ny: u32) -> Result<usize> {
     let count = u64::from(nx) * u64::from(ny);
     usize::try_from(count)
         .map_err(|_| Error::Other(format!("grid point count {count} does not fit in usize")))
-}
-
-fn ensure_limit(what: &'static str, requested: usize, limit: Option<usize>) -> Result<()> {
-    if let Some(limit) = limit {
-        if requested > limit {
-            return Err(Error::LimitExceeded {
-                what,
-                requested,
-                limit,
-            });
-        }
-    }
-    Ok(())
 }
 
 fn reverse_alternating_rows<T>(values: &mut [T], ni: usize, nj: usize, i_scans_positive: bool) {
@@ -676,10 +664,10 @@ fn parse_latlon(data: &[u8]) -> Result<GridDefinition> {
 
     let ni = u32::from_be_bytes(data[30..34].try_into().unwrap());
     let nj = u32::from_be_bytes(data[34..38].try_into().unwrap());
-    let lat_first = grib_i32(&data[46..50]).unwrap();
-    let lon_first = grib_i32(&data[50..54]).unwrap();
-    let lat_last = grib_i32(&data[55..59]).unwrap();
-    let lon_last = grib_i32(&data[59..63]).unwrap();
+    let lat_first = decode_wmo_i32(&data[46..50]).unwrap();
+    let lon_first = decode_wmo_i32(&data[50..54]).unwrap();
+    let lat_last = decode_wmo_i32(&data[55..59]).unwrap();
+    let lon_last = decode_wmo_i32(&data[59..63]).unwrap();
     let di = u32::from_be_bytes(data[63..67].try_into().unwrap());
     let dj = u32::from_be_bytes(data[67..71].try_into().unwrap());
     let scanning_mode = data[71];
@@ -707,10 +695,10 @@ fn parse_mercator(data: &[u8]) -> Result<GridDefinition> {
 
     Ok(GridDefinition::Mercator(MercatorGrid {
         core: parse_projected_core(data, 64, 59),
-        lat_d: grib_i32(&data[47..51]).unwrap(),
-        lat_last: grib_i32(&data[51..55]).unwrap(),
-        lon_last: grib_i32(&data[55..59]).unwrap(),
-        orientation_of_grid: grib_i32(&data[60..64]).unwrap(),
+        lat_d: decode_wmo_i32(&data[47..51]).unwrap(),
+        lat_last: decode_wmo_i32(&data[51..55]).unwrap(),
+        lon_last: decode_wmo_i32(&data[55..59]).unwrap(),
+        orientation_of_grid: decode_wmo_i32(&data[60..64]).unwrap(),
     }))
 }
 
@@ -724,8 +712,8 @@ fn parse_polar_stereographic(data: &[u8]) -> Result<GridDefinition> {
 
     Ok(GridDefinition::PolarStereographic(PolarStereographicGrid {
         core: parse_projected_core(data, 55, 64),
-        lat_d: grib_i32(&data[47..51]).unwrap(),
-        lon_v: grib_i32(&data[51..55]).unwrap(),
+        lat_d: decode_wmo_i32(&data[47..51]).unwrap(),
+        lon_v: decode_wmo_i32(&data[51..55]).unwrap(),
         projection_center_flag: data[63],
     }))
 }
@@ -740,13 +728,13 @@ fn parse_albers_equal_area(data: &[u8]) -> Result<GridDefinition> {
 
     Ok(GridDefinition::AlbersEqualArea(AlbersEqualAreaGrid {
         core: parse_projected_core(data, 55, 64),
-        lat_d: grib_i32(&data[47..51]).unwrap(),
-        lon_v: grib_i32(&data[51..55]).unwrap(),
+        lat_d: decode_wmo_i32(&data[47..51]).unwrap(),
+        lon_v: decode_wmo_i32(&data[51..55]).unwrap(),
         projection_center_flag: data[63],
-        latin1: grib_i32(&data[65..69]).unwrap(),
-        latin2: grib_i32(&data[69..73]).unwrap(),
-        lat_southern_pole: grib_i32(&data[73..77]).unwrap(),
-        lon_southern_pole: grib_i32(&data[77..81]).unwrap(),
+        latin1: decode_wmo_i32(&data[65..69]).unwrap(),
+        latin2: decode_wmo_i32(&data[69..73]).unwrap(),
+        lat_southern_pole: decode_wmo_i32(&data[73..77]).unwrap(),
+        lon_southern_pole: decode_wmo_i32(&data[77..81]).unwrap(),
     }))
 }
 
@@ -760,13 +748,13 @@ fn parse_lambert_conformal(data: &[u8]) -> Result<GridDefinition> {
 
     Ok(GridDefinition::LambertConformal(LambertConformalGrid {
         core: parse_projected_core(data, 55, 64),
-        lat_d: grib_i32(&data[47..51]).unwrap(),
-        lon_v: grib_i32(&data[51..55]).unwrap(),
+        lat_d: decode_wmo_i32(&data[47..51]).unwrap(),
+        lon_v: decode_wmo_i32(&data[51..55]).unwrap(),
         projection_center_flag: data[63],
-        latin1: grib_i32(&data[65..69]).unwrap(),
-        latin2: grib_i32(&data[69..73]).unwrap(),
-        lat_southern_pole: grib_i32(&data[73..77]).unwrap(),
-        lon_southern_pole: grib_i32(&data[77..81]).unwrap(),
+        latin1: decode_wmo_i32(&data[65..69]).unwrap(),
+        latin2: decode_wmo_i32(&data[69..73]).unwrap(),
+        lat_southern_pole: decode_wmo_i32(&data[73..77]).unwrap(),
+        lon_southern_pole: decode_wmo_i32(&data[77..81]).unwrap(),
     }))
 }
 
@@ -786,8 +774,8 @@ fn parse_projected_core(
         scaled_value_minor_axis: u32::from_be_bytes(data[26..30].try_into().unwrap()),
         nx: u32::from_be_bytes(data[30..34].try_into().unwrap()),
         ny: u32::from_be_bytes(data[34..38].try_into().unwrap()),
-        lat_first: grib_i32(&data[38..42]).unwrap(),
-        lon_first: grib_i32(&data[42..46]).unwrap(),
+        lat_first: decode_wmo_i32(&data[38..42]).unwrap(),
+        lon_first: decode_wmo_i32(&data[42..46]).unwrap(),
         resolution_and_component_flags: data[46],
         dx: u32::from_be_bytes(data[spacing_offset..spacing_offset + 4].try_into().unwrap()),
         dy: u32::from_be_bytes(

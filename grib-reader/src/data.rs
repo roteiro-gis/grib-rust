@@ -6,6 +6,7 @@ pub use grib_core::data::{
     ComplexPackingParams, DataRepresentation, ImagePackingParams, Jpeg2000PackingParams,
     PngPackingParams, SimplePackingParams, SpatialDifferencingParams,
 };
+use grib_core::filled_vec;
 
 /// Numeric target type for decoded field values.
 pub trait DecodeSample: Copy + Sized {
@@ -31,15 +32,6 @@ impl DecodeSample for f64 {
     fn nan() -> Self {
         f64::NAN
     }
-}
-
-fn filled_vec<T: Copy>(len: usize, value: T, what: &'static str) -> Result<Vec<T>> {
-    let mut values = Vec::new();
-    values
-        .try_reserve(len)
-        .map_err(|e| Error::Other(format!("failed to reserve {len} {what} values: {e}")))?;
-    values.resize(len, value);
-    Ok(values)
 }
 
 /// Decode Section 7 payload into field values, applying Section 6 bitmap when present.

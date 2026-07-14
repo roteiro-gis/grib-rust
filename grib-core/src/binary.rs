@@ -201,7 +201,7 @@ pub fn encode_ibm_f32(value: f32) -> Option<[u8; 4]> {
 
 fn reserve_bytes(out: &mut Vec<u8>, additional: usize) -> Result<()> {
     out.try_reserve(additional)
-        .map_err(|e| Error::Other(format!("failed to reserve {additional} bytes: {e}")))
+        .map_err(|error| Error::allocation("output bytes", additional, error))
 }
 
 fn checked_magnitude<T>(value: T, max: i64) -> Option<i64>

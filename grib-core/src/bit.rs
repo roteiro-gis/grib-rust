@@ -164,7 +164,7 @@ impl BitWriter {
             let additional = required_bytes - self.bytes.len();
             self.bytes
                 .try_reserve(additional)
-                .map_err(|e| Error::Other(format!("failed to reserve {additional} bytes: {e}")))?;
+                .map_err(|error| Error::allocation("bit-writer bytes", additional, error))?;
             self.bytes.resize(required_bytes, 0);
         }
 

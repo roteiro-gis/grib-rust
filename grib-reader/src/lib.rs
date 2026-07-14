@@ -67,6 +67,7 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
+use grib_core::{ensure_limit, filled_vec};
 use memmap2::Mmap;
 use ndarray::{ArrayD, IxDyn};
 
@@ -200,9 +201,8 @@ impl<'a> GribFileBuilder<'a> {
             if read == 0 {
                 break;
             }
-            data.try_reserve(read).map_err(|err| {
-                Error::Other(format!("failed to reserve {read} GRIB input bytes: {err}"))
-            })?;
+            data.try_reserve(read)
+                .map_err(|error| Error::allocation("GRIB input bytes", read, error))?;
             data.extend_from_slice(&chunk[..read]);
         }
         self.from_bytes(data)
@@ -605,7 +605,7 @@ impl<'a> Message<'a> {
     /// columns and -j rows.
     pub fn read_flat_data_as_f64(&self) -> Result<Vec<f64>> {
         let num_grid_points = self.checked_num_points()?;
-        let mut decoded = zeroed_vec(num_grid_points, 0.0_f64, "decoded f64 field")?;
+        let mut decoded = filled_vec(num_grid_points, 0.0_f64, "decoded f64 field")?;
         self.decode_into(&mut decoded)?;
         Ok(decoded)
     }
@@ -617,7 +617,7 @@ impl<'a> Message<'a> {
     /// columns and -j rows.
     pub fn read_flat_data_as_f32(&self) -> Result<Vec<f32>> {
         let num_grid_points = self.checked_num_points()?;
-        let mut decoded = zeroed_vec(num_grid_points, 0.0_f32, "decoded f32 field")?;
+        let mut decoded = filled_vec(num_grid_points, 0.0_f32, "decoded f32 field")?;
         self.decode_into(&mut decoded)?;
         Ok(decoded)
     }
@@ -625,7 +625,7 @@ impl<'a> Message<'a> {
     /// Returns a flat `f64` field with +i columns and -j rows.
     pub fn read_flat_data_north_up_as_f64(&self) -> Result<Vec<f64>> {
         let num_grid_points = self.checked_num_points()?;
-        let mut decoded = zeroed_vec(num_grid_points, 0.0_f64, "decoded f64 field")?;
+        let mut decoded = filled_vec(num_grid_points, 0.0_f64, "decoded f64 field")?;
         self.decode_into_north_up(&mut decoded)?;
         Ok(decoded)
     }
@@ -633,7 +633,7 @@ impl<'a> Message<'a> {
     /// Returns a flat `f32` field with +i columns and -j rows.
     pub fn read_flat_data_north_up_as_f32(&self) -> Result<Vec<f32>> {
         let num_grid_points = self.checked_num_points()?;
-        let mut decoded = zeroed_vec(num_grid_points, 0.0_f32, "decoded f32 field")?;
+        let mut decoded = filled_vec(num_grid_points, 0.0_f32, "decoded f32 field")?;
         self.decode_into_north_up(&mut decoded)?;
         Ok(decoded)
     }
@@ -710,27 +710,6 @@ impl<'a> Iterator for MessageIter<'a> {
 
 fn section_bytes(msg_bytes: &[u8], section: SectionRef) -> &[u8] {
     &msg_bytes[section.offset..section.offset + section.length]
-}
-
-fn zeroed_vec<T: Copy>(len: usize, value: T, what: &'static str) -> Result<Vec<T>> {
-    let mut out = Vec::new();
-    out.try_reserve(len)
-        .map_err(|e| Error::Other(format!("failed to reserve {len} {what} values: {e}")))?;
-    out.resize(len, value);
-    Ok(out)
-}
-
-fn ensure_limit(what: &'static str, requested: usize, limit: Option<usize>) -> Result<()> {
-    if let Some(limit) = limit {
-        if requested > limit {
-            return Err(Error::LimitExceeded {
-                what,
-                requested,
-                limit,
-            });
-        }
-    }
-    Ok(())
 }
 
 fn scan_messages(

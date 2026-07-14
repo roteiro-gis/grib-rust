@@ -10,6 +10,9 @@
   in the existing reader-order methods
 - expose GRIB2 local-use sections and resolve bitmap indicator 254 within
   multi-field messages
+- centralize allocation failures and resource-limit checks in `grib-core`,
+  mark the public error enum non-exhaustive, and remove duplicate signed-integer
+  aliases
 - raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
 
 ## 0.6.0 - 2026-06-25

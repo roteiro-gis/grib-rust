@@ -1,9 +1,9 @@
 //! GRIB2 metadata carried by Sections 1 and 4.
 
+use crate::binary::{decode_wmo_i32, decode_wmo_i8};
 use crate::error::{Error, Result};
 use crate::metadata::ReferenceTime;
 use crate::parameter;
-use crate::util::{grib_i32, grib_i8};
 
 /// Section 1: Identification Section.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,10 +266,8 @@ impl ProductDefinitionTemplate {
             number => {
                 let raw_len = section_bytes.len() - 11;
                 let mut raw = Vec::new();
-                raw.try_reserve(raw_len).map_err(|err| {
-                    Error::Other(format!(
-                        "failed to reserve {raw_len} unsupported product-template bytes: {err}"
-                    ))
+                raw.try_reserve(raw_len).map_err(|error| {
+                    Error::allocation("unsupported product-template bytes", raw_len, error)
                 })?;
                 raw.extend_from_slice(&section_bytes[11..]);
                 Ok(Self::Unsupported { number, raw })
@@ -453,8 +451,8 @@ fn parse_surface(section_bytes: &[u8]) -> Option<FixedSurface> {
         None
     } else {
         Some(ScaledValue {
-            scale_factor: grib_i8(section_bytes[1]),
-            scaled_value: grib_i32(&section_bytes[2..6])?,
+            scale_factor: decode_wmo_i8(section_bytes[1]),
+            scaled_value: decode_wmo_i32(&section_bytes[2..6])?,
         })
     };
 
