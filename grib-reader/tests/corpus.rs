@@ -52,12 +52,12 @@ fn hrrr_lambert_interop_sample_has_expected_grid() {
     assert_eq!(message.grid_shape(), (1799, 1059));
     match message.grid_definition() {
         GridDefinition::LambertConformal(grid) => {
-            assert_eq!(grid.number_of_points, 1_905_141);
-            assert_eq!(grid.nx, 1799);
-            assert_eq!(grid.ny, 1059);
-            assert_eq!(grid.scanning_mode, 64);
-            assert_eq!(grid.dx, 3_000_000);
-            assert_eq!(grid.dy, 3_000_000);
+            assert_eq!(grid.core.number_of_points, 1_905_141);
+            assert_eq!(grid.core.nx, 1799);
+            assert_eq!(grid.core.ny, 1059);
+            assert_eq!(grid.core.scanning_mode, 64);
+            assert_eq!(grid.core.dx, 3_000_000);
+            assert_eq!(grid.core.dy, 3_000_000);
         }
         other => panic!("expected Lambert conformal grid, got {other:?}"),
     }
@@ -94,16 +94,16 @@ fn hrrr_alaska_polar_interop_sample_has_expected_grid() {
     assert_eq!(message.grid_shape(), (1299, 919));
     match message.grid_definition() {
         GridDefinition::PolarStereographic(grid) => {
-            assert_eq!(grid.number_of_points, 1_193_781);
-            assert_eq!(grid.nx, 1299);
-            assert_eq!(grid.ny, 919);
-            assert_eq!(grid.scanning_mode, 64);
-            assert_eq!(grid.lat_first, 41_612_949);
-            assert_eq!(grid.lon_first, 185_117_126);
+            assert_eq!(grid.core.number_of_points, 1_193_781);
+            assert_eq!(grid.core.nx, 1299);
+            assert_eq!(grid.core.ny, 919);
+            assert_eq!(grid.core.scanning_mode, 64);
+            assert_eq!(grid.core.lat_first, 41_612_949);
+            assert_eq!(grid.core.lon_first, 185_117_126);
             assert_eq!(grid.lat_d, 60_000_000);
             assert_eq!(grid.lon_v, 225_000_000);
-            assert_eq!(grid.dx, 3_000_000);
-            assert_eq!(grid.dy, 3_000_000);
+            assert_eq!(grid.core.dx, 3_000_000);
+            assert_eq!(grid.core.dy, 3_000_000);
         }
         other => panic!("expected polar stereographic grid, got {other:?}"),
     }

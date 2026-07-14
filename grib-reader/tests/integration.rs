@@ -108,17 +108,17 @@ fn open_grib2_lambert_conformal_field_and_decode_flat_data() {
     );
     match field.grid_definition() {
         GridDefinition::LambertConformal(grid) => {
-            assert_eq!(grid.number_of_points, 6);
-            assert_eq!(grid.shape_of_earth, 1);
-            assert_eq!(grid.scaled_value_radius, 6_371_200);
-            assert_eq!(grid.nx, 3);
-            assert_eq!(grid.ny, 2);
-            assert_eq!(grid.lat_first, 12_190_000);
-            assert_eq!(grid.lon_first, 226_541_000);
+            assert_eq!(grid.core.number_of_points, 6);
+            assert_eq!(grid.core.shape_of_earth, 1);
+            assert_eq!(grid.core.scaled_value_radius, 6_371_200);
+            assert_eq!(grid.core.nx, 3);
+            assert_eq!(grid.core.ny, 2);
+            assert_eq!(grid.core.lat_first, 12_190_000);
+            assert_eq!(grid.core.lon_first, 226_541_000);
             assert_eq!(grid.lat_d, 25_000_000);
             assert_eq!(grid.lon_v, 265_000_000);
-            assert_eq!(grid.dx, 2_539_703);
-            assert_eq!(grid.dy, 2_539_703);
+            assert_eq!(grid.core.dx, 2_539_703);
+            assert_eq!(grid.core.dy, 2_539_703);
             assert_eq!(grid.latin1, 25_000_000);
             assert_eq!(grid.latin2, 25_000_000);
         }
@@ -220,16 +220,16 @@ fn open_grib2_polar_stereographic_field_and_decode_flat_data() {
     );
     match field.grid_definition() {
         GridDefinition::PolarStereographic(grid) => {
-            assert_eq!(grid.number_of_points, 6);
-            assert_eq!(grid.shape_of_earth, 6);
-            assert_eq!(grid.nx, 3);
-            assert_eq!(grid.ny, 2);
-            assert_eq!(grid.lat_first, 41_612_949);
-            assert_eq!(grid.lon_first, 185_117_126);
+            assert_eq!(grid.core.number_of_points, 6);
+            assert_eq!(grid.core.shape_of_earth, 6);
+            assert_eq!(grid.core.nx, 3);
+            assert_eq!(grid.core.ny, 2);
+            assert_eq!(grid.core.lat_first, 41_612_949);
+            assert_eq!(grid.core.lon_first, 185_117_126);
             assert_eq!(grid.lat_d, 60_000_000);
             assert_eq!(grid.lon_v, 225_000_000);
-            assert_eq!(grid.dx, 3_000_000);
-            assert_eq!(grid.dy, 3_000_000);
+            assert_eq!(grid.core.dx, 3_000_000);
+            assert_eq!(grid.core.dy, 3_000_000);
             assert_eq!(grid.projection_center_flag, 0);
         }
         other => panic!("expected polar stereographic grid, got {other:?}"),

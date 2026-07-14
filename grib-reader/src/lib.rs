@@ -49,7 +49,9 @@ pub use data::{
 };
 pub use error::{Error, Result};
 pub use grib1::{BinaryDataSection, GridDescription, ProductDefinition as Grib1ProductDefinition};
-pub use grid::{GridDefinition, LambertConformalGrid, LatLonGrid, PolarStereographicGrid};
+pub use grid::{
+    GridDefinition, LambertConformalGrid, LatLonGrid, PolarStereographicGrid, ProjectedGridCore,
+};
 pub use metadata::{ForecastTimeUnit, Parameter, ParameterTableSource, ReferenceTime};
 pub use parameter::{
     LocalParameterEntry, LocalParameterTable, OwnedLocalParameterEntry, BUILTIN_LOCAL_PARAMETERS,
