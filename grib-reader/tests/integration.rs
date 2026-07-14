@@ -1,6 +1,6 @@
 mod common;
 
-use std::io::Write;
+use std::io::{Cursor, Write};
 
 use common::{
     build_grib1_message, build_grib1_message_with_bitmap, build_grib2_complex_packing_message,
@@ -10,8 +10,8 @@ use common::{
     build_grib2_polar_stereographic_message, build_grib2_spatial_differencing_message,
 };
 use grib_reader::{
-    Error, ForecastTimeUnit, GribFile, GridDefinition, LocalParameterEntry, OpenOptions,
-    ParameterTableSource, ProductDefinitionTemplate,
+    Error, ForecastTimeUnit, GribFile, GridDefinition, LocalParameterEntry, ParameterTableSource,
+    ProductDefinitionTemplate,
 };
 
 #[test]
@@ -22,9 +22,9 @@ fn open_grib2_from_file_and_decode() {
     file.write_all(&build_grib2_message(&[1, 2, 3, 4])).unwrap();
 
     let opened = GribFile::open(&path).unwrap();
-    assert_eq!(opened.edition(), 2);
     assert_eq!(opened.message_count(), 1);
     let field = opened.message(0).unwrap();
+    assert_eq!(field.edition(), 2);
     assert_eq!(field.parameter_name(), "TMP");
     assert_eq!(field.reference_time().year, 2026);
     assert_eq!(
@@ -52,6 +52,18 @@ fn open_grib2_from_file_and_decode() {
 }
 
 #[test]
+fn open_grib2_from_reader_and_decode() {
+    let bytes = build_grib2_message(&[1, 2, 3, 4]);
+    let opened = GribFile::builder().from_reader(Cursor::new(bytes)).unwrap();
+
+    assert_eq!(opened.message_count(), 1);
+    assert_eq!(
+        opened.message(0).unwrap().read_flat_data_as_f64().unwrap(),
+        vec![1.0, 2.0, 3.0, 4.0]
+    );
+}
+
+#[test]
 fn open_grib1_from_file_and_decode() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sample.grib1");
@@ -59,9 +71,9 @@ fn open_grib1_from_file_and_decode() {
     file.write_all(&build_grib1_message(&[5, 6, 7, 8])).unwrap();
 
     let opened = GribFile::open(&path).unwrap();
-    assert_eq!(opened.edition(), 1);
     assert_eq!(opened.message_count(), 1);
     let field = opened.message(0).unwrap();
+    assert_eq!(field.edition(), 1);
     assert_eq!(field.parameter_name(), "TMP");
     assert_eq!(field.center_id(), 7);
     assert!(field.grib1_product_definition().is_some());
@@ -139,11 +151,10 @@ fn open_grib2_lambert_conformal_field_and_decode_flat_data() {
 
 #[test]
 fn over_limit_grid_opens_but_decode_enforces_configured_point_limit() {
-    let opened = GribFile::from_bytes_with_options(
-        build_grib2_message(&[1, 2, 3, 4]),
-        OpenOptions::default().with_max_decoded_points(3),
-    )
-    .unwrap();
+    let opened = GribFile::builder()
+        .max_decoded_points(3)
+        .from_bytes(build_grib2_message(&[1, 2, 3, 4]))
+        .unwrap();
     assert_eq!(opened.message_count(), 1);
 
     let err = opened.message(0).unwrap().read_data_as_f64().unwrap_err();
@@ -159,11 +170,10 @@ fn over_limit_grid_opens_but_decode_enforces_configured_point_limit() {
 
 #[test]
 fn projected_coordinate_helpers_enforce_axis_limit() {
-    let opened = GribFile::from_bytes_with_options(
-        build_grib2_lambert_message(),
-        OpenOptions::default().with_max_axis_points(2),
-    )
-    .unwrap();
+    let opened = GribFile::builder()
+        .max_axis_points(2)
+        .from_bytes(build_grib2_lambert_message())
+        .unwrap();
     let field = opened.message(0).unwrap();
 
     let err = field.projected_x_coordinates().unwrap_err();
@@ -518,12 +528,10 @@ fn caller_local_entries_resolve_unknown_center_local_parameters() {
         short_name: "LREFC",
         description: "Local composite reflectivity",
     }];
-    let opened = GribFile::from_bytes_with_local_parameters(
-        bytes,
-        OpenOptions::default(),
-        &local_parameters,
-    )
-    .unwrap();
+    let opened = GribFile::builder()
+        .local_parameters(&local_parameters)
+        .from_bytes(bytes)
+        .unwrap();
     let field = opened.message(0).unwrap();
 
     assert_eq!(field.parameter_name(), "LREFC");
@@ -546,14 +554,7 @@ fn tolerant_open_skips_malformed_candidates() {
     let mut bytes = b"junkGRIB\x00\x00\x00\x02not-a-real-message".to_vec();
     bytes.extend_from_slice(&build_grib2_message(&[9, 8, 7, 6]));
 
-    let opened = GribFile::from_bytes_with_options(
-        bytes,
-        OpenOptions {
-            strict: false,
-            ..OpenOptions::default()
-        },
-    )
-    .unwrap();
+    let opened = GribFile::builder().strict(false).from_bytes(bytes).unwrap();
 
     assert_eq!(opened.message_count(), 1);
     assert_eq!(
@@ -576,14 +577,7 @@ fn unsupported_product_template_does_not_poison_file_open() {
     bytes[product_offset + 7..product_offset + 9].copy_from_slice(&99u16.to_be_bytes());
     bytes.extend_from_slice(&build_grib2_message(&[9, 8, 7, 6]));
 
-    let opened = GribFile::from_bytes_with_options(
-        bytes,
-        OpenOptions {
-            strict: false,
-            ..OpenOptions::default()
-        },
-    )
-    .unwrap();
+    let opened = GribFile::builder().strict(false).from_bytes(bytes).unwrap();
 
     assert_eq!(opened.message_count(), 2);
     let first = opened.message(0).unwrap();

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0 - Unreleased
+
+- replace the reader's constructor matrix with `GribFile::builder()`, including
+  memory-mapped file, owned-byte, and arbitrary `Read` inputs
+- remove the ambiguous file-level edition accessor; editions are reported per
+  logical field
+- raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
+
 ## 0.6.0 - 2026-06-25
 
 - prepare the workspace crates for the 0.6.0 release line so package

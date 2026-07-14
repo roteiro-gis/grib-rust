@@ -2432,7 +2432,7 @@ mod tests {
         StatisticalProcessTemplate, StatisticalTimeRange,
     };
     use grib_reader::sections::scan_sections;
-    use grib_reader::{GribFile, OpenOptions, PredefinedBitmap};
+    use grib_reader::{GribFile, PredefinedBitmap};
     use serde::Deserialize;
 
     fn identification() -> Identification {
@@ -2737,8 +2737,8 @@ mod tests {
 
         let file = GribFile::from_bytes(bytes).unwrap();
         let message = file.message(0).unwrap();
-        assert_eq!(file.edition(), 1);
         assert_eq!(file.message_count(), 1);
+        assert_eq!(message.edition(), 1);
         assert_eq!(message.parameter_name(), "TMP");
         assert_eq!(message.grid_shape(), (2, 2));
         assert_eq!(message.forecast_time(), Some(6));
@@ -2814,12 +2814,10 @@ mod tests {
             table_reference: 300,
             bitmap: &bitmap_payload,
         }];
-        let file = GribFile::from_bytes_with_grib1_predefined_bitmaps(
-            bytes,
-            OpenOptions::default(),
-            &predefined,
-        )
-        .unwrap();
+        let file = GribFile::builder()
+            .grib1_predefined_bitmaps(&predefined)
+            .from_bytes(bytes)
+            .unwrap();
         let decoded = file.message(0).unwrap().read_flat_data_as_f64().unwrap();
         assert_eq!(decoded[0], 9.0);
         assert!(decoded[1].is_nan());

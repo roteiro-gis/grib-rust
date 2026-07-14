@@ -3,10 +3,13 @@
 use grib_reader::indicator::Indicator;
 use grib_reader::sections::{index_fields, scan_sections};
 use grib_reader::grid::GridDefinition;
-use grib_reader::{grib1, GribFile, Message, OpenOptions};
+use grib_reader::{grib1, GribFile, Message};
 
-pub fn exercise_open(data: &[u8], options: OpenOptions) {
-    if let Ok(file) = GribFile::from_bytes_with_options(data.to_vec(), options) {
+pub fn exercise_open(data: &[u8], strict: bool) {
+    if let Ok(file) = GribFile::builder()
+        .strict(strict)
+        .from_bytes(data.to_vec())
+    {
         exercise_file(&file);
     }
 }
@@ -44,7 +47,6 @@ pub fn exercise_sections(data: &[u8]) {
 }
 
 fn exercise_file(file: &GribFile) {
-    let _ = file.edition();
     let _ = file.message_count();
     let _ = file.read_all_data_as_f64();
     for message in file.messages() {
