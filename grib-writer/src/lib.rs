@@ -1675,7 +1675,7 @@ fn grib1_reference_year_fields(year: u16) -> Result<(u8, u8)> {
 }
 
 fn encode_grib1_coordinate(value: i32, name: &str) -> Result<[u8; 3]> {
-    if value % 1_000 != 0 {
+    if value.rem_euclid(1_000) != 0 {
         return Err(Error::Other(format!(
             "{name} must be representable in GRIB1 millidegrees"
         )));
@@ -1689,7 +1689,7 @@ fn checked_grib1_grid_dimension(value: u32, name: &str) -> Result<u16> {
 }
 
 fn checked_grib1_increment(value: u32, name: &str) -> Result<u16> {
-    if value % 1_000 != 0 {
+    if !value.is_multiple_of(1_000) {
         return Err(Error::Other(format!(
             "{name} must be representable in GRIB1 millidegrees"
         )));

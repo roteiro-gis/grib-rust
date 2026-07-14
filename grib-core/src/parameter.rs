@@ -223,10 +223,10 @@ impl LocalParameterEntry<'_> {
         self.center_id == center_id
             && self
                 .subcenter_id
-                .map_or(true, |expected| expected == subcenter_id)
+                .is_none_or(|expected| expected == subcenter_id)
             && self
                 .local_table_version
-                .map_or(true, |expected| expected == local_table_version)
+                .is_none_or(|expected| expected == local_table_version)
             && self.discipline == discipline
             && self.category == category
             && self.number == number

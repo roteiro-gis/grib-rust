@@ -488,7 +488,7 @@ fn jpeg2000_codestream(data: &[u8]) -> Result<&[u8]> {
 
 #[cfg(feature = "jpeg2000")]
 const fn ceil_div_u32(value: u32, divisor: u32) -> u32 {
-    value / divisor + (value % divisor != 0) as u32
+    value / divisor + (!value.is_multiple_of(divisor)) as u32
 }
 
 #[cfg(feature = "jpeg2000")]
