@@ -299,7 +299,6 @@ name = "grib-reader"
 version = "0.7.0"
 dependencies = [
  "criterion",
- "flate2",
  "grib-core",
  "jpeg2k",
  "memmap2",
