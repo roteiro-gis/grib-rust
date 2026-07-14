@@ -61,6 +61,9 @@ field.decode_into(&mut reused)?;
 let data = field.read_data_as_f64()?;
 println!("ndarray shape: {:?}", data.shape());
 
+let north_up = field.read_data_north_up_as_f64()?;
+println!("north-up shape: {:?}", north_up.shape());
+
 let tolerant = GribFile::builder()
     .strict(false)
     .from_bytes(std::fs::read("mixed.bin")?)?;
@@ -158,6 +161,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 
 - GRIB1 and GRIB2 message scanning with `"GRIB"`/`"7777"` boundary detection
 - Logical field indexing for multi-field GRIB2 messages
+- GRIB2 Section 2 access and same-message bitmap reuse through indicator 254
 - Regular latitude/longitude grids for GRIB1 and GRIB2
 - Reader GRIB2 Mercator grid template 3.10, polar stereographic grid template
   3.20, Lambert conformal grid template 3.30, and Albers equal-area grid
@@ -168,6 +172,8 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Feature-gated reader GRIB2 JPEG2000 template 5.40 and PNG template 5.41 packed data decode
 - WMO parameter table lookups (Code Table 4.2) plus center/subcenter/local-table-aware GRIB2 local parameter entries and CSV authoring helpers
 - Typed metadata access for reference time, parameter identity, product metadata, grid geometry, and lat/lon coordinates
+- Explicit north-up decode methods in addition to reader order that preserves
+  the encoded i/j scan directions
 - Reader and writer GRIB2 product definition templates 4.0, 4.1, 4.8, and 4.11
 - Forecast valid-time helpers for supported fixed-width GRIB1/GRIB2 time units
 - `GribFile::builder()` for strict or tolerant scanning and allocation limits

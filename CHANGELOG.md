@@ -6,6 +6,10 @@
   memory-mapped file, owned-byte, and arbitrary `Read` inputs
 - remove the ambiguous file-level edition accessor; editions are reported per
   logical field
+- add explicit north-up decode methods while preserving encoded scan directions
+  in the existing reader-order methods
+- expose GRIB2 local-use sections and resolve bitmap indicator 254 within
+  multi-field messages
 - raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
 
 ## 0.6.0 - 2026-06-25

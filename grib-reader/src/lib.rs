@@ -443,6 +443,17 @@ impl<'a> Message<'a> {
         self.metadata.grib1_product.as_ref()
     }
 
+    /// Returns the complete encoded GRIB2 Section 2, including its five-byte
+    /// length and section-number header, when present for this field.
+    pub fn local_use_section(&self) -> Option<&'a [u8]> {
+        match self.decode_plan {
+            DecodePlan::Grib2(field) => field
+                .local_use
+                .map(|section| section_bytes(self.bytes, section)),
+            DecodePlan::Grib1 { .. } => None,
+        }
+    }
+
     pub fn grid_definition(&self) -> &GridDefinition {
         &self.metadata.grid
     }
@@ -517,7 +528,24 @@ impl<'a> Message<'a> {
             .projected_y_coordinates_with_limit(self.options.max_axis_points)
     }
 
+    /// Decodes into row-major reader order.
+    ///
+    /// Alternating scan rows are normalized, but the GRIB i/j scan directions
+    /// are preserved. Use [`Message::decode_into_north_up`] when deterministic
+    /// +i columns and -j rows are required.
     pub fn decode_into<T: DecodeSample>(&self, out: &mut [T]) -> Result<()> {
+        self.decode_scan_order_into(out)?;
+        self.metadata.grid.reorder_for_ndarray_in_place(out)
+    }
+
+    /// Decodes into deterministic row-major orientation: +i columns and -j
+    /// rows (north-to-south for conventional geographic grids).
+    pub fn decode_into_north_up<T: DecodeSample>(&self, out: &mut [T]) -> Result<()> {
+        self.decode_scan_order_into(out)?;
+        self.metadata.grid.normalize_north_up_in_place(out)
+    }
+
+    fn decode_scan_order_into<T: DecodeSample>(&self, out: &mut [T]) -> Result<()> {
         self.metadata.grid.validate_supported_scan_order()?;
         let num_grid_points = self.checked_num_points()?;
         if out.len() != num_grid_points {
@@ -567,9 +595,14 @@ impl<'a> Message<'a> {
             }
         }
 
-        self.metadata.grid.reorder_for_ndarray_in_place(out)
+        Ok(())
     }
 
+    /// Returns a flat `f64` field in row-major reader order.
+    ///
+    /// Alternating rows are normalized, while encoded i/j directions are
+    /// preserved. Use [`Message::read_flat_data_north_up_as_f64`] for +i
+    /// columns and -j rows.
     pub fn read_flat_data_as_f64(&self) -> Result<Vec<f64>> {
         let num_grid_points = self.checked_num_points()?;
         let mut decoded = zeroed_vec(num_grid_points, 0.0_f64, "decoded f64 field")?;
@@ -577,6 +610,11 @@ impl<'a> Message<'a> {
         Ok(decoded)
     }
 
+    /// Returns a flat `f32` field in row-major reader order.
+    ///
+    /// Alternating rows are normalized, while encoded i/j directions are
+    /// preserved. Use [`Message::read_flat_data_north_up_as_f32`] for +i
+    /// columns and -j rows.
     pub fn read_flat_data_as_f32(&self) -> Result<Vec<f32>> {
         let num_grid_points = self.checked_num_points()?;
         let mut decoded = zeroed_vec(num_grid_points, 0.0_f32, "decoded f32 field")?;
@@ -584,14 +622,54 @@ impl<'a> Message<'a> {
         Ok(decoded)
     }
 
+    /// Returns a flat `f64` field with +i columns and -j rows.
+    pub fn read_flat_data_north_up_as_f64(&self) -> Result<Vec<f64>> {
+        let num_grid_points = self.checked_num_points()?;
+        let mut decoded = zeroed_vec(num_grid_points, 0.0_f64, "decoded f64 field")?;
+        self.decode_into_north_up(&mut decoded)?;
+        Ok(decoded)
+    }
+
+    /// Returns a flat `f32` field with +i columns and -j rows.
+    pub fn read_flat_data_north_up_as_f32(&self) -> Result<Vec<f32>> {
+        let num_grid_points = self.checked_num_points()?;
+        let mut decoded = zeroed_vec(num_grid_points, 0.0_f32, "decoded f32 field")?;
+        self.decode_into_north_up(&mut decoded)?;
+        Ok(decoded)
+    }
+
+    /// Returns an `f64` ndarray in row-major reader order.
+    ///
+    /// Alternating rows are normalized, while encoded i/j directions are
+    /// preserved. Use [`Message::read_data_north_up_as_f64`] for deterministic
+    /// +i columns and -j rows.
     pub fn read_data_as_f64(&self) -> Result<ArrayD<f64>> {
         let ordered = self.read_flat_data_as_f64()?;
         ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
             .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
     }
 
+    /// Returns an `f32` ndarray in row-major reader order.
+    ///
+    /// Alternating rows are normalized, while encoded i/j directions are
+    /// preserved. Use [`Message::read_data_north_up_as_f32`] for deterministic
+    /// +i columns and -j rows.
     pub fn read_data_as_f32(&self) -> Result<ArrayD<f32>> {
         let ordered = self.read_flat_data_as_f32()?;
+        ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
+            .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
+    }
+
+    /// Returns an `f64` ndarray with +i columns and -j rows.
+    pub fn read_data_north_up_as_f64(&self) -> Result<ArrayD<f64>> {
+        let ordered = self.read_flat_data_north_up_as_f64()?;
+        ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
+            .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
+    }
+
+    /// Returns an `f32` ndarray with +i columns and -j rows.
+    pub fn read_data_north_up_as_f32(&self) -> Result<ArrayD<f32>> {
+        let ordered = self.read_flat_data_north_up_as_f32()?;
         ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
             .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
     }
@@ -966,6 +1044,14 @@ mod tests {
         section
     }
 
+    fn build_local_use(payload: &[u8]) -> Vec<u8> {
+        let mut section = vec![0u8; payload.len() + 5];
+        section[..4].copy_from_slice(&((payload.len() + 5) as u32).to_be_bytes());
+        section[4] = 2;
+        section[5..].copy_from_slice(payload);
+        section
+    }
+
     fn build_grid(ni: u32, nj: u32, scanning_mode: u8) -> Vec<u8> {
         let mut section = vec![0u8; 72];
         section[..4].copy_from_slice(&(72u32).to_be_bytes());
@@ -1028,6 +1114,14 @@ mod tests {
                 section[6 + index / 8] |= 1 << (7 - (index % 8));
             }
         }
+        section
+    }
+
+    fn build_reused_bitmap() -> Vec<u8> {
+        let mut section = vec![0u8; 6];
+        section[..4].copy_from_slice(&6u32.to_be_bytes());
+        section[4] = 6;
+        section[5] = 254;
         section
     }
 
@@ -1192,6 +1286,78 @@ mod tests {
         assert_eq!(file.message_count(), 2);
         assert_eq!(file.message(0).unwrap().parameter_name(), "TMP");
         assert_eq!(file.message(1).unwrap().parameter_name(), "POT");
+    }
+
+    #[test]
+    fn exposes_local_use_section_for_each_following_field() {
+        let local_use = build_local_use(&[0xde, 0xad, 0xbe, 0xef]);
+        let message = assemble_grib2_message(&[
+            build_identification(),
+            local_use.clone(),
+            build_grid(2, 2, 0),
+            build_product(0, 0),
+            build_simple_representation(4, 8),
+            build_data(&[1, 2, 3, 4]),
+            build_product(0, 2),
+            build_simple_representation(4, 8),
+            build_data(&[5, 6, 7, 8]),
+        ]);
+
+        let file = GribFile::from_bytes(message).unwrap();
+        assert_eq!(
+            file.message(0).unwrap().local_use_section(),
+            Some(local_use.as_slice())
+        );
+        assert_eq!(
+            file.message(1).unwrap().local_use_section(),
+            Some(local_use.as_slice())
+        );
+    }
+
+    #[test]
+    fn decodes_fields_that_reuse_a_previous_bitmap() {
+        let message = assemble_grib2_message(&[
+            build_identification(),
+            build_grid(2, 2, 0),
+            build_product(0, 0),
+            build_simple_representation(2, 8),
+            build_bitmap(&[true, false, true, false]),
+            build_data(&[1, 2]),
+            build_product(0, 2),
+            build_simple_representation(2, 8),
+            build_reused_bitmap(),
+            build_data(&[3, 4]),
+        ]);
+
+        let file = GribFile::from_bytes(message).unwrap();
+        let first = file.message(0).unwrap().read_flat_data_as_f64().unwrap();
+        let second = file.message(1).unwrap().read_flat_data_as_f64().unwrap();
+        assert_eq!([first[0], first[2]], [1.0, 2.0]);
+        assert!(first[1].is_nan() && first[3].is_nan());
+        assert_eq!([second[0], second[2]], [3.0, 4.0]);
+        assert!(second[1].is_nan() && second[3].is_nan());
+    }
+
+    #[test]
+    fn decodes_north_up_without_changing_default_reader_order() {
+        let message = assemble_grib2_message(&[
+            build_identification(),
+            build_grid(2, 2, 0b1100_0000),
+            build_product(0, 0),
+            build_simple_representation(4, 8),
+            build_data(&[1, 2, 3, 4]),
+        ]);
+        let file = GribFile::from_bytes(message).unwrap();
+        let field = file.message(0).unwrap();
+
+        assert_eq!(
+            field.read_flat_data_as_f64().unwrap(),
+            vec![1.0, 2.0, 3.0, 4.0]
+        );
+        assert_eq!(
+            field.read_flat_data_north_up_as_f64().unwrap(),
+            vec![4.0, 3.0, 2.0, 1.0]
+        );
     }
 
     #[test]

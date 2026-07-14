@@ -306,6 +306,8 @@ impl GridDefinition {
         }
     }
 
+    /// Converts GRIB scan traversal into row-major order by undoing alternating
+    /// row scans. The encoded i/j direction is deliberately preserved.
     pub fn reorder_for_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
         match self {
             Self::LatLon(grid) => grid.reorder_for_ndarray_in_place(values),
@@ -313,6 +315,45 @@ impl GridDefinition {
             Self::PolarStereographic(grid) => grid.core.reorder_for_ndarray_in_place(values),
             Self::LambertConformal(grid) => grid.core.reorder_for_ndarray_in_place(values),
             Self::AlbersEqualArea(grid) => grid.core.reorder_for_ndarray_in_place(values),
+            Self::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
+        }
+    }
+
+    /// Converts GRIB scan traversal to deterministic row-major orientation:
+    /// columns increase in +i order and rows increase in -j order (north to
+    /// south for conventional geographic grids).
+    pub fn normalize_north_up_in_place<T>(&self, values: &mut [T]) -> Result<()> {
+        match self {
+            Self::LatLon(grid) => normalize_north_up_in_place(
+                values,
+                grid.ni as usize,
+                grid.nj as usize,
+                grid.scanning_mode,
+            ),
+            Self::Mercator(grid) => normalize_north_up_in_place(
+                values,
+                grid.core.nx as usize,
+                grid.core.ny as usize,
+                grid.core.scanning_mode,
+            ),
+            Self::PolarStereographic(grid) => normalize_north_up_in_place(
+                values,
+                grid.core.nx as usize,
+                grid.core.ny as usize,
+                grid.core.scanning_mode,
+            ),
+            Self::LambertConformal(grid) => normalize_north_up_in_place(
+                values,
+                grid.core.nx as usize,
+                grid.core.ny as usize,
+                grid.core.scanning_mode,
+            ),
+            Self::AlbersEqualArea(grid) => normalize_north_up_in_place(
+                values,
+                grid.core.nx as usize,
+                grid.core.ny as usize,
+                grid.core.scanning_mode,
+            ),
             Self::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
         }
     }
@@ -478,6 +519,34 @@ fn transform_supported_scan_order_in_place<T>(
 
     if adjacent_rows_alternate_direction(scanning_mode) {
         reverse_alternating_rows(values, ni, nj, i_scans_positive(scanning_mode));
+    }
+
+    Ok(())
+}
+
+fn normalize_north_up_in_place<T>(
+    values: &mut [T],
+    ni: usize,
+    nj: usize,
+    scanning_mode: u8,
+) -> Result<()> {
+    transform_supported_scan_order_in_place(values, ni, nj, scanning_mode)?;
+    if ni == 0 {
+        return Ok(());
+    }
+
+    if !i_scans_positive(scanning_mode) {
+        for row in values.chunks_exact_mut(ni) {
+            row.reverse();
+        }
+    }
+    if j_scans_positive(scanning_mode) {
+        // Reversing the whole slice reverses both row order and each row;
+        // reverse each row again to preserve column orientation.
+        values.reverse();
+        for row in values.chunks_exact_mut(ni) {
+            row.reverse();
+        }
     }
 
     Ok(())
@@ -1157,6 +1226,26 @@ mod tests {
                 values
             );
         }
+    }
+
+    #[test]
+    fn normalizes_scan_directions_to_north_up_west_first_order() {
+        let grid = GridDefinition::LatLon(LatLonGrid {
+            ni: 3,
+            nj: 2,
+            lat_first: 0,
+            lon_first: 0,
+            lat_last: 0,
+            lon_last: 0,
+            di: 1,
+            dj: 1,
+            scanning_mode: 0b1100_0000,
+        });
+        let mut values = vec![1, 2, 3, 4, 5, 6];
+
+        grid.normalize_north_up_in_place(&mut values).unwrap();
+
+        assert_eq!(values, vec![6, 5, 4, 3, 2, 1]);
     }
 
     #[test]
