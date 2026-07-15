@@ -244,6 +244,25 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
         .values(&spatial_second_values)
         .build()
         .unwrap();
+    let mut signed_forecast_product = product(0, 0);
+    let ProductDefinitionTemplate::AnalysisOrForecast(template) =
+        &mut signed_forecast_product.template
+    else {
+        unreachable!("product helper always returns template 4.0");
+    };
+    template.background_generating_process_identifier = 7;
+    template.generating_process_identifier = 42;
+    template.hours_after_data_cutoff = Some(12);
+    template.minutes_after_data_cutoff = Some(30);
+    template.forecast_time = -6;
+    let signed_forecast = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(latlon_grid(2, 2, 0))
+        .product(signed_forecast_product)
+        .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+        .values(&[1.0, 2.0, 3.0, 4.0])
+        .build()
+        .unwrap();
 
     vec![
         (
@@ -255,6 +274,10 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
             write_grib2_message([simple_grib2_field(&[5.0, f64::NAN, 7.0, 8.0], 0, 0)]),
         ),
         ("writer-decimal.grib2", write_grib2_message([decimal])),
+        (
+            "writer-signed-forecast.grib2",
+            write_grib2_message([signed_forecast]),
+        ),
         ("writer-complex.grib2", write_grib2_message([complex])),
         (
             "writer-complex-spatial-first.grib2",
@@ -393,7 +416,11 @@ pub fn product(parameter_category: u8, parameter_number: u8) -> ProductDefinitio
         parameter_category,
         parameter_number,
         template: ProductDefinitionTemplate::AnalysisOrForecast(AnalysisOrForecastTemplate {
-            generating_process: 2,
+            type_of_generating_process: 2,
+            background_generating_process_identifier: 0,
+            generating_process_identifier: 0,
+            hours_after_data_cutoff: Some(0),
+            minutes_after_data_cutoff: Some(0),
             forecast_time_unit: 1,
             forecast_time: 6,
             first_surface: Some(FixedSurface::with_value(103, 0, 850)),

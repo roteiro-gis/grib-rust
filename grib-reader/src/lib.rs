@@ -235,7 +235,7 @@ pub struct MessageMetadata {
     pub grid: GridDefinition,
     pub data_representation: DataRepresentation,
     pub forecast_time_unit: Option<u8>,
-    pub forecast_time: Option<u32>,
+    pub forecast_time: Option<i64>,
     pub message_offset: u64,
     pub message_length: u64,
     pub field_index_in_message: usize,
@@ -476,7 +476,10 @@ impl<'a> Message<'a> {
         ForecastTimeUnit::from_edition_and_code(self.metadata.edition, unit)
     }
 
-    pub fn forecast_time(&self) -> Option<u32> {
+    /// Forecast offset in the units returned by [`Message::forecast_time_unit`].
+    ///
+    /// GRIB2 offsets are signed; GRIB1 offsets are widened to the same type.
+    pub fn forecast_time(&self) -> Option<i64> {
         self.metadata.forecast_time
     }
 
@@ -890,7 +893,7 @@ fn index_grib1_message(
             grid,
             data_representation,
             forecast_time_unit: Some(sections.product.forecast_time_unit),
-            forecast_time: sections.product.forecast_time(),
+            forecast_time: sections.product.forecast_time().map(i64::from),
             message_offset: offset as u64,
             message_length: message_bytes.len() as u64,
             field_index_in_message: 0,
@@ -994,7 +997,7 @@ fn index_grib2_message(
                 grid,
                 data_representation,
                 forecast_time_unit: product.forecast_time_unit(),
-                forecast_time: product.forecast_time(),
+                forecast_time: product.forecast_time().map(i64::from),
                 message_offset: offset as u64,
                 message_length: message_bytes.len() as u64,
                 field_index_in_message,

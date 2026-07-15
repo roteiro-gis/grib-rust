@@ -135,9 +135,13 @@ pub enum ProductDefinitionTemplate {
 /// Product Definition Template 4.0: analysis or forecast at a horizontal level.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnalysisOrForecastTemplate {
-    pub generating_process: u8,
+    pub type_of_generating_process: u8,
+    pub background_generating_process_identifier: u8,
+    pub generating_process_identifier: u8,
+    pub hours_after_data_cutoff: Option<u16>,
+    pub minutes_after_data_cutoff: Option<u8>,
     pub forecast_time_unit: u8,
-    pub forecast_time: u32,
+    pub forecast_time: i32,
     pub first_surface: Option<FixedSurface>,
     pub second_surface: Option<FixedSurface>,
 }
@@ -219,15 +223,23 @@ impl ProductDefinition {
         self.template.number()
     }
 
-    pub fn generating_process(&self) -> Option<u8> {
-        self.template.base().map(|base| base.generating_process)
+    pub fn type_of_generating_process(&self) -> Option<u8> {
+        self.template
+            .base()
+            .map(|base| base.type_of_generating_process)
+    }
+
+    pub fn generating_process_identifier(&self) -> Option<u8> {
+        self.template
+            .base()
+            .map(|base| base.generating_process_identifier)
     }
 
     pub fn forecast_time_unit(&self) -> Option<u8> {
         self.template.base().map(|base| base.forecast_time_unit)
     }
 
-    pub fn forecast_time(&self) -> Option<u32> {
+    pub fn forecast_time(&self) -> Option<i32> {
         self.template.base().map(|base| base.forecast_time)
     }
 
@@ -313,10 +325,23 @@ impl AnalysisOrForecastTemplate {
     fn parse(section_bytes: &[u8]) -> Result<Self> {
         require_len(section_bytes, Self::MINIMUM_LENGTH, "template 4.0")?;
 
+        let minutes_after_data_cutoff = (section_bytes[16] != 0xff).then_some(section_bytes[16]);
+        if minutes_after_data_cutoff.is_some_and(|minutes| minutes > 59) {
+            return Err(Error::InvalidSection {
+                section: 4,
+                reason: "minutes after data cutoff must be at most 59".into(),
+            });
+        }
+
         Ok(Self {
-            generating_process: section_bytes[11],
+            type_of_generating_process: section_bytes[11],
+            background_generating_process_identifier: section_bytes[12],
+            generating_process_identifier: section_bytes[13],
+            hours_after_data_cutoff: (section_bytes[14..16] != [0xff; 2])
+                .then(|| u16::from_be_bytes(section_bytes[14..16].try_into().unwrap())),
+            minutes_after_data_cutoff,
             forecast_time_unit: section_bytes[17],
-            forecast_time: u32::from_be_bytes(section_bytes[18..22].try_into().unwrap()),
+            forecast_time: decode_wmo_i32(&section_bytes[18..22]).unwrap(),
             first_surface: parse_surface(&section_bytes[22..28]),
             second_surface: parse_surface(&section_bytes[28..34]),
         })
@@ -511,7 +536,11 @@ mod tests {
         assert_eq!(
             product.template,
             ProductDefinitionTemplate::AnalysisOrForecast(AnalysisOrForecastTemplate {
-                generating_process: 2,
+                type_of_generating_process: 2,
+                background_generating_process_identifier: 0,
+                generating_process_identifier: 0,
+                hours_after_data_cutoff: Some(0),
+                minutes_after_data_cutoff: Some(0),
                 forecast_time_unit: 1,
                 forecast_time: 6,
                 first_surface: product.first_surface().cloned(),
@@ -542,6 +571,46 @@ mod tests {
             }
             other => panic!("expected template 4.1, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_signed_forecast_time_and_process_metadata() {
+        let mut section = product_section_template_zero();
+        section[12] = 7;
+        section[13] = 42;
+        section[14..16].copy_from_slice(&12u16.to_be_bytes());
+        section[16] = 30;
+        section[18..22].copy_from_slice(&crate::binary::encode_wmo_i32(-6).unwrap());
+
+        let product = ProductDefinition::parse(&section).unwrap();
+        assert_eq!(product.type_of_generating_process(), Some(2));
+        assert_eq!(product.generating_process_identifier(), Some(42));
+        assert_eq!(product.forecast_time(), Some(-6));
+        let ProductDefinitionTemplate::AnalysisOrForecast(template) = product.template else {
+            panic!("expected template 4.0");
+        };
+        assert_eq!(template.background_generating_process_identifier, 7);
+        assert_eq!(template.hours_after_data_cutoff, Some(12));
+        assert_eq!(template.minutes_after_data_cutoff, Some(30));
+    }
+
+    #[test]
+    fn parses_missing_cutoff_metadata_and_rejects_invalid_minutes() {
+        let mut section = product_section_template_zero();
+        section[14..16].copy_from_slice(&u16::MAX.to_be_bytes());
+        section[16] = u8::MAX;
+        let product = ProductDefinition::parse(&section).unwrap();
+        let ProductDefinitionTemplate::AnalysisOrForecast(template) = product.template else {
+            panic!("expected template 4.0");
+        };
+        assert_eq!(template.hours_after_data_cutoff, None);
+        assert_eq!(template.minutes_after_data_cutoff, None);
+
+        section[16] = 60;
+        assert!(matches!(
+            ProductDefinition::parse(&section),
+            Err(Error::InvalidSection { section: 4, .. })
+        ));
     }
 
     #[test]

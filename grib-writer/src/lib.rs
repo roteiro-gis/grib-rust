@@ -2034,21 +2034,47 @@ fn write_product_template_prefix(
     section_length: u32,
     template: &AnalysisOrForecastTemplate,
 ) -> Result<()> {
+    validate_product_template_prefix(template)?;
+
     write_u32_be(out, section_length)?;
     write_u8_be(out, 4)?;
     write_u16_be(out, 0)?;
     write_u16_be(out, template_number)?;
     write_u8_be(out, product.parameter_category)?;
     write_u8_be(out, product.parameter_number)?;
-    write_u8_be(out, template.generating_process)?;
-    write_u8_be(out, 0)?;
-    write_u8_be(out, 0)?;
-    write_u16_be(out, 0)?;
-    write_u8_be(out, 0)?;
+    write_u8_be(out, template.type_of_generating_process)?;
+    write_u8_be(out, template.background_generating_process_identifier)?;
+    write_u8_be(out, template.generating_process_identifier)?;
+    write_u16_be(out, template.hours_after_data_cutoff.unwrap_or(u16::MAX))?;
+    write_u8_be(out, template.minutes_after_data_cutoff.unwrap_or(u8::MAX))?;
     write_u8_be(out, template.forecast_time_unit)?;
-    write_u32_be(out, template.forecast_time)?;
+    out.extend_from_slice(&encode_wmo_i32(template.forecast_time).ok_or_else(|| {
+        Error::ValueOutOfRange("forecast time does not fit GRIB signed i32".into())
+    })?);
     write_surface(out, template.first_surface.as_ref())?;
     write_surface(out, template.second_surface.as_ref())
+}
+
+fn validate_product_template_prefix(template: &AnalysisOrForecastTemplate) -> Result<()> {
+    if template.hours_after_data_cutoff == Some(u16::MAX) {
+        return Err(Error::ValueOutOfRange(
+            "hours after data cutoff must be at most 65534".into(),
+        ));
+    }
+    if template
+        .minutes_after_data_cutoff
+        .is_some_and(|minutes| minutes > 59)
+    {
+        return Err(Error::ValueOutOfRange(
+            "minutes after data cutoff must be at most 59".into(),
+        ));
+    }
+    if encode_wmo_i32(template.forecast_time).is_none() {
+        return Err(Error::ValueOutOfRange(
+            "forecast time does not fit GRIB signed i32".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn write_ensemble_product_extra(
@@ -2397,13 +2423,19 @@ fn validate_supported_grib1_grid(grid: &GridDefinition) -> Result<()> {
 
 fn validate_supported_product(product: &ProductDefinition) -> Result<()> {
     match &product.template {
-        ProductDefinitionTemplate::AnalysisOrForecast(_) => Ok(()),
-        ProductDefinitionTemplate::IndividualEnsembleForecast(_) => Ok(()),
+        ProductDefinitionTemplate::AnalysisOrForecast(template) => {
+            validate_product_template_prefix(template)
+        }
+        ProductDefinitionTemplate::IndividualEnsembleForecast(template) => {
+            validate_product_template_prefix(&template.base)
+        }
         ProductDefinitionTemplate::StatisticalProcess(template) => {
+            validate_product_template_prefix(&template.base)?;
             checked_time_range_count(template.time_ranges.len())?;
             validate_reference_time(template.end_of_overall_time_interval)
         }
         ProductDefinitionTemplate::EnsembleStatisticalProcess(template) => {
+            validate_product_template_prefix(&template.ensemble.base)?;
             checked_time_range_count(template.time_ranges.len())?;
             validate_reference_time(template.end_of_overall_time_interval)
         }
@@ -2641,7 +2673,11 @@ mod tests {
 
     fn analysis_or_forecast_template() -> AnalysisOrForecastTemplate {
         AnalysisOrForecastTemplate {
-            generating_process: 2,
+            type_of_generating_process: 2,
+            background_generating_process_identifier: 0,
+            generating_process_identifier: 0,
+            hours_after_data_cutoff: Some(0),
+            minutes_after_data_cutoff: Some(0),
             forecast_time_unit: 1,
             forecast_time: 6,
             first_surface: Some(FixedSurface::with_value(103, 0, 850)),
@@ -2907,6 +2943,57 @@ mod tests {
         assert_eq!(message.grid_shape(), (2, 2));
         assert_eq!(message.forecast_time(), Some(6));
         assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+
+    #[test]
+    fn writes_signed_forecast_offset_and_process_metadata() {
+        let mut template = analysis_or_forecast_template();
+        template.background_generating_process_identifier = 7;
+        template.generating_process_identifier = 42;
+        template.hours_after_data_cutoff = Some(12);
+        template.minutes_after_data_cutoff = Some(30);
+        template.forecast_time = -6;
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(ProductDefinition {
+                parameter_category: 0,
+                parameter_number: 0,
+                template: ProductDefinitionTemplate::AnalysisOrForecast(template),
+            })
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[1.0, 2.0, 3.0, 4.0])
+            .build()
+            .unwrap();
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        let message = file.message(0).unwrap();
+        assert_eq!(message.forecast_time(), Some(-6));
+        let product = message.product_definition().unwrap();
+        assert_eq!(product.generating_process_identifier(), Some(42));
+        let ProductDefinitionTemplate::AnalysisOrForecast(template) = &product.template else {
+            panic!("expected template 4.0");
+        };
+        assert_eq!(template.background_generating_process_identifier, 7);
+        assert_eq!(template.hours_after_data_cutoff, Some(12));
+        assert_eq!(template.minutes_after_data_cutoff, Some(30));
+    }
+
+    #[test]
+    fn rejects_unrepresentable_cutoff_metadata() {
+        let mut template = analysis_or_forecast_template();
+        template.hours_after_data_cutoff = Some(u16::MAX);
+        let mut product = product(0, 0);
+        product.template = ProductDefinitionTemplate::AnalysisOrForecast(template);
+        let err = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product)
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[1.0, 2.0, 3.0, 4.0])
+            .build()
+            .unwrap_err();
+        assert!(matches!(err, grib_core::Error::ValueOutOfRange(_)));
     }
 
     #[test]
