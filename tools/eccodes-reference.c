@@ -363,6 +363,9 @@ static decode_totals decode_file(const char *path, int emit_json) {
             {"lengthOfTimeRange", "time_range_length", 0, 0},
             {"indicatorOfUnitForTimeIncrement", "time_increment_unit", 0, 0},
             {"timeIncrement", "time_increment", 0, 0},
+            {"statisticalProcess", "spatial_statistical_process", 0, 0},
+            {"spatialProcessing", "spatial_processing", 0, 0},
+            {"numberOfPointsUsed", "number_of_points_used", 0, 0},
         };
         const size_t product_metadata_count =
             sizeof(product_metadata) / sizeof(product_metadata[0]);

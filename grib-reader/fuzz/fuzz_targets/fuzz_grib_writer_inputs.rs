@@ -6,7 +6,7 @@ use grib_core::{
     FixedSurface, GridDefinition, Identification, LatLonGrid, PercentileForecastTemplate,
     PercentileStatisticalProcessTemplate, ProbabilityForecastTemplate, ProbabilityLimit,
     ProbabilityStatisticalProcessTemplate, ProbabilityType, ProductDefinition,
-    ProductDefinitionTemplate, StatisticalInterval, StatisticalTimeRange,
+    ProductDefinitionTemplate, SpatialProcessTemplate, StatisticalInterval, StatisticalTimeRange,
 };
 use grib_reader::GribFile;
 use grib_writer::{
@@ -227,7 +227,7 @@ fn product(input: &mut Input<'_>) -> ProductDefinition {
         first_surface: Some(FixedSurface::with_value(103, 0, 850)),
         second_surface: None,
     };
-    let template = match input.u8() % 7 {
+    let template = match input.u8() % 8 {
         0 => ProductDefinitionTemplate::AnalysisOrForecast(base),
         1 => ProductDefinitionTemplate::DerivedForecast(DerivedForecastTemplate {
             base,
@@ -264,7 +264,7 @@ fn product(input: &mut Input<'_>) -> ProductDefinition {
                 interval: statistical_interval(input),
             },
         ),
-        _ => ProductDefinitionTemplate::DerivedStatisticalProcess(
+        6 => ProductDefinitionTemplate::DerivedStatisticalProcess(
             DerivedStatisticalProcessTemplate {
                 derived: DerivedForecastTemplate {
                     base,
@@ -274,6 +274,12 @@ fn product(input: &mut Input<'_>) -> ProductDefinition {
                 interval: statistical_interval(input),
             },
         ),
+        _ => ProductDefinitionTemplate::SpatialProcess(SpatialProcessTemplate {
+            base,
+            statistical_process: input.u8(),
+            spatial_processing: input.u8(),
+            number_of_points_used: input.u8(),
+        }),
     };
     ProductDefinition {
         parameter_category,

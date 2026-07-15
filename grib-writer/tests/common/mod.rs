@@ -9,7 +9,7 @@ use grib_core::{
     FixedSurface, GridDefinition, Identification, LatLonGrid, PercentileForecastTemplate,
     PercentileStatisticalProcessTemplate, ProbabilityForecastTemplate, ProbabilityLimit,
     ProbabilityStatisticalProcessTemplate, ProbabilityType, ProductDefinition,
-    ProductDefinitionTemplate, StatisticalInterval, StatisticalTimeRange,
+    ProductDefinitionTemplate, SpatialProcessTemplate, StatisticalInterval, StatisticalTimeRange,
 };
 use grib_reader::GribFile;
 use grib_writer::{
@@ -55,6 +55,9 @@ pub struct ReferenceMessage {
     pub time_range_length: Option<i64>,
     pub time_increment_unit: Option<i64>,
     pub time_increment: Option<i64>,
+    pub spatial_statistical_process: Option<i64>,
+    pub spatial_processing: Option<i64>,
+    pub number_of_points_used: Option<i64>,
     pub values: Vec<Option<f64>>,
 }
 
@@ -271,6 +274,20 @@ fn assert_product_metadata(
         ProductDefinitionTemplate::DerivedStatisticalProcess(template) => {
             assert_derived_product_metadata(&template.derived, expected);
             assert_statistical_interval_metadata(&template.interval, expected);
+        }
+        ProductDefinitionTemplate::SpatialProcess(template) => {
+            assert_eq!(
+                expected.spatial_statistical_process,
+                Some(i64::from(template.statistical_process))
+            );
+            assert_eq!(
+                expected.spatial_processing,
+                Some(i64::from(template.spatial_processing))
+            );
+            assert_eq!(
+                expected.number_of_points_used,
+                Some(i64::from(template.number_of_points_used))
+            );
         }
         _ => {}
     }
@@ -529,6 +546,14 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
             interval: statistical_interval(),
         },
     ));
+    let spatial = product_field(ProductDefinitionTemplate::SpatialProcess(
+        SpatialProcessTemplate {
+            base: analysis_or_forecast_template(),
+            statistical_process: 1,
+            spatial_processing: 2,
+            number_of_points_used: 4,
+        },
+    ));
 
     vec![
         (
@@ -562,6 +587,7 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
             "writer-derived-interval.grib2",
             write_grib2_message([derived_interval]),
         ),
+        ("writer-spatial.grib2", write_grib2_message([spatial])),
         ("writer-complex.grib2", write_grib2_message([complex])),
         (
             "writer-complex-spatial-first.grib2",

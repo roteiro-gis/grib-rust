@@ -32,6 +32,8 @@
   4.10, and 4.12 through one shared statistical-interval model
 - write interval product templates 4.9, 4.10, and 4.12 and verify their
   timestamps, time ranges, thresholds, and ensemble metadata against ecCodes
+- decode and write spatially processed product template 4.15 and verify its
+  process type, spatial method, and source-point count against ecCodes
 - raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
 
 ## 0.6.0 - 2026-06-25
