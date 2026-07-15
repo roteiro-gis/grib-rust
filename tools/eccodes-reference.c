@@ -15,6 +15,13 @@ typedef struct {
     double checksum;
 } decode_totals;
 
+typedef struct {
+    const char *eccodes_key;
+    const char *json_key;
+    long value;
+    int present;
+} optional_long_field;
+
 static void die_errno(const char *context, const char *path) {
     fprintf(stderr, "%s %s: %s\n", context, path, strerror(errno));
     exit(1);
@@ -74,6 +81,18 @@ static int get_optional_long(
     }
     *value = get_long(handle, key, path);
     return 1;
+}
+
+static void load_optional_long_fields(
+    codes_handle *handle,
+    optional_long_field *fields,
+    size_t field_count,
+    const char *path
+) {
+    for (size_t i = 0; i < field_count; ++i) {
+        fields[i].present =
+            get_optional_long(handle, fields[i].eccodes_key, &fields[i].value, path);
+    }
 }
 
 static long get_grid_dimension(
@@ -278,6 +297,15 @@ static void print_optional_long(int present, long value) {
     }
 }
 
+static void print_optional_long_fields(const optional_long_field *fields, size_t field_count) {
+    for (size_t i = 0; i < field_count; ++i) {
+        fputc(',', stdout);
+        print_json_string(fields[i].json_key);
+        fputc(':', stdout);
+        print_optional_long(fields[i].present, fields[i].value);
+    }
+}
+
 static decode_totals decode_file(const char *path, int emit_json) {
     FILE *fp = fopen(path, "rb");
     if (fp == NULL) {
@@ -309,71 +337,36 @@ static decode_totals decode_file(const char *path, int emit_json) {
         long second = get_long(handle, "second", path);
         long ni = get_grid_dimension(handle, "Ni", "Nx", path);
         long nj = get_grid_dimension(handle, "Nj", "Ny", path);
-        long product_definition_template_number = 0;
-        long derived_forecast = 0;
-        long number_of_forecasts_in_ensemble = 0;
-        long forecast_probability_number = 0;
-        long total_number_of_forecast_probabilities = 0;
-        long probability_type = 0;
-        long scale_factor_of_lower_limit = 0;
-        long scaled_value_of_lower_limit = 0;
-        long scale_factor_of_upper_limit = 0;
-        long scaled_value_of_upper_limit = 0;
-        long percentile_value = 0;
-        int has_product_definition_template_number = get_optional_long(
-            handle,
-            "productDefinitionTemplateNumber",
-            &product_definition_template_number,
-            path
-        );
-        int has_derived_forecast =
-            get_optional_long(handle, "derivedForecast", &derived_forecast, path);
-        int has_number_of_forecasts_in_ensemble = get_optional_long(
-            handle,
-            "numberOfForecastsInEnsemble",
-            &number_of_forecasts_in_ensemble,
-            path
-        );
-        int has_forecast_probability_number = get_optional_long(
-            handle,
-            "forecastProbabilityNumber",
-            &forecast_probability_number,
-            path
-        );
-        int has_total_number_of_forecast_probabilities = get_optional_long(
-            handle,
-            "totalNumberOfForecastProbabilities",
-            &total_number_of_forecast_probabilities,
-            path
-        );
-        int has_probability_type =
-            get_optional_long(handle, "probabilityType", &probability_type, path);
-        int has_scale_factor_of_lower_limit = get_optional_long(
-            handle,
-            "scaleFactorOfLowerLimit",
-            &scale_factor_of_lower_limit,
-            path
-        );
-        int has_scaled_value_of_lower_limit = get_optional_long(
-            handle,
-            "scaledValueOfLowerLimit",
-            &scaled_value_of_lower_limit,
-            path
-        );
-        int has_scale_factor_of_upper_limit = get_optional_long(
-            handle,
-            "scaleFactorOfUpperLimit",
-            &scale_factor_of_upper_limit,
-            path
-        );
-        int has_scaled_value_of_upper_limit = get_optional_long(
-            handle,
-            "scaledValueOfUpperLimit",
-            &scaled_value_of_upper_limit,
-            path
-        );
-        int has_percentile_value =
-            get_optional_long(handle, "percentileValue", &percentile_value, path);
+        optional_long_field product_metadata[] = {
+            {"productDefinitionTemplateNumber", "product_definition_template_number", 0, 0},
+            {"derivedForecast", "derived_forecast", 0, 0},
+            {"numberOfForecastsInEnsemble", "number_of_forecasts_in_ensemble", 0, 0},
+            {"forecastProbabilityNumber", "forecast_probability_number", 0, 0},
+            {"totalNumberOfForecastProbabilities", "total_number_of_forecast_probabilities", 0, 0},
+            {"probabilityType", "probability_type", 0, 0},
+            {"scaleFactorOfLowerLimit", "scale_factor_of_lower_limit", 0, 0},
+            {"scaledValueOfLowerLimit", "scaled_value_of_lower_limit", 0, 0},
+            {"scaleFactorOfUpperLimit", "scale_factor_of_upper_limit", 0, 0},
+            {"scaledValueOfUpperLimit", "scaled_value_of_upper_limit", 0, 0},
+            {"percentileValue", "percentile_value", 0, 0},
+            {"yearOfEndOfOverallTimeInterval", "interval_end_year", 0, 0},
+            {"monthOfEndOfOverallTimeInterval", "interval_end_month", 0, 0},
+            {"dayOfEndOfOverallTimeInterval", "interval_end_day", 0, 0},
+            {"hourOfEndOfOverallTimeInterval", "interval_end_hour", 0, 0},
+            {"minuteOfEndOfOverallTimeInterval", "interval_end_minute", 0, 0},
+            {"secondOfEndOfOverallTimeInterval", "interval_end_second", 0, 0},
+            {"numberOfTimeRange", "number_of_time_ranges", 0, 0},
+            {"numberOfMissingInStatisticalProcess", "number_missing_in_statistical_process", 0, 0},
+            {"typeOfStatisticalProcessing", "type_of_statistical_processing", 0, 0},
+            {"typeOfTimeIncrement", "type_of_time_increment", 0, 0},
+            {"indicatorOfUnitForTimeRange", "time_range_unit", 0, 0},
+            {"lengthOfTimeRange", "time_range_length", 0, 0},
+            {"indicatorOfUnitForTimeIncrement", "time_increment_unit", 0, 0},
+            {"timeIncrement", "time_increment", 0, 0},
+        };
+        const size_t product_metadata_count =
+            sizeof(product_metadata) / sizeof(product_metadata[0]);
+        load_optional_long_fields(handle, product_metadata, product_metadata_count, path);
         char name[256];
         get_string(handle, "name", name, sizeof(name), path);
 
@@ -412,37 +405,7 @@ static decode_totals decode_file(const char *path, int emit_json) {
             fprintf(stdout, "%ld", ni);
             fputs(",\"nj\":", stdout);
             fprintf(stdout, "%ld", nj);
-            fputs(",\"product_definition_template_number\":", stdout);
-            print_optional_long(
-                has_product_definition_template_number,
-                product_definition_template_number
-            );
-            fputs(",\"derived_forecast\":", stdout);
-            print_optional_long(has_derived_forecast, derived_forecast);
-            fputs(",\"number_of_forecasts_in_ensemble\":", stdout);
-            print_optional_long(
-                has_number_of_forecasts_in_ensemble,
-                number_of_forecasts_in_ensemble
-            );
-            fputs(",\"forecast_probability_number\":", stdout);
-            print_optional_long(has_forecast_probability_number, forecast_probability_number);
-            fputs(",\"total_number_of_forecast_probabilities\":", stdout);
-            print_optional_long(
-                has_total_number_of_forecast_probabilities,
-                total_number_of_forecast_probabilities
-            );
-            fputs(",\"probability_type\":", stdout);
-            print_optional_long(has_probability_type, probability_type);
-            fputs(",\"scale_factor_of_lower_limit\":", stdout);
-            print_optional_long(has_scale_factor_of_lower_limit, scale_factor_of_lower_limit);
-            fputs(",\"scaled_value_of_lower_limit\":", stdout);
-            print_optional_long(has_scaled_value_of_lower_limit, scaled_value_of_lower_limit);
-            fputs(",\"scale_factor_of_upper_limit\":", stdout);
-            print_optional_long(has_scale_factor_of_upper_limit, scale_factor_of_upper_limit);
-            fputs(",\"scaled_value_of_upper_limit\":", stdout);
-            print_optional_long(has_scaled_value_of_upper_limit, scaled_value_of_upper_limit);
-            fputs(",\"percentile_value\":", stdout);
-            print_optional_long(has_percentile_value, percentile_value);
+            print_optional_long_fields(product_metadata, product_metadata_count);
             fputs(",\"values\":[", stdout);
             for (size_t i = 0; i < value_len; ++i) {
                 if (i > 0) {

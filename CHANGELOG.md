@@ -30,6 +30,8 @@
   metadata with ecCodes in the parity suite
 - decode interval probability, percentile, and derived-ensemble templates 4.9,
   4.10, and 4.12 through one shared statistical-interval model
+- write interval product templates 4.9, 4.10, and 4.12 and verify their
+  timestamps, time ranges, thresholds, and ensemble metadata against ecCodes
 - raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
 
 ## 0.6.0 - 2026-06-25

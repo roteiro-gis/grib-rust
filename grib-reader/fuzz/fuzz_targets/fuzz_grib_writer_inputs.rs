@@ -2,9 +2,11 @@
 
 use grib_core::metadata::ReferenceTime;
 use grib_core::{
-    AnalysisOrForecastTemplate, DerivedForecastTemplate, FixedSurface, GridDefinition,
-    Identification, LatLonGrid, PercentileForecastTemplate, ProbabilityForecastTemplate,
-    ProbabilityLimit, ProbabilityType, ProductDefinition, ProductDefinitionTemplate,
+    AnalysisOrForecastTemplate, DerivedForecastTemplate, DerivedStatisticalProcessTemplate,
+    FixedSurface, GridDefinition, Identification, LatLonGrid, PercentileForecastTemplate,
+    PercentileStatisticalProcessTemplate, ProbabilityForecastTemplate, ProbabilityLimit,
+    ProbabilityStatisticalProcessTemplate, ProbabilityType, ProductDefinition,
+    ProductDefinitionTemplate, StatisticalInterval, StatisticalTimeRange,
 };
 use grib_reader::GribFile;
 use grib_writer::{
@@ -225,7 +227,7 @@ fn product(input: &mut Input<'_>) -> ProductDefinition {
         first_surface: Some(FixedSurface::with_value(103, 0, 850)),
         second_surface: None,
     };
-    let template = match input.u8() % 4 {
+    let template = match input.u8() % 7 {
         0 => ProductDefinitionTemplate::AnalysisOrForecast(base),
         1 => ProductDefinitionTemplate::DerivedForecast(DerivedForecastTemplate {
             base,
@@ -238,15 +240,71 @@ fn product(input: &mut Input<'_>) -> ProductDefinition {
             total_number_of_forecast_probabilities: input.u8(),
             probability: probability_type(input),
         }),
-        _ => ProductDefinitionTemplate::PercentileForecast(PercentileForecastTemplate {
+        3 => ProductDefinitionTemplate::PercentileForecast(PercentileForecastTemplate {
             base,
             percentile_value: input.u8() % 101,
         }),
+        4 => ProductDefinitionTemplate::ProbabilityStatisticalProcess(
+            ProbabilityStatisticalProcessTemplate {
+                probability: ProbabilityForecastTemplate {
+                    base,
+                    forecast_probability_number: input.u8(),
+                    total_number_of_forecast_probabilities: input.u8(),
+                    probability: probability_type(input),
+                },
+                interval: statistical_interval(input),
+            },
+        ),
+        5 => ProductDefinitionTemplate::PercentileStatisticalProcess(
+            PercentileStatisticalProcessTemplate {
+                percentile: PercentileForecastTemplate {
+                    base,
+                    percentile_value: input.u8() % 101,
+                },
+                interval: statistical_interval(input),
+            },
+        ),
+        _ => ProductDefinitionTemplate::DerivedStatisticalProcess(
+            DerivedStatisticalProcessTemplate {
+                derived: DerivedForecastTemplate {
+                    base,
+                    derived_forecast_type: input.u8(),
+                    number_of_forecasts_in_ensemble: input.u8(),
+                },
+                interval: statistical_interval(input),
+            },
+        ),
     };
     ProductDefinition {
         parameter_category,
         parameter_number,
         template,
+    }
+}
+
+fn statistical_interval(input: &mut Input<'_>) -> StatisticalInterval {
+    let range_count = usize::from(input.u8() % 4);
+    let time_ranges = (0..range_count)
+        .map(|_| StatisticalTimeRange {
+            type_of_statistical_processing: input.u8(),
+            type_of_time_increment: input.u8(),
+            time_range_unit: input.u8(),
+            time_range_length: u32::from(input.u8()),
+            time_increment_unit: input.u8(),
+            time_increment: u32::from(input.u8()),
+        })
+        .collect();
+    StatisticalInterval {
+        end_of_overall_time_interval: ReferenceTime {
+            year: 2026,
+            month: 3,
+            day: 20,
+            hour: 18,
+            minute: 0,
+            second: 0,
+        },
+        number_of_missing_in_statistical_process: u32::from(input.u8()),
+        time_ranges,
     }
 }
 

@@ -179,7 +179,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Reader GRIB2 product definition templates 4.0, 4.1, 4.2, 4.5, 4.6, 4.8,
   4.9, 4.10, 4.11, and 4.12
 - Writer GRIB2 product definition templates 4.0, 4.1, 4.2, 4.5, 4.6, 4.8,
-  and 4.11
+  4.9, 4.10, 4.11, and 4.12
 - Forecast valid-time helpers for supported fixed-width GRIB1/GRIB2 time units
 - `GribFile::builder()` for strict or tolerant scanning and allocation limits
 - Bitmap application with missing values surfaced as `NaN`
@@ -204,7 +204,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Remaining reader GRIB2 product definition templates beyond 4.0, 4.1, 4.2,
   4.5, 4.6, 4.8, 4.9, 4.10, 4.11, and 4.12
 - Remaining writer GRIB2 product definition templates beyond 4.0, 4.1, 4.2,
-  4.5, 4.6, 4.8, and 4.11
+  4.5, 4.6, 4.8, 4.9, 4.10, 4.11, and 4.12
 - Writer GRIB2 row-by-row complex packing
 
 Unsupported decode and encode operations fail explicitly with typed errors;

@@ -5,9 +5,11 @@ use std::process::Command;
 
 use grib_core::metadata::ReferenceTime;
 use grib_core::{
-    AnalysisOrForecastTemplate, DerivedForecastTemplate, FixedSurface, GridDefinition,
-    Identification, LatLonGrid, PercentileForecastTemplate, ProbabilityForecastTemplate,
-    ProbabilityLimit, ProbabilityType, ProductDefinition, ProductDefinitionTemplate,
+    AnalysisOrForecastTemplate, DerivedForecastTemplate, DerivedStatisticalProcessTemplate,
+    FixedSurface, GridDefinition, Identification, LatLonGrid, PercentileForecastTemplate,
+    PercentileStatisticalProcessTemplate, ProbabilityForecastTemplate, ProbabilityLimit,
+    ProbabilityStatisticalProcessTemplate, ProbabilityType, ProductDefinition,
+    ProductDefinitionTemplate, StatisticalInterval, StatisticalTimeRange,
 };
 use grib_reader::GribFile;
 use grib_writer::{
@@ -39,6 +41,20 @@ pub struct ReferenceMessage {
     pub scale_factor_of_upper_limit: Option<i64>,
     pub scaled_value_of_upper_limit: Option<i64>,
     pub percentile_value: Option<i64>,
+    pub interval_end_year: Option<i64>,
+    pub interval_end_month: Option<i64>,
+    pub interval_end_day: Option<i64>,
+    pub interval_end_hour: Option<i64>,
+    pub interval_end_minute: Option<i64>,
+    pub interval_end_second: Option<i64>,
+    pub number_of_time_ranges: Option<i64>,
+    pub number_missing_in_statistical_process: Option<i64>,
+    pub type_of_statistical_processing: Option<i64>,
+    pub type_of_time_increment: Option<i64>,
+    pub time_range_unit: Option<i64>,
+    pub time_range_length: Option<i64>,
+    pub time_increment_unit: Option<i64>,
+    pub time_increment: Option<i64>,
     pub values: Vec<Option<f64>>,
 }
 
@@ -230,46 +246,127 @@ fn assert_product_metadata(
 
     match &product.template {
         ProductDefinitionTemplate::DerivedForecast(template) => {
-            assert_eq!(
-                expected.derived_forecast,
-                Some(i64::from(template.derived_forecast_type))
-            );
-            assert_eq!(
-                expected.number_of_forecasts_in_ensemble,
-                Some(i64::from(template.number_of_forecasts_in_ensemble))
-            );
+            assert_derived_product_metadata(template, expected)
         }
         ProductDefinitionTemplate::ProbabilityForecast(template) => {
-            assert_eq!(
-                expected.forecast_probability_number,
-                Some(i64::from(template.forecast_probability_number))
-            );
-            assert_eq!(
-                expected.total_number_of_forecast_probabilities,
-                Some(i64::from(template.total_number_of_forecast_probabilities))
-            );
-            assert_eq!(
-                expected.probability_type,
-                Some(i64::from(template.probability.code()))
-            );
-            assert_probability_limit_metadata(
-                template.probability.lower_limit(),
-                expected.scale_factor_of_lower_limit,
-                expected.scaled_value_of_lower_limit,
-            );
-            assert_probability_limit_metadata(
-                template.probability.upper_limit(),
-                expected.scale_factor_of_upper_limit,
-                expected.scaled_value_of_upper_limit,
-            );
+            assert_probability_product_metadata(template, expected)
         }
         ProductDefinitionTemplate::PercentileForecast(template) => {
-            assert_eq!(
-                expected.percentile_value,
-                Some(i64::from(template.percentile_value))
-            );
+            assert_percentile_product_metadata(template, expected)
+        }
+        ProductDefinitionTemplate::StatisticalProcess(template) => {
+            assert_statistical_interval_metadata(&template.interval, expected)
+        }
+        ProductDefinitionTemplate::ProbabilityStatisticalProcess(template) => {
+            assert_probability_product_metadata(&template.probability, expected);
+            assert_statistical_interval_metadata(&template.interval, expected);
+        }
+        ProductDefinitionTemplate::PercentileStatisticalProcess(template) => {
+            assert_percentile_product_metadata(&template.percentile, expected);
+            assert_statistical_interval_metadata(&template.interval, expected);
+        }
+        ProductDefinitionTemplate::EnsembleStatisticalProcess(template) => {
+            assert_statistical_interval_metadata(&template.interval, expected)
+        }
+        ProductDefinitionTemplate::DerivedStatisticalProcess(template) => {
+            assert_derived_product_metadata(&template.derived, expected);
+            assert_statistical_interval_metadata(&template.interval, expected);
         }
         _ => {}
+    }
+}
+
+fn assert_derived_product_metadata(actual: &DerivedForecastTemplate, expected: &ReferenceMessage) {
+    assert_eq!(
+        expected.derived_forecast,
+        Some(i64::from(actual.derived_forecast_type))
+    );
+    assert_eq!(
+        expected.number_of_forecasts_in_ensemble,
+        Some(i64::from(actual.number_of_forecasts_in_ensemble))
+    );
+}
+
+fn assert_probability_product_metadata(
+    actual: &ProbabilityForecastTemplate,
+    expected: &ReferenceMessage,
+) {
+    assert_eq!(
+        expected.forecast_probability_number,
+        Some(i64::from(actual.forecast_probability_number))
+    );
+    assert_eq!(
+        expected.total_number_of_forecast_probabilities,
+        Some(i64::from(actual.total_number_of_forecast_probabilities))
+    );
+    assert_eq!(
+        expected.probability_type,
+        Some(i64::from(actual.probability.code()))
+    );
+    assert_probability_limit_metadata(
+        actual.probability.lower_limit(),
+        expected.scale_factor_of_lower_limit,
+        expected.scaled_value_of_lower_limit,
+    );
+    assert_probability_limit_metadata(
+        actual.probability.upper_limit(),
+        expected.scale_factor_of_upper_limit,
+        expected.scaled_value_of_upper_limit,
+    );
+}
+
+fn assert_percentile_product_metadata(
+    actual: &PercentileForecastTemplate,
+    expected: &ReferenceMessage,
+) {
+    assert_eq!(
+        expected.percentile_value,
+        Some(i64::from(actual.percentile_value))
+    );
+}
+
+fn assert_statistical_interval_metadata(actual: &StatisticalInterval, expected: &ReferenceMessage) {
+    let end = actual.end_of_overall_time_interval;
+    assert_eq!(expected.interval_end_year, Some(i64::from(end.year)));
+    assert_eq!(expected.interval_end_month, Some(i64::from(end.month)));
+    assert_eq!(expected.interval_end_day, Some(i64::from(end.day)));
+    assert_eq!(expected.interval_end_hour, Some(i64::from(end.hour)));
+    assert_eq!(expected.interval_end_minute, Some(i64::from(end.minute)));
+    assert_eq!(expected.interval_end_second, Some(i64::from(end.second)));
+    assert_eq!(
+        expected.number_of_time_ranges,
+        Some(i64::try_from(actual.time_ranges.len()).unwrap())
+    );
+    assert_eq!(
+        expected.number_missing_in_statistical_process,
+        Some(i64::from(actual.number_of_missing_in_statistical_process))
+    );
+
+    if let [range] = actual.time_ranges.as_slice() {
+        assert_eq!(
+            expected.type_of_statistical_processing,
+            Some(i64::from(range.type_of_statistical_processing))
+        );
+        assert_eq!(
+            expected.type_of_time_increment,
+            Some(i64::from(range.type_of_time_increment))
+        );
+        assert_eq!(
+            expected.time_range_unit,
+            Some(i64::from(range.time_range_unit))
+        );
+        assert_eq!(
+            expected.time_range_length,
+            Some(i64::from(range.time_range_length))
+        );
+        assert_eq!(
+            expected.time_increment_unit,
+            Some(i64::from(range.time_increment_unit))
+        );
+        assert_eq!(
+            expected.time_increment,
+            Some(i64::from(range.time_increment))
+        );
     }
 }
 
@@ -382,21 +479,54 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
             number_of_forecasts_in_ensemble: 50,
         },
     ));
+    let probability_type = ProbabilityType::BelowLowerLimit(ProbabilityLimit {
+        scale_factor: 1,
+        scaled_value: 2732,
+    });
     let probability = product_field(ProductDefinitionTemplate::ProbabilityForecast(
         ProbabilityForecastTemplate {
             base: analysis_or_forecast_template(),
             forecast_probability_number: 1,
             total_number_of_forecast_probabilities: 10,
-            probability: ProbabilityType::BelowLowerLimit(ProbabilityLimit {
-                scale_factor: 1,
-                scaled_value: 2732,
-            }),
+            probability: probability_type,
         },
     ));
     let percentile = product_field(ProductDefinitionTemplate::PercentileForecast(
         PercentileForecastTemplate {
             base: analysis_or_forecast_template(),
             percentile_value: 90,
+        },
+    ));
+    let probability_interval =
+        product_field(ProductDefinitionTemplate::ProbabilityStatisticalProcess(
+            ProbabilityStatisticalProcessTemplate {
+                probability: ProbabilityForecastTemplate {
+                    base: analysis_or_forecast_template(),
+                    forecast_probability_number: 1,
+                    total_number_of_forecast_probabilities: 10,
+                    probability: probability_type,
+                },
+                interval: statistical_interval(),
+            },
+        ));
+    let percentile_interval =
+        product_field(ProductDefinitionTemplate::PercentileStatisticalProcess(
+            PercentileStatisticalProcessTemplate {
+                percentile: PercentileForecastTemplate {
+                    base: analysis_or_forecast_template(),
+                    percentile_value: 90,
+                },
+                interval: statistical_interval(),
+            },
+        ));
+    let derived_interval = product_field(ProductDefinitionTemplate::DerivedStatisticalProcess(
+        DerivedStatisticalProcessTemplate {
+            derived: DerivedForecastTemplate {
+                base: analysis_or_forecast_template(),
+                derived_forecast_type: 4,
+                number_of_forecasts_in_ensemble: 50,
+            },
+            interval: statistical_interval(),
         },
     ));
 
@@ -420,6 +550,18 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
             write_grib2_message([probability]),
         ),
         ("writer-percentile.grib2", write_grib2_message([percentile])),
+        (
+            "writer-probability-interval.grib2",
+            write_grib2_message([probability_interval]),
+        ),
+        (
+            "writer-percentile-interval.grib2",
+            write_grib2_message([percentile_interval]),
+        ),
+        (
+            "writer-derived-interval.grib2",
+            write_grib2_message([derived_interval]),
+        ),
         ("writer-complex.grib2", write_grib2_message([complex])),
         (
             "writer-complex-spatial-first.grib2",
@@ -572,6 +714,28 @@ pub fn analysis_or_forecast_template() -> AnalysisOrForecastTemplate {
         forecast_time: 6,
         first_surface: Some(FixedSurface::with_value(103, 0, 850)),
         second_surface: None,
+    }
+}
+
+pub fn statistical_interval() -> StatisticalInterval {
+    StatisticalInterval {
+        end_of_overall_time_interval: ReferenceTime {
+            year: 2026,
+            month: 3,
+            day: 20,
+            hour: 18,
+            minute: 0,
+            second: 0,
+        },
+        number_of_missing_in_statistical_process: 0,
+        time_ranges: vec![StatisticalTimeRange {
+            type_of_statistical_processing: 1,
+            type_of_time_increment: 2,
+            time_range_unit: 1,
+            time_range_length: 6,
+            time_increment_unit: 255,
+            time_increment: 0,
+        }],
     }
 }
 

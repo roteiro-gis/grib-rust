@@ -1998,8 +1998,7 @@ fn write_product_section(out: &mut Vec<u8>, product: &ProductDefinition) -> Resu
         }
         ProductDefinitionTemplate::DerivedForecast(template) => {
             write_product_template_prefix(out, product, 2, 36, &template.base)?;
-            write_u8_be(out, template.derived_forecast_type)?;
-            write_u8_be(out, template.number_of_forecasts_in_ensemble)
+            write_derived_product_extra(out, template)
         }
         ProductDefinitionTemplate::ProbabilityForecast(template) => {
             validate_probability_type(template.probability)?;
@@ -2017,6 +2016,34 @@ fn write_product_section(out: &mut Vec<u8>, product: &ProductDefinition) -> Resu
             write_product_template_prefix(out, product, 8, section_length, &template.base)?;
             write_statistical_interval(out, &template.interval, range_count)
         }
+        ProductDefinitionTemplate::ProbabilityStatisticalProcess(template) => {
+            validate_probability_type(template.probability.probability)?;
+            let range_count = checked_time_range_count(template.interval.time_ranges.len())?;
+            let section_length = statistical_product_section_len(59, range_count)?;
+            write_product_template_prefix(
+                out,
+                product,
+                9,
+                section_length,
+                &template.probability.base,
+            )?;
+            write_probability_product_extra(out, &template.probability)?;
+            write_statistical_interval(out, &template.interval, range_count)
+        }
+        ProductDefinitionTemplate::PercentileStatisticalProcess(template) => {
+            validate_percentile(template.percentile.percentile_value)?;
+            let range_count = checked_time_range_count(template.interval.time_ranges.len())?;
+            let section_length = statistical_product_section_len(47, range_count)?;
+            write_product_template_prefix(
+                out,
+                product,
+                10,
+                section_length,
+                &template.percentile.base,
+            )?;
+            write_u8_be(out, template.percentile.percentile_value)?;
+            write_statistical_interval(out, &template.interval, range_count)
+        }
         ProductDefinitionTemplate::EnsembleStatisticalProcess(template) => {
             let range_count = checked_time_range_count(template.interval.time_ranges.len())?;
             let section_length = statistical_product_section_len(49, range_count)?;
@@ -2028,6 +2055,19 @@ fn write_product_section(out: &mut Vec<u8>, product: &ProductDefinition) -> Resu
                 &template.ensemble.base,
             )?;
             write_ensemble_product_extra(out, &template.ensemble)?;
+            write_statistical_interval(out, &template.interval, range_count)
+        }
+        ProductDefinitionTemplate::DerivedStatisticalProcess(template) => {
+            let range_count = checked_time_range_count(template.interval.time_ranges.len())?;
+            let section_length = statistical_product_section_len(48, range_count)?;
+            write_product_template_prefix(
+                out,
+                product,
+                12,
+                section_length,
+                &template.derived.base,
+            )?;
+            write_derived_product_extra(out, &template.derived)?;
             write_statistical_interval(out, &template.interval, range_count)
         }
         ProductDefinitionTemplate::Unsupported { number, .. } => {
@@ -2093,6 +2133,14 @@ fn write_ensemble_product_extra(
 ) -> Result<()> {
     write_u8_be(out, template.type_of_ensemble_forecast)?;
     write_u8_be(out, template.perturbation_number)?;
+    write_u8_be(out, template.number_of_forecasts_in_ensemble)
+}
+
+fn write_derived_product_extra(
+    out: &mut Vec<u8>,
+    template: &grib_core::DerivedForecastTemplate,
+) -> Result<()> {
+    write_u8_be(out, template.derived_forecast_type)?;
     write_u8_be(out, template.number_of_forecasts_in_ensemble)
 }
 
@@ -2533,8 +2581,22 @@ fn validate_supported_product(product: &ProductDefinition) -> Result<()> {
             validate_product_template_prefix(&template.base)?;
             validate_statistical_interval(&template.interval)
         }
+        ProductDefinitionTemplate::ProbabilityStatisticalProcess(template) => {
+            validate_product_template_prefix(&template.probability.base)?;
+            validate_probability_type(template.probability.probability)?;
+            validate_statistical_interval(&template.interval)
+        }
+        ProductDefinitionTemplate::PercentileStatisticalProcess(template) => {
+            validate_product_template_prefix(&template.percentile.base)?;
+            validate_percentile(template.percentile.percentile_value)?;
+            validate_statistical_interval(&template.interval)
+        }
         ProductDefinitionTemplate::EnsembleStatisticalProcess(template) => {
             validate_product_template_prefix(&template.ensemble.base)?;
+            validate_statistical_interval(&template.interval)
+        }
+        ProductDefinitionTemplate::DerivedStatisticalProcess(template) => {
+            validate_product_template_prefix(&template.derived.base)?;
             validate_statistical_interval(&template.interval)
         }
         ProductDefinitionTemplate::Unsupported { number, .. } => {
@@ -2561,12 +2623,13 @@ mod tests {
     use grib_core::metadata::ReferenceTime;
     use grib_core::{
         AlbersEqualAreaGrid, AnalysisOrForecastTemplate, DataRepresentation,
-        DerivedForecastTemplate, EnsembleStatisticalProcessTemplate, FixedSurface, GridDefinition,
-        Identification, IndividualEnsembleForecastTemplate, LambertConformalGrid, LatLonGrid,
-        MercatorGrid, PercentileForecastTemplate, PolarStereographicGrid,
-        ProbabilityForecastTemplate, ProbabilityLimit, ProbabilityType, ProductDefinition,
-        ProductDefinitionTemplate, ProjectedGridCore, StatisticalInterval,
-        StatisticalProcessTemplate, StatisticalTimeRange,
+        DerivedForecastTemplate, DerivedStatisticalProcessTemplate,
+        EnsembleStatisticalProcessTemplate, FixedSurface, GridDefinition, Identification,
+        IndividualEnsembleForecastTemplate, LambertConformalGrid, LatLonGrid, MercatorGrid,
+        PercentileForecastTemplate, PercentileStatisticalProcessTemplate, PolarStereographicGrid,
+        ProbabilityForecastTemplate, ProbabilityLimit, ProbabilityStatisticalProcessTemplate,
+        ProbabilityType, ProductDefinition, ProductDefinitionTemplate, ProjectedGridCore,
+        StatisticalInterval, StatisticalProcessTemplate, StatisticalTimeRange,
     };
     use grib_reader::sections::scan_sections;
     use grib_reader::{GribFile, PredefinedBitmap};
@@ -3408,6 +3471,113 @@ mod tests {
             other => panic!("expected template 4.11, got {other:?}"),
         }
         assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+
+    #[test]
+    fn writes_probability_statistical_product_template_readable_by_reader() {
+        let probability = ProbabilityType::AboveLowerLimit(ProbabilityLimit {
+            scale_factor: 1,
+            scaled_value: 125,
+        });
+        let field =
+            field_with_product_template(ProductDefinitionTemplate::ProbabilityStatisticalProcess(
+                ProbabilityStatisticalProcessTemplate {
+                    probability: ProbabilityForecastTemplate {
+                        base: analysis_or_forecast_template(),
+                        forecast_probability_number: 1,
+                        total_number_of_forecast_probabilities: 10,
+                        probability,
+                    },
+                    interval: statistical_interval(),
+                },
+            ));
+
+        let bytes = write_message([field]);
+        let product_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 4)
+            .unwrap();
+        assert_eq!(product_section.length, 71);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        let product = message.product_definition().unwrap();
+        let ProductDefinitionTemplate::ProbabilityStatisticalProcess(template) = &product.template
+        else {
+            panic!("expected template 4.9");
+        };
+        assert_eq!(template.probability.probability, probability);
+        assert_eq!(template.interval, statistical_interval());
+        assert_eq!(message.valid_time(), Some(interval_end_time()));
+    }
+
+    #[test]
+    fn writes_percentile_statistical_product_template_readable_by_reader() {
+        let field =
+            field_with_product_template(ProductDefinitionTemplate::PercentileStatisticalProcess(
+                PercentileStatisticalProcessTemplate {
+                    percentile: PercentileForecastTemplate {
+                        base: analysis_or_forecast_template(),
+                        percentile_value: 75,
+                    },
+                    interval: statistical_interval(),
+                },
+            ));
+
+        let bytes = write_message([field]);
+        let product_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 4)
+            .unwrap();
+        assert_eq!(product_section.length, 59);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        let product = message.product_definition().unwrap();
+        let ProductDefinitionTemplate::PercentileStatisticalProcess(template) = &product.template
+        else {
+            panic!("expected template 4.10");
+        };
+        assert_eq!(template.percentile.percentile_value, 75);
+        assert_eq!(template.interval, statistical_interval());
+        assert_eq!(message.valid_time(), Some(interval_end_time()));
+    }
+
+    #[test]
+    fn writes_derived_statistical_product_template_readable_by_reader() {
+        let field =
+            field_with_product_template(ProductDefinitionTemplate::DerivedStatisticalProcess(
+                DerivedStatisticalProcessTemplate {
+                    derived: DerivedForecastTemplate {
+                        base: analysis_or_forecast_template(),
+                        derived_forecast_type: 1,
+                        number_of_forecasts_in_ensemble: 20,
+                    },
+                    interval: statistical_interval(),
+                },
+            ));
+
+        let bytes = write_message([field]);
+        let product_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 4)
+            .unwrap();
+        assert_eq!(product_section.length, 60);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        let product = message.product_definition().unwrap();
+        let ProductDefinitionTemplate::DerivedStatisticalProcess(template) = &product.template
+        else {
+            panic!("expected template 4.12");
+        };
+        assert_eq!(template.derived.derived_forecast_type, 1);
+        assert_eq!(template.derived.number_of_forecasts_in_ensemble, 20);
+        assert_eq!(template.interval, statistical_interval());
+        assert_eq!(message.valid_time(), Some(interval_end_time()));
     }
 
     #[test]
