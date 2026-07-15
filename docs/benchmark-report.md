@@ -51,6 +51,25 @@ Notes:
 
 ## Historical Results
 
+### Packed-bit writer hot loop (2026-07-12)
+
+The following measurements use the same optimized Criterion command before and
+after replacing bit-at-a-time writes with byte-chunked writes:
+
+```sh
+cargo bench -p grib-writer --bench encode -- simple_grib2 \
+  --sample-size 50 --warm-up-time 1 --measurement-time 2 --noplot
+```
+
+| implementation | mean | Criterion interval |
+| --- | ---: | ---: |
+| byte-by-byte reader and bit-at-a-time writer | 197.99 µs | 187.24–220.20 µs |
+| 64-bit buffered reader and byte-chunked writer | 159.84 µs | 151.61–172.37 µs |
+
+Criterion reported a 19.1% mean improvement (`p < 0.05`). This isolates the
+simple GRIB2 encode path on this host; it is not a claim about every packing
+template or machine.
+
 ### Parity
 
 - `generated_fixtures_match_eccodes_when_configured`: passed

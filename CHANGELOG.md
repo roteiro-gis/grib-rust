@@ -14,6 +14,8 @@
   mark the public error enum non-exhaustive, and remove duplicate signed-integer
   aliases
 - remove the unused reader `flate2` dependency
+- replace byte-at-a-time bit reads and bit-at-a-time writes with buffered
+  64-bit reads and byte-chunked writes
 - raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
 
 ## 0.6.0 - 2026-06-25

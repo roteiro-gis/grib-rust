@@ -69,6 +69,12 @@ pub enum Error {
     #[error("bitmap indicates missing values but no bitmap section present")]
     MissingBitmap,
 
+    #[error("bit offset overflow")]
+    BitOffsetOverflow,
+
+    #[error("value out of range: {0}")]
+    ValueOutOfRange(String),
+
     #[error("failed to allocate {requested} {what}: {reason}")]
     AllocationFailed {
         what: String,
