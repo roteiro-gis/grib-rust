@@ -3,8 +3,8 @@
 use crate::error::{Error, Result};
 use grib_core::bit::BitReader;
 pub use grib_core::data::{
-    ComplexPackingParams, DataRepresentation, ImagePackingParams, Jpeg2000PackingParams,
-    PngPackingParams, SimplePackingParams, SpatialDifferencingParams,
+    ComplexPackingParams, DataRepresentation, Jpeg2000PackingParams, PngPackingParams,
+    ScaledPackingParams, SpatialDifferencingParams,
 };
 use grib_core::filled_vec;
 
@@ -210,7 +210,7 @@ pub(crate) fn count_bitmap_present_points(
 /// Unpack simple-packed values.
 pub fn unpack_simple(
     data_bytes: &[u8],
-    params: &SimplePackingParams,
+    params: &ScaledPackingParams,
     num_values: usize,
 ) -> Result<Vec<f64>> {
     let mut values = filled_vec(num_values, 0.0, "simple-packed field")?;
@@ -222,7 +222,7 @@ pub fn unpack_simple(
 
 fn unpack_simple_into<T: DecodeSample>(
     data_bytes: &[u8],
-    params: &SimplePackingParams,
+    params: &ScaledPackingParams,
     num_values: usize,
     output: &mut OutputCursor<'_, T>,
 ) -> Result<()> {
@@ -696,7 +696,7 @@ fn unpack_png_subbyte_grayscale<T: DecodeSample>(
     width: u32,
     height: u32,
     bits_per_sample: u8,
-    params: &ImagePackingParams,
+    params: &ScaledPackingParams,
     output: &mut OutputCursor<'_, T>,
 ) -> Result<()> {
     let width = usize::try_from(width).map_err(|_| Error::Other("PNG width overflow".into()))?;
@@ -736,7 +736,7 @@ fn unpack_png_bytes<T: DecodeSample>(
     data: &[u8],
     bytes_per_sample: usize,
     num_values: usize,
-    params: &ImagePackingParams,
+    params: &ScaledPackingParams,
     output: &mut OutputCursor<'_, T>,
 ) -> Result<()> {
     let expected_bytes = num_values
@@ -763,7 +763,7 @@ fn unpack_png_bytes<T: DecodeSample>(
 fn unpack_png_u16<T: DecodeSample>(
     data: &[u8],
     num_values: usize,
-    params: &ImagePackingParams,
+    params: &ScaledPackingParams,
     output: &mut OutputCursor<'_, T>,
 ) -> Result<()> {
     let expected_bytes = num_values
@@ -787,7 +787,7 @@ fn unpack_png_u16<T: DecodeSample>(
 #[cfg(any(feature = "jpeg2000", feature = "png"))]
 fn push_image_value<T: DecodeSample>(
     output: &mut OutputCursor<'_, T>,
-    params: &ImagePackingParams,
+    params: &ScaledPackingParams,
     raw: u64,
 ) -> Result<()> {
     validate_raw_value_fits(raw, params.bits_per_value)?;
@@ -810,7 +810,7 @@ fn validate_raw_value_fits(raw: u64, bits_per_value: u8) -> Result<()> {
 }
 
 #[cfg(any(feature = "jpeg2000", feature = "png"))]
-fn scale_image_value<T: DecodeSample>(params: &ImagePackingParams, raw: u64) -> T {
+fn scale_image_value<T: DecodeSample>(params: &ScaledPackingParams, raw: u64) -> T {
     let binary_factor = 2.0_f64.powi(params.binary_scale as i32);
     let decimal_factor = 10.0_f64.powi(-(params.decimal_scale as i32));
     T::from_f64(scale_decoded_value(
@@ -1427,15 +1427,15 @@ enum MissingKind {
 mod tests {
     use super::{
         bitmap_payload, count_bitmap_present_points, decode_field, decode_payload, unpack_complex,
-        unpack_simple, ComplexPackingParams, DataRepresentation, ImagePackingParams,
-        PngPackingParams, SimplePackingParams, SpatialDifferencingParams,
+        unpack_simple, ComplexPackingParams, DataRepresentation, PngPackingParams,
+        ScaledPackingParams, SpatialDifferencingParams,
     };
     use crate::error::Error;
     use grib_core::bit::BitWriter;
 
     #[test]
     fn unpack_simple_constant() {
-        let params = SimplePackingParams {
+        let params = ScaledPackingParams {
             encoded_values: 5,
             reference_value: 42.0,
             binary_scale: 0,
@@ -1449,7 +1449,7 @@ mod tests {
 
     #[test]
     fn unpack_simple_basic() {
-        let params = SimplePackingParams {
+        let params = ScaledPackingParams {
             encoded_values: 5,
             reference_value: 0.0,
             binary_scale: 0,
@@ -1476,7 +1476,7 @@ mod tests {
             for &value in packed_values {
                 packed.write(value, bits).unwrap();
             }
-            let params = SimplePackingParams {
+            let params = ScaledPackingParams {
                 encoded_values: packed_values.len(),
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1493,7 +1493,7 @@ mod tests {
 
     #[test]
     fn unpack_simple_applies_decimal_scale_to_reference_and_values() {
-        let params = SimplePackingParams {
+        let params = ScaledPackingParams {
             encoded_values: 2,
             reference_value: 10.0,
             binary_scale: 0,
@@ -1511,7 +1511,7 @@ mod tests {
     fn decodes_bitmap_masked_field() {
         let data_section = [0, 0, 0, 8, 7, 10, 20, 30];
         let bitmap_section = [0, 0, 0, 7, 6, 0, 0b1011_0000];
-        let representation = DataRepresentation::SimplePacking(SimplePackingParams {
+        let representation = DataRepresentation::SimplePacking(ScaledPackingParams {
             encoded_values: 3,
             reference_value: 0.0,
             binary_scale: 0,
@@ -1532,7 +1532,7 @@ mod tests {
     fn decodes_bitmap_across_empty_bytes_and_a_partial_final_byte() {
         let data_section = [0, 0, 0, 7, 7, 11, 22];
         let bitmap_section = [0, 0, 0, 9, 6, 0, 0b0000_0000, 0b0010_0000, 0b1000_0000];
-        let representation = DataRepresentation::SimplePacking(SimplePackingParams {
+        let representation = DataRepresentation::SimplePacking(ScaledPackingParams {
             encoded_values: 2,
             reference_value: 0.0,
             binary_scale: 0,
@@ -1561,7 +1561,7 @@ mod tests {
             &[1, 2, 3, 4],
         );
         let representation = DataRepresentation::PngPacking(PngPackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 4,
                 reference_value: 10.0,
                 binary_scale: 1,
@@ -1586,7 +1586,7 @@ mod tests {
             &[0x01, 0x00, 0x02, 0x00],
         );
         let representation = DataRepresentation::PngPacking(PngPackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 2,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1611,7 +1611,7 @@ mod tests {
             &[0x12, 0x34],
         );
         let representation = DataRepresentation::PngPacking(PngPackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 4,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1636,7 +1636,7 @@ mod tests {
             &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
         );
         let representation = DataRepresentation::PngPacking(PngPackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 2,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1661,7 +1661,7 @@ mod tests {
             &[0x01, 0x02, 0x03, 0x04],
         );
         let representation = DataRepresentation::PngPacking(PngPackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 1,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1687,7 +1687,7 @@ mod tests {
         );
         let bitmap_section = [0, 0, 0, 7, 6, 0, 0b1011_0000];
         let representation = DataRepresentation::PngPacking(PngPackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 3,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1720,7 +1720,7 @@ mod tests {
         payload[29..33].copy_from_slice(&crc.to_be_bytes());
 
         let representation = DataRepresentation::PngPacking(PngPackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 1,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1754,7 +1754,7 @@ mod tests {
         payload[44] = 1;
 
         let representation = DataRepresentation::Jpeg2000Packing(super::Jpeg2000PackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 1,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1780,7 +1780,7 @@ mod tests {
     #[test]
     fn png_packing_requires_png_feature() {
         let representation = DataRepresentation::PngPacking(PngPackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 1,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1798,7 +1798,7 @@ mod tests {
     #[test]
     fn jpeg2000_packing_requires_jpeg2000_feature() {
         let representation = DataRepresentation::Jpeg2000Packing(super::Jpeg2000PackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 1,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1816,7 +1816,7 @@ mod tests {
 
     #[test]
     fn rejects_simple_packing_wider_than_u64() {
-        let params = SimplePackingParams {
+        let params = ScaledPackingParams {
             encoded_values: 1,
             reference_value: 0.0,
             binary_scale: 0,
@@ -1831,7 +1831,7 @@ mod tests {
     #[test]
     fn rejects_encoded_value_count_mismatch_without_bitmap() {
         let data_section = [0, 0, 0, 8, 7, 10, 20, 30];
-        let representation = DataRepresentation::SimplePacking(SimplePackingParams {
+        let representation = DataRepresentation::SimplePacking(ScaledPackingParams {
             encoded_values: 3,
             reference_value: 0.0,
             binary_scale: 0,
@@ -1854,7 +1854,7 @@ mod tests {
     fn rejects_bitmap_present_count_mismatch() {
         let data_section = [0, 0, 0, 7, 7, 10, 20];
         let bitmap_section = [0, 0, 0, 7, 6, 0, 0b1011_0000];
-        let representation = DataRepresentation::SimplePacking(SimplePackingParams {
+        let representation = DataRepresentation::SimplePacking(ScaledPackingParams {
             encoded_values: 2,
             reference_value: 0.0,
             binary_scale: 0,

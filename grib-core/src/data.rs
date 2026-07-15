@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 #[derive(Debug, Clone, PartialEq)]
 pub enum DataRepresentation {
     /// Template 5.0: Simple packing.
-    SimplePacking(SimplePackingParams),
+    SimplePacking(ScaledPackingParams),
     /// Template 5.2/5.3: Complex packing with optional spatial differencing.
     ComplexPacking(ComplexPackingParams),
     /// Template 5.40: JPEG 2000 code stream packing.
@@ -18,20 +18,12 @@ pub enum DataRepresentation {
     Unsupported(u16),
 }
 
-/// Parameters for simple packing (Template 5.0).
+/// Scaling parameters shared by GRIB2 grid-point packing templates.
+///
+/// Decoded values use `(reference + packed * 2^binary_scale) *
+/// 10^-decimal_scale`.
 #[derive(Debug, Clone, PartialEq)]
-pub struct SimplePackingParams {
-    pub encoded_values: usize,
-    pub reference_value: f32,
-    pub binary_scale: i16,
-    pub decimal_scale: i16,
-    pub bits_per_value: u8,
-    pub original_field_type: u8,
-}
-
-/// Parameters shared by image-backed grid point packing templates.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ImagePackingParams {
+pub struct ScaledPackingParams {
     pub encoded_values: usize,
     pub reference_value: f32,
     pub binary_scale: i16,
@@ -43,7 +35,7 @@ pub struct ImagePackingParams {
 /// Parameters for JPEG 2000 code stream packing (Template 5.40).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Jpeg2000PackingParams {
-    pub packing: ImagePackingParams,
+    pub packing: ScaledPackingParams,
     pub compression_type: u8,
     pub target_compression_ratio: u8,
 }
@@ -51,7 +43,7 @@ pub struct Jpeg2000PackingParams {
 /// Parameters for PNG image packing (Template 5.41).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PngPackingParams {
-    pub packing: ImagePackingParams,
+    pub packing: ScaledPackingParams,
 }
 
 /// Parameters for complex packing (Templates 5.2 and 5.3).
@@ -122,35 +114,16 @@ impl DataRepresentation {
 }
 
 fn parse_simple_packing(data: &[u8]) -> Result<DataRepresentation> {
-    if data.len() < 21 {
-        return Err(Error::InvalidSection {
-            section: 5,
-            reason: format!("template 5.0 requires 21 bytes, got {}", data.len()),
-        });
-    }
-
-    let encoded_values = u32::from_be_bytes(data[5..9].try_into().unwrap()) as usize;
-    let reference_value = f32::from_be_bytes(data[11..15].try_into().unwrap());
-    let binary_scale = decode_wmo_i16(&data[15..17]).unwrap();
-    let decimal_scale = decode_wmo_i16(&data[17..19]).unwrap();
-    let bits_per_value = data[19];
-    let original_field_type = data[20];
-
-    Ok(DataRepresentation::SimplePacking(SimplePackingParams {
-        encoded_values,
-        reference_value,
-        binary_scale,
-        decimal_scale,
-        bits_per_value,
-        original_field_type,
-    }))
+    Ok(DataRepresentation::SimplePacking(
+        parse_scaled_packing_base(data, 0, 21)?,
+    ))
 }
 
-fn parse_image_packing_base(
+fn parse_scaled_packing_base(
     data: &[u8],
     template: u16,
     required: usize,
-) -> Result<ImagePackingParams> {
+) -> Result<ScaledPackingParams> {
     if data.len() < required {
         return Err(Error::InvalidSection {
             section: 5,
@@ -161,7 +134,7 @@ fn parse_image_packing_base(
         });
     }
 
-    Ok(ImagePackingParams {
+    Ok(ScaledPackingParams {
         encoded_values: u32::from_be_bytes(data[5..9].try_into().unwrap()) as usize,
         reference_value: f32::from_be_bytes(data[11..15].try_into().unwrap()),
         binary_scale: decode_wmo_i16(&data[15..17]).unwrap(),
@@ -173,7 +146,7 @@ fn parse_image_packing_base(
 
 fn parse_jpeg2000_packing(data: &[u8]) -> Result<DataRepresentation> {
     Ok(DataRepresentation::Jpeg2000Packing(Jpeg2000PackingParams {
-        packing: parse_image_packing_base(data, 40, 23)?,
+        packing: parse_scaled_packing_base(data, 40, 23)?,
         compression_type: data[21],
         target_compression_ratio: data[22],
     }))
@@ -181,7 +154,7 @@ fn parse_jpeg2000_packing(data: &[u8]) -> Result<DataRepresentation> {
 
 fn parse_png_packing(data: &[u8]) -> Result<DataRepresentation> {
     Ok(DataRepresentation::PngPacking(PngPackingParams {
-        packing: parse_image_packing_base(data, 41, 21)?,
+        packing: parse_scaled_packing_base(data, 41, 21)?,
     }))
 }
 
@@ -252,10 +225,7 @@ fn parse_complex_packing(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DataRepresentation, ImagePackingParams, Jpeg2000PackingParams, PngPackingParams,
-        SimplePackingParams,
-    };
+    use super::{DataRepresentation, Jpeg2000PackingParams, PngPackingParams, ScaledPackingParams};
     use crate::binary::encode_wmo_i16;
 
     #[test]
@@ -273,7 +243,7 @@ mod tests {
 
         assert_eq!(
             DataRepresentation::parse(&section).unwrap(),
-            DataRepresentation::SimplePacking(SimplePackingParams {
+            DataRepresentation::SimplePacking(ScaledPackingParams {
                 encoded_values: 3,
                 reference_value: 10.0,
                 binary_scale: 2,
@@ -302,7 +272,7 @@ mod tests {
         assert_eq!(
             DataRepresentation::parse(&section).unwrap(),
             DataRepresentation::Jpeg2000Packing(Jpeg2000PackingParams {
-                packing: ImagePackingParams {
+                packing: ScaledPackingParams {
                     encoded_values: 4,
                     reference_value: 3.5,
                     binary_scale: -1,
@@ -332,7 +302,7 @@ mod tests {
         assert_eq!(
             DataRepresentation::parse(&section).unwrap(),
             DataRepresentation::PngPacking(PngPackingParams {
-                packing: ImagePackingParams {
+                packing: ScaledPackingParams {
                     encoded_values: 6,
                     reference_value: 1.25,
                     binary_scale: 1,

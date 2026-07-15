@@ -43,8 +43,8 @@ pub mod product;
 pub mod sections;
 
 pub use data::{
-    ComplexPackingParams, DataRepresentation, DecodeSample, ImagePackingParams,
-    Jpeg2000PackingParams, PngPackingParams, SimplePackingParams, SpatialDifferencingParams,
+    ComplexPackingParams, DataRepresentation, DecodeSample, Jpeg2000PackingParams,
+    PngPackingParams, ScaledPackingParams, SpatialDifferencingParams,
 };
 pub use error::{Error, Result};
 pub use grib1::{BinaryDataSection, GridDescription, ProductDefinition as Grib1ProductDefinition};
