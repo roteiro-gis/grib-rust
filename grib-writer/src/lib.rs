@@ -15,7 +15,7 @@ use grib_core::{
     LambertConformalGrid, LatLonGrid, MercatorGrid, PngPackingParams, PolarStereographicGrid,
     ProbabilityLimit, ProbabilityType, ProductDefinition, ProductDefinitionTemplate,
     ProjectedGridCore, ReferenceTime, SimplePackingParams, SpatialDifferencingParams,
-    StatisticalTimeRange,
+    StatisticalInterval, StatisticalTimeRange,
 };
 
 pub use grib_core::grib1::ProductDefinition as Grib1ProductDefinition;
@@ -2012,16 +2012,13 @@ fn write_product_section(out: &mut Vec<u8>, product: &ProductDefinition) -> Resu
             write_u8_be(out, template.percentile_value)
         }
         ProductDefinitionTemplate::StatisticalProcess(template) => {
-            let range_count = checked_time_range_count(template.time_ranges.len())?;
+            let range_count = checked_time_range_count(template.interval.time_ranges.len())?;
             let section_length = statistical_product_section_len(46, range_count)?;
             write_product_template_prefix(out, product, 8, section_length, &template.base)?;
-            write_reference_time(out, template.end_of_overall_time_interval)?;
-            write_u8_be(out, range_count)?;
-            write_u32_be(out, template.number_of_missing_in_statistical_process)?;
-            write_statistical_time_ranges(out, &template.time_ranges)
+            write_statistical_interval(out, &template.interval, range_count)
         }
         ProductDefinitionTemplate::EnsembleStatisticalProcess(template) => {
-            let range_count = checked_time_range_count(template.time_ranges.len())?;
+            let range_count = checked_time_range_count(template.interval.time_ranges.len())?;
             let section_length = statistical_product_section_len(49, range_count)?;
             write_product_template_prefix(
                 out,
@@ -2031,10 +2028,7 @@ fn write_product_section(out: &mut Vec<u8>, product: &ProductDefinition) -> Resu
                 &template.ensemble.base,
             )?;
             write_ensemble_product_extra(out, &template.ensemble)?;
-            write_reference_time(out, template.end_of_overall_time_interval)?;
-            write_u8_be(out, range_count)?;
-            write_u32_be(out, template.number_of_missing_in_statistical_process)?;
-            write_statistical_time_ranges(out, &template.time_ranges)
+            write_statistical_interval(out, &template.interval, range_count)
         }
         ProductDefinitionTemplate::Unsupported { number, .. } => {
             Err(Error::UnsupportedProductTemplate(*number))
@@ -2168,6 +2162,17 @@ fn validate_percentile(percentile: u8) -> Result<()> {
             "percentile value {percentile} exceeds 100"
         )))
     }
+}
+
+fn write_statistical_interval(
+    out: &mut Vec<u8>,
+    interval: &StatisticalInterval,
+    range_count: u8,
+) -> Result<()> {
+    write_reference_time(out, interval.end_of_overall_time_interval)?;
+    write_u8_be(out, range_count)?;
+    write_u32_be(out, interval.number_of_missing_in_statistical_process)?;
+    write_statistical_time_ranges(out, &interval.time_ranges)
 }
 
 fn write_reference_time(out: &mut Vec<u8>, reference_time: ReferenceTime) -> Result<()> {
@@ -2526,19 +2531,22 @@ fn validate_supported_product(product: &ProductDefinition) -> Result<()> {
         }
         ProductDefinitionTemplate::StatisticalProcess(template) => {
             validate_product_template_prefix(&template.base)?;
-            checked_time_range_count(template.time_ranges.len())?;
-            validate_reference_time(template.end_of_overall_time_interval)
+            validate_statistical_interval(&template.interval)
         }
         ProductDefinitionTemplate::EnsembleStatisticalProcess(template) => {
             validate_product_template_prefix(&template.ensemble.base)?;
-            checked_time_range_count(template.time_ranges.len())?;
-            validate_reference_time(template.end_of_overall_time_interval)
+            validate_statistical_interval(&template.interval)
         }
         ProductDefinitionTemplate::Unsupported { number, .. } => {
             Err(Error::UnsupportedProductTemplate(*number))
         }
         template => Err(Error::UnsupportedProductTemplate(template.number())),
     }
+}
+
+fn validate_statistical_interval(interval: &StatisticalInterval) -> Result<()> {
+    checked_time_range_count(interval.time_ranges.len())?;
+    validate_reference_time(interval.end_of_overall_time_interval)
 }
 
 #[cfg(test)]
@@ -2557,8 +2565,8 @@ mod tests {
         Identification, IndividualEnsembleForecastTemplate, LambertConformalGrid, LatLonGrid,
         MercatorGrid, PercentileForecastTemplate, PolarStereographicGrid,
         ProbabilityForecastTemplate, ProbabilityLimit, ProbabilityType, ProductDefinition,
-        ProductDefinitionTemplate, ProjectedGridCore, StatisticalProcessTemplate,
-        StatisticalTimeRange,
+        ProductDefinitionTemplate, ProjectedGridCore, StatisticalInterval,
+        StatisticalProcessTemplate, StatisticalTimeRange,
     };
     use grib_reader::sections::scan_sections;
     use grib_reader::{GribFile, PredefinedBitmap};
@@ -2801,6 +2809,14 @@ mod tests {
             hour: 18,
             minute: 0,
             second: 0,
+        }
+    }
+
+    fn statistical_interval() -> StatisticalInterval {
+        StatisticalInterval {
+            end_of_overall_time_interval: interval_end_time(),
+            number_of_missing_in_statistical_process: 0,
+            time_ranges: vec![statistical_time_range()],
         }
     }
 
@@ -3311,9 +3327,7 @@ mod tests {
                 template: ProductDefinitionTemplate::StatisticalProcess(
                     StatisticalProcessTemplate {
                         base,
-                        end_of_overall_time_interval: interval_end_time(),
-                        number_of_missing_in_statistical_process: 0,
-                        time_ranges: vec![statistical_time_range()],
+                        interval: statistical_interval(),
                     },
                 ),
             })
@@ -3338,8 +3352,7 @@ mod tests {
         match &product.template {
             ProductDefinitionTemplate::StatisticalProcess(template) => {
                 assert_eq!(template.base.forecast_time, 1);
-                assert_eq!(template.end_of_overall_time_interval, interval_end_time());
-                assert_eq!(template.time_ranges, vec![statistical_time_range()]);
+                assert_eq!(template.interval, statistical_interval());
             }
             other => panic!("expected template 4.8, got {other:?}"),
         }
@@ -3363,9 +3376,7 @@ mod tests {
                             perturbation_number: 3,
                             number_of_forecasts_in_ensemble: 30,
                         },
-                        end_of_overall_time_interval: interval_end_time(),
-                        number_of_missing_in_statistical_process: 0,
-                        time_ranges: vec![statistical_time_range()],
+                        interval: statistical_interval(),
                     },
                 ),
             })
@@ -3392,8 +3403,7 @@ mod tests {
                 assert_eq!(template.ensemble.type_of_ensemble_forecast, 1);
                 assert_eq!(template.ensemble.perturbation_number, 3);
                 assert_eq!(template.ensemble.number_of_forecasts_in_ensemble, 30);
-                assert_eq!(template.end_of_overall_time_interval, interval_end_time());
-                assert_eq!(template.time_ranges, vec![statistical_time_range()]);
+                assert_eq!(template.interval, statistical_interval());
             }
             other => panic!("expected template 4.11, got {other:?}"),
         }
@@ -3411,9 +3421,10 @@ mod tests {
                 template: ProductDefinitionTemplate::StatisticalProcess(
                     StatisticalProcessTemplate {
                         base: analysis_or_forecast_template(),
-                        end_of_overall_time_interval: interval_end_time(),
-                        number_of_missing_in_statistical_process: 0,
-                        time_ranges: vec![statistical_time_range(); 256],
+                        interval: StatisticalInterval {
+                            time_ranges: vec![statistical_time_range(); 256],
+                            ..statistical_interval()
+                        },
                     },
                 ),
             })
@@ -3438,16 +3449,17 @@ mod tests {
                 template: ProductDefinitionTemplate::StatisticalProcess(
                     StatisticalProcessTemplate {
                         base: analysis_or_forecast_template(),
-                        end_of_overall_time_interval: ReferenceTime {
-                            year: 2026,
-                            month: 13,
-                            day: 20,
-                            hour: 18,
-                            minute: 0,
-                            second: 0,
+                        interval: StatisticalInterval {
+                            end_of_overall_time_interval: ReferenceTime {
+                                year: 2026,
+                                month: 13,
+                                day: 20,
+                                hour: 18,
+                                minute: 0,
+                                second: 0,
+                            },
+                            ..statistical_interval()
                         },
-                        number_of_missing_in_statistical_process: 0,
-                        time_ranges: vec![statistical_time_range()],
                     },
                 ),
             })

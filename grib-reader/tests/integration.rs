@@ -425,9 +425,12 @@ fn opens_grib2_statistical_process_product_template() {
     assert_eq!(valid.hour, 18);
     match &field.product_definition().unwrap().template {
         ProductDefinitionTemplate::StatisticalProcess(template) => {
-            assert_eq!(template.time_ranges.len(), 1);
-            assert_eq!(template.time_ranges[0].type_of_statistical_processing, 1);
-            assert_eq!(template.time_ranges[0].time_range_length, 6);
+            assert_eq!(template.interval.time_ranges.len(), 1);
+            assert_eq!(
+                template.interval.time_ranges[0].type_of_statistical_processing,
+                1
+            );
+            assert_eq!(template.interval.time_ranges[0].time_range_length, 6);
         }
         other => panic!("expected template 4.8, got {other:?}"),
     }
@@ -451,7 +454,7 @@ fn opens_grib2_ensemble_statistical_process_product_template() {
     match &field.product_definition().unwrap().template {
         ProductDefinitionTemplate::EnsembleStatisticalProcess(template) => {
             assert_eq!(template.ensemble.perturbation_number, 3);
-            assert_eq!(template.time_ranges.len(), 1);
+            assert_eq!(template.interval.time_ranges.len(), 1);
         }
         other => panic!("expected template 4.11, got {other:?}"),
     }
