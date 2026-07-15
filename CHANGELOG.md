@@ -22,6 +22,8 @@
   offset
 - decode rotated latitude/longitude and regular Gaussian grids while rejecting
   quasi-regular geometry with a typed error
+- preserve GRIB2 generating-process and data-cutoff metadata and decode signed
+  forecast offsets without unsigned wraparound
 - raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
 
 ## 0.6.0 - 2026-06-25

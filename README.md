@@ -132,14 +132,14 @@ let product = ProductDefinition {
     parameter_category: 0,
     parameter_number: 0,
     template: ProductDefinitionTemplate::AnalysisOrForecast(AnalysisOrForecastTemplate {
-        generating_process: 2,
+        type_of_generating_process: 2,
+        background_generating_process_identifier: 0,
+        generating_process_identifier: 0,
+        hours_after_data_cutoff: Some(0),
+        minutes_after_data_cutoff: Some(0),
         forecast_time_unit: 1,
         forecast_time: 6,
-        first_surface: Some(FixedSurface {
-            surface_type: 103,
-            scale_factor: 0,
-            scaled_value: 850,
-        }),
+        first_surface: Some(FixedSurface::with_value(103, 0, 850)),
         second_surface: None,
     }),
 };
