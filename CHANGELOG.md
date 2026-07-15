@@ -28,6 +28,8 @@
   probability thresholds for product templates 4.2, 4.5, and 4.6
 - write product templates 4.2, 4.5, and 4.6 and compare their Section 4
   metadata with ecCodes in the parity suite
+- decode interval probability, percentile, and derived-ensemble templates 4.9,
+  4.10, and 4.12 through one shared statistical-interval model
 - raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
 
 ## 0.6.0 - 2026-06-25

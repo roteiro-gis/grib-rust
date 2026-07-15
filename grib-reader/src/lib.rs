@@ -58,10 +58,13 @@ pub use parameter::{
     LOCAL_PARAMETER_TABLE_CSV_HEADER,
 };
 pub use product::{
-    AnalysisOrForecastTemplate, DerivedForecastTemplate, EnsembleStatisticalProcessTemplate,
-    FixedSurface, Identification, IndividualEnsembleForecastTemplate, PercentileForecastTemplate,
-    ProbabilityForecastTemplate, ProbabilityLimit, ProbabilityType, ProductDefinition,
-    ProductDefinitionTemplate, ScaledValue, StatisticalProcessTemplate, StatisticalTimeRange,
+    AnalysisOrForecastTemplate, DerivedForecastTemplate, DerivedStatisticalProcessTemplate,
+    EnsembleStatisticalProcessTemplate, FixedSurface, Identification,
+    IndividualEnsembleForecastTemplate, PercentileForecastTemplate,
+    PercentileStatisticalProcessTemplate, ProbabilityForecastTemplate, ProbabilityLimit,
+    ProbabilityStatisticalProcessTemplate, ProbabilityType, ProductDefinition,
+    ProductDefinitionTemplate, ScaledValue, StatisticalInterval, StatisticalProcessTemplate,
+    StatisticalTimeRange,
 };
 
 use std::io::Read;
