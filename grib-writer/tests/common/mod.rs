@@ -5,8 +5,9 @@ use std::process::Command;
 
 use grib_core::metadata::ReferenceTime;
 use grib_core::{
-    AnalysisOrForecastTemplate, FixedSurface, GridDefinition, Identification, LatLonGrid,
-    ProductDefinition, ProductDefinitionTemplate,
+    AnalysisOrForecastTemplate, DerivedForecastTemplate, FixedSurface, GridDefinition,
+    Identification, LatLonGrid, PercentileForecastTemplate, ProbabilityForecastTemplate,
+    ProbabilityLimit, ProbabilityType, ProductDefinition, ProductDefinitionTemplate,
 };
 use grib_reader::GribFile;
 use grib_writer::{
@@ -27,6 +28,17 @@ pub struct ReferenceMessage {
     pub reference_time: ReferenceTimeDump,
     pub ni: usize,
     pub nj: usize,
+    pub product_definition_template_number: Option<i64>,
+    pub derived_forecast: Option<i64>,
+    pub number_of_forecasts_in_ensemble: Option<i64>,
+    pub forecast_probability_number: Option<i64>,
+    pub total_number_of_forecast_probabilities: Option<i64>,
+    pub probability_type: Option<i64>,
+    pub scale_factor_of_lower_limit: Option<i64>,
+    pub scaled_value_of_lower_limit: Option<i64>,
+    pub scale_factor_of_upper_limit: Option<i64>,
+    pub scaled_value_of_upper_limit: Option<i64>,
+    pub percentile_value: Option<i64>,
     pub values: Vec<Option<f64>>,
 }
 
@@ -150,6 +162,7 @@ pub fn assert_matches_reference(helper: &Path, path: &Path, bytes: &[u8]) {
             path.display(),
             index
         );
+        assert_product_metadata(&message, expected, path, index);
         assert_eq!(
             actual.len(),
             expected.values.len(),
@@ -188,6 +201,91 @@ pub fn assert_matches_reference(helper: &Path, path: &Path, bytes: &[u8]) {
             }
         }
     }
+}
+
+fn assert_product_metadata(
+    message: &grib_reader::Message<'_>,
+    expected: &ReferenceMessage,
+    path: &Path,
+    field_index: usize,
+) {
+    if message.edition() != 2 {
+        return;
+    }
+
+    let product = message.product_definition().unwrap_or_else(|| {
+        panic!(
+            "missing product metadata for {} field {}",
+            path.display(),
+            field_index
+        )
+    });
+    assert_eq!(
+        expected.product_definition_template_number,
+        Some(i64::from(product.template_number())),
+        "product template mismatch for {} field {}",
+        path.display(),
+        field_index
+    );
+
+    match &product.template {
+        ProductDefinitionTemplate::DerivedForecast(template) => {
+            assert_eq!(
+                expected.derived_forecast,
+                Some(i64::from(template.derived_forecast_type))
+            );
+            assert_eq!(
+                expected.number_of_forecasts_in_ensemble,
+                Some(i64::from(template.number_of_forecasts_in_ensemble))
+            );
+        }
+        ProductDefinitionTemplate::ProbabilityForecast(template) => {
+            assert_eq!(
+                expected.forecast_probability_number,
+                Some(i64::from(template.forecast_probability_number))
+            );
+            assert_eq!(
+                expected.total_number_of_forecast_probabilities,
+                Some(i64::from(template.total_number_of_forecast_probabilities))
+            );
+            assert_eq!(
+                expected.probability_type,
+                Some(i64::from(template.probability.code()))
+            );
+            assert_probability_limit_metadata(
+                template.probability.lower_limit(),
+                expected.scale_factor_of_lower_limit,
+                expected.scaled_value_of_lower_limit,
+            );
+            assert_probability_limit_metadata(
+                template.probability.upper_limit(),
+                expected.scale_factor_of_upper_limit,
+                expected.scaled_value_of_upper_limit,
+            );
+        }
+        ProductDefinitionTemplate::PercentileForecast(template) => {
+            assert_eq!(
+                expected.percentile_value,
+                Some(i64::from(template.percentile_value))
+            );
+        }
+        _ => {}
+    }
+}
+
+fn assert_probability_limit_metadata(
+    actual: Option<ProbabilityLimit>,
+    expected_scale_factor: Option<i64>,
+    expected_scaled_value: Option<i64>,
+) {
+    assert_eq!(
+        actual.map(|limit| i64::from(limit.scale_factor)),
+        expected_scale_factor
+    );
+    assert_eq!(
+        actual.map(|limit| i64::from(limit.scaled_value)),
+        expected_scaled_value
+    );
 }
 
 pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
@@ -263,6 +361,44 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
         .values(&[1.0, 2.0, 3.0, 4.0])
         .build()
         .unwrap();
+    let product_field = |template| {
+        Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(latlon_grid(2, 2, 0))
+            .product(ProductDefinition {
+                parameter_category: 0,
+                parameter_number: 0,
+                template,
+            })
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[1.0, 2.0, 3.0, 4.0])
+            .build()
+            .unwrap()
+    };
+    let derived = product_field(ProductDefinitionTemplate::DerivedForecast(
+        DerivedForecastTemplate {
+            base: analysis_or_forecast_template(),
+            derived_forecast_type: 4,
+            number_of_forecasts_in_ensemble: 50,
+        },
+    ));
+    let probability = product_field(ProductDefinitionTemplate::ProbabilityForecast(
+        ProbabilityForecastTemplate {
+            base: analysis_or_forecast_template(),
+            forecast_probability_number: 1,
+            total_number_of_forecast_probabilities: 10,
+            probability: ProbabilityType::BelowLowerLimit(ProbabilityLimit {
+                scale_factor: 1,
+                scaled_value: 2732,
+            }),
+        },
+    ));
+    let percentile = product_field(ProductDefinitionTemplate::PercentileForecast(
+        PercentileForecastTemplate {
+            base: analysis_or_forecast_template(),
+            percentile_value: 90,
+        },
+    ));
 
     vec![
         (
@@ -278,6 +414,12 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
             "writer-signed-forecast.grib2",
             write_grib2_message([signed_forecast]),
         ),
+        ("writer-derived.grib2", write_grib2_message([derived])),
+        (
+            "writer-probability.grib2",
+            write_grib2_message([probability]),
+        ),
+        ("writer-percentile.grib2", write_grib2_message([percentile])),
         ("writer-complex.grib2", write_grib2_message([complex])),
         (
             "writer-complex-spatial-first.grib2",
@@ -415,17 +557,21 @@ pub fn product(parameter_category: u8, parameter_number: u8) -> ProductDefinitio
     ProductDefinition {
         parameter_category,
         parameter_number,
-        template: ProductDefinitionTemplate::AnalysisOrForecast(AnalysisOrForecastTemplate {
-            type_of_generating_process: 2,
-            background_generating_process_identifier: 0,
-            generating_process_identifier: 0,
-            hours_after_data_cutoff: Some(0),
-            minutes_after_data_cutoff: Some(0),
-            forecast_time_unit: 1,
-            forecast_time: 6,
-            first_surface: Some(FixedSurface::with_value(103, 0, 850)),
-            second_surface: None,
-        }),
+        template: ProductDefinitionTemplate::AnalysisOrForecast(analysis_or_forecast_template()),
+    }
+}
+
+pub fn analysis_or_forecast_template() -> AnalysisOrForecastTemplate {
+    AnalysisOrForecastTemplate {
+        type_of_generating_process: 2,
+        background_generating_process_identifier: 0,
+        generating_process_identifier: 0,
+        hours_after_data_cutoff: Some(0),
+        minutes_after_data_cutoff: Some(0),
+        forecast_time_unit: 1,
+        forecast_time: 6,
+        first_surface: Some(FixedSurface::with_value(103, 0, 850)),
+        second_surface: None,
     }
 }
 

@@ -13,8 +13,9 @@ use grib_core::{
     AlbersEqualAreaGrid, AnalysisOrForecastTemplate, ComplexPackingParams, DataRepresentation,
     FixedSurface, GridDefinition, Identification, ImagePackingParams, Jpeg2000PackingParams,
     LambertConformalGrid, LatLonGrid, MercatorGrid, PngPackingParams, PolarStereographicGrid,
-    ProductDefinition, ProductDefinitionTemplate, ProjectedGridCore, ReferenceTime,
-    SimplePackingParams, SpatialDifferencingParams, StatisticalTimeRange,
+    ProbabilityLimit, ProbabilityType, ProductDefinition, ProductDefinitionTemplate,
+    ProjectedGridCore, ReferenceTime, SimplePackingParams, SpatialDifferencingParams,
+    StatisticalTimeRange,
 };
 
 pub use grib_core::grib1::ProductDefinition as Grib1ProductDefinition;
@@ -1995,6 +1996,21 @@ fn write_product_section(out: &mut Vec<u8>, product: &ProductDefinition) -> Resu
             write_product_template_prefix(out, product, 1, 37, &template.base)?;
             write_ensemble_product_extra(out, template)
         }
+        ProductDefinitionTemplate::DerivedForecast(template) => {
+            write_product_template_prefix(out, product, 2, 36, &template.base)?;
+            write_u8_be(out, template.derived_forecast_type)?;
+            write_u8_be(out, template.number_of_forecasts_in_ensemble)
+        }
+        ProductDefinitionTemplate::ProbabilityForecast(template) => {
+            validate_probability_type(template.probability)?;
+            write_product_template_prefix(out, product, 5, 47, &template.base)?;
+            write_probability_product_extra(out, template)
+        }
+        ProductDefinitionTemplate::PercentileForecast(template) => {
+            validate_percentile(template.percentile_value)?;
+            write_product_template_prefix(out, product, 6, 35, &template.base)?;
+            write_u8_be(out, template.percentile_value)
+        }
         ProductDefinitionTemplate::StatisticalProcess(template) => {
             let range_count = checked_time_range_count(template.time_ranges.len())?;
             let section_length = statistical_product_section_len(46, range_count)?;
@@ -2084,6 +2100,74 @@ fn write_ensemble_product_extra(
     write_u8_be(out, template.type_of_ensemble_forecast)?;
     write_u8_be(out, template.perturbation_number)?;
     write_u8_be(out, template.number_of_forecasts_in_ensemble)
+}
+
+fn write_probability_product_extra(
+    out: &mut Vec<u8>,
+    template: &grib_core::ProbabilityForecastTemplate,
+) -> Result<()> {
+    write_u8_be(out, template.forecast_probability_number)?;
+    write_u8_be(out, template.total_number_of_forecast_probabilities)?;
+    write_u8_be(out, template.probability.code())?;
+    write_probability_limit(out, template.probability.lower_limit())?;
+    write_probability_limit(out, template.probability.upper_limit())
+}
+
+fn write_probability_limit(out: &mut Vec<u8>, limit: Option<ProbabilityLimit>) -> Result<()> {
+    let Some(limit) = limit else {
+        out.extend_from_slice(&[0xff; 5]);
+        return Ok(());
+    };
+
+    write_u8_be(
+        out,
+        encode_wmo_i8(limit.scale_factor).ok_or_else(|| {
+            Error::ValueOutOfRange(
+                "probability-limit scale factor does not fit GRIB signed i8".into(),
+            )
+        })?,
+    )?;
+    out.extend_from_slice(&encode_wmo_i32(limit.scaled_value).ok_or_else(|| {
+        Error::ValueOutOfRange("probability-limit scaled value does not fit GRIB signed i32".into())
+    })?);
+    Ok(())
+}
+
+fn validate_probability_type(probability: ProbabilityType) -> Result<()> {
+    if let ProbabilityType::Other { code, .. } = probability {
+        if matches!(code, 0..=10 | 255) {
+            return Err(Error::ValueOutOfRange(format!(
+                "WMO probability type {code} must use its typed probability variant"
+            )));
+        }
+    }
+
+    for limit in [probability.lower_limit(), probability.upper_limit()]
+        .into_iter()
+        .flatten()
+    {
+        if encode_wmo_i8(limit.scale_factor).is_none() {
+            return Err(Error::ValueOutOfRange(
+                "probability-limit scale factor does not fit GRIB signed i8".into(),
+            ));
+        }
+        if encode_wmo_i32(limit.scaled_value).is_none() {
+            return Err(Error::ValueOutOfRange(
+                "probability-limit scaled value does not fit GRIB signed i32".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_percentile(percentile: u8) -> Result<()> {
+    if percentile <= 100 {
+        Ok(())
+    } else {
+        Err(Error::ValueOutOfRange(format!(
+            "percentile value {percentile} exceeds 100"
+        )))
+    }
 }
 
 fn write_reference_time(out: &mut Vec<u8>, reference_time: ReferenceTime) -> Result<()> {
@@ -2429,6 +2513,17 @@ fn validate_supported_product(product: &ProductDefinition) -> Result<()> {
         ProductDefinitionTemplate::IndividualEnsembleForecast(template) => {
             validate_product_template_prefix(&template.base)
         }
+        ProductDefinitionTemplate::DerivedForecast(template) => {
+            validate_product_template_prefix(&template.base)
+        }
+        ProductDefinitionTemplate::ProbabilityForecast(template) => {
+            validate_product_template_prefix(&template.base)?;
+            validate_probability_type(template.probability)
+        }
+        ProductDefinitionTemplate::PercentileForecast(template) => {
+            validate_product_template_prefix(&template.base)?;
+            validate_percentile(template.percentile_value)
+        }
         ProductDefinitionTemplate::StatisticalProcess(template) => {
             validate_product_template_prefix(&template.base)?;
             checked_time_range_count(template.time_ranges.len())?;
@@ -2458,10 +2553,12 @@ mod tests {
     use grib_core::metadata::ReferenceTime;
     use grib_core::{
         AlbersEqualAreaGrid, AnalysisOrForecastTemplate, DataRepresentation,
-        EnsembleStatisticalProcessTemplate, FixedSurface, GridDefinition, Identification,
-        IndividualEnsembleForecastTemplate, LambertConformalGrid, LatLonGrid, MercatorGrid,
-        PolarStereographicGrid, ProductDefinition, ProductDefinitionTemplate, ProjectedGridCore,
-        StatisticalProcessTemplate, StatisticalTimeRange,
+        DerivedForecastTemplate, EnsembleStatisticalProcessTemplate, FixedSurface, GridDefinition,
+        Identification, IndividualEnsembleForecastTemplate, LambertConformalGrid, LatLonGrid,
+        MercatorGrid, PercentileForecastTemplate, PolarStereographicGrid,
+        ProbabilityForecastTemplate, ProbabilityLimit, ProbabilityType, ProductDefinition,
+        ProductDefinitionTemplate, ProjectedGridCore, StatisticalProcessTemplate,
+        StatisticalTimeRange,
     };
     use grib_reader::sections::scan_sections;
     use grib_reader::{GribFile, PredefinedBitmap};
@@ -2756,6 +2853,21 @@ mod tests {
             .unwrap()
     }
 
+    fn field_with_product_template(template: ProductDefinitionTemplate) -> super::Grib2Field {
+        Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(ProductDefinition {
+                parameter_category: 0,
+                parameter_number: 0,
+                template,
+            })
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[1.0, 2.0, 3.0, 4.0])
+            .build()
+            .unwrap()
+    }
+
     fn grib1_simple_field(values: &[f64]) -> super::Grib1Field {
         Grib1FieldBuilder::new()
             .product(grib1_product())
@@ -3041,6 +3153,148 @@ mod tests {
             other => panic!("expected template 4.1, got {other:?}"),
         }
         assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+
+    #[test]
+    fn writes_derived_forecast_product_template_readable_by_reader() {
+        let field = field_with_product_template(ProductDefinitionTemplate::DerivedForecast(
+            DerivedForecastTemplate {
+                base: analysis_or_forecast_template(),
+                derived_forecast_type: 4,
+                number_of_forecasts_in_ensemble: 50,
+            },
+        ));
+
+        let bytes = write_message([field]);
+        let product_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 4)
+            .unwrap();
+        assert_eq!(product_section.length, 36);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        let product = message.product_definition().unwrap();
+        let ProductDefinitionTemplate::DerivedForecast(template) = &product.template else {
+            panic!("expected template 4.2");
+        };
+        assert_eq!(template.derived_forecast_type, 4);
+        assert_eq!(template.number_of_forecasts_in_ensemble, 50);
+        assert_eq!(
+            message.read_flat_data_as_f64().unwrap(),
+            [1.0, 2.0, 3.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn writes_probability_forecast_product_template_readable_by_reader() {
+        let probability = ProbabilityType::BetweenLimits {
+            lower: ProbabilityLimit {
+                scale_factor: 1,
+                scaled_value: -125,
+            },
+            upper: ProbabilityLimit {
+                scale_factor: 1,
+                scaled_value: 250,
+            },
+        };
+        let field = field_with_product_template(ProductDefinitionTemplate::ProbabilityForecast(
+            ProbabilityForecastTemplate {
+                base: analysis_or_forecast_template(),
+                forecast_probability_number: 2,
+                total_number_of_forecast_probabilities: 10,
+                probability,
+            },
+        ));
+
+        let bytes = write_message([field]);
+        let product_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 4)
+            .unwrap();
+        assert_eq!(product_section.length, 47);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        let product = message.product_definition().unwrap();
+        let ProductDefinitionTemplate::ProbabilityForecast(template) = &product.template else {
+            panic!("expected template 4.5");
+        };
+        assert_eq!(template.forecast_probability_number, 2);
+        assert_eq!(template.total_number_of_forecast_probabilities, 10);
+        assert_eq!(template.probability, probability);
+        assert_eq!(
+            message.read_flat_data_as_f64().unwrap(),
+            [1.0, 2.0, 3.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn writes_percentile_forecast_product_template_readable_by_reader() {
+        let field = field_with_product_template(ProductDefinitionTemplate::PercentileForecast(
+            PercentileForecastTemplate {
+                base: analysis_or_forecast_template(),
+                percentile_value: 90,
+            },
+        ));
+
+        let bytes = write_message([field]);
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        let product = message.product_definition().unwrap();
+        let ProductDefinitionTemplate::PercentileForecast(template) = &product.template else {
+            panic!("expected template 4.6");
+        };
+        assert_eq!(template.percentile_value, 90);
+        assert_eq!(
+            message.read_flat_data_as_f64().unwrap(),
+            [1.0, 2.0, 3.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn rejects_noncanonical_probability_types_and_invalid_percentiles() {
+        for template in [
+            ProductDefinitionTemplate::ProbabilityForecast(ProbabilityForecastTemplate {
+                base: analysis_or_forecast_template(),
+                forecast_probability_number: 1,
+                total_number_of_forecast_probabilities: 10,
+                probability: ProbabilityType::Other {
+                    code: 0,
+                    lower: None,
+                    upper: None,
+                },
+            }),
+            ProductDefinitionTemplate::ProbabilityForecast(ProbabilityForecastTemplate {
+                base: analysis_or_forecast_template(),
+                forecast_probability_number: 1,
+                total_number_of_forecast_probabilities: 10,
+                probability: ProbabilityType::BelowLowerLimit(ProbabilityLimit {
+                    scale_factor: 128,
+                    scaled_value: 10,
+                }),
+            }),
+            ProductDefinitionTemplate::PercentileForecast(PercentileForecastTemplate {
+                base: analysis_or_forecast_template(),
+                percentile_value: 101,
+            }),
+        ] {
+            let err = Grib2FieldBuilder::new()
+                .identification(identification())
+                .grid(grid())
+                .product(ProductDefinition {
+                    parameter_category: 0,
+                    parameter_number: 0,
+                    template,
+                })
+                .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+                .values(&[1.0, 2.0, 3.0, 4.0])
+                .build()
+                .unwrap_err();
+            assert!(matches!(err, grib_core::Error::ValueOutOfRange(_)));
+        }
     }
 
     #[test]

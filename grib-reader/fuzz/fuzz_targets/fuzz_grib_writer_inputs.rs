@@ -2,8 +2,9 @@
 
 use grib_core::metadata::ReferenceTime;
 use grib_core::{
-    AnalysisOrForecastTemplate, FixedSurface, GridDefinition, Identification, LatLonGrid,
-    ProductDefinition, ProductDefinitionTemplate,
+    AnalysisOrForecastTemplate, DerivedForecastTemplate, FixedSurface, GridDefinition,
+    Identification, LatLonGrid, PercentileForecastTemplate, ProbabilityForecastTemplate,
+    ProbabilityLimit, ProbabilityType, ProductDefinition, ProductDefinitionTemplate,
 };
 use grib_reader::GribFile;
 use grib_writer::{
@@ -213,20 +214,61 @@ fn product(input: &mut Input<'_>) -> ProductDefinition {
         2 => (0, 4),
         _ => (input.u8(), input.u8()),
     };
+    let base = AnalysisOrForecastTemplate {
+        type_of_generating_process: 2,
+        background_generating_process_identifier: 0,
+        generating_process_identifier: 0,
+        hours_after_data_cutoff: Some(0),
+        minutes_after_data_cutoff: Some(0),
+        forecast_time_unit: 1,
+        forecast_time: i32::from(input.u8()),
+        first_surface: Some(FixedSurface::with_value(103, 0, 850)),
+        second_surface: None,
+    };
+    let template = match input.u8() % 4 {
+        0 => ProductDefinitionTemplate::AnalysisOrForecast(base),
+        1 => ProductDefinitionTemplate::DerivedForecast(DerivedForecastTemplate {
+            base,
+            derived_forecast_type: input.u8(),
+            number_of_forecasts_in_ensemble: input.u8(),
+        }),
+        2 => ProductDefinitionTemplate::ProbabilityForecast(ProbabilityForecastTemplate {
+            base,
+            forecast_probability_number: input.u8(),
+            total_number_of_forecast_probabilities: input.u8(),
+            probability: probability_type(input),
+        }),
+        _ => ProductDefinitionTemplate::PercentileForecast(PercentileForecastTemplate {
+            base,
+            percentile_value: input.u8() % 101,
+        }),
+    };
     ProductDefinition {
         parameter_category,
         parameter_number,
-        template: ProductDefinitionTemplate::AnalysisOrForecast(AnalysisOrForecastTemplate {
-            type_of_generating_process: 2,
-            background_generating_process_identifier: 0,
-            generating_process_identifier: 0,
-            hours_after_data_cutoff: Some(0),
-            minutes_after_data_cutoff: Some(0),
-            forecast_time_unit: 1,
-            forecast_time: i32::from(input.u8()),
-            first_surface: Some(FixedSurface::with_value(103, 0, 850)),
-            second_surface: None,
-        }),
+        template,
+    }
+}
+
+fn probability_type(input: &mut Input<'_>) -> ProbabilityType {
+    let limit = |input: &mut Input<'_>| ProbabilityLimit {
+        scale_factor: i16::from(input.u8() % 15) - 7,
+        scaled_value: i32::from(input.i16()),
+    };
+    match input.u8() % 6 {
+        0 => ProbabilityType::BelowLowerLimit(limit(input)),
+        1 => ProbabilityType::AboveUpperLimit(limit(input)),
+        2 => ProbabilityType::BetweenLimits {
+            lower: limit(input),
+            upper: limit(input),
+        },
+        3 => ProbabilityType::NearNormal,
+        4 => ProbabilityType::Quantile,
+        _ => ProbabilityType::Other {
+            code: 192 + input.u8() % 63,
+            lower: input.bool().then(|| limit(input)),
+            upper: input.bool().then(|| limit(input)),
+        },
     }
 }
 
