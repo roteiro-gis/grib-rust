@@ -163,6 +163,8 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Logical field indexing for multi-field GRIB2 messages
 - GRIB2 Section 2 access and same-message bitmap reuse through indicator 254
 - Regular latitude/longitude grids for GRIB1 and GRIB2
+- Reader GRIB2 rotated latitude/longitude template 3.1 and regular Gaussian
+  template 3.40, with explicit typed rejection of quasi-regular grids
 - Reader GRIB2 Mercator grid template 3.10, polar stereographic grid template
   3.20, Lambert conformal grid template 3.30, and Albers equal-area grid
   template 3.31 metadata, projected coordinate offsets, and flat data decode
@@ -194,7 +196,8 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 
 ## Not Yet Supported
 
-- Remaining GRIB2 grid templates beyond 3.0, 3.10, 3.20, 3.30, and 3.31
+- Remaining GRIB2 grid templates beyond 3.0, 3.1, 3.10, 3.20, 3.30, 3.31,
+  and 3.40
 - Remaining GRIB2 product definition templates beyond 4.0, 4.1, 4.8, and 4.11
 - Writer GRIB2 row-by-row complex packing
 

@@ -1,10 +1,9 @@
 //! Pure-Rust GRIB file reader.
 //!
-//! The current implementation supports the production-critical baseline for both
-//! GRIB1 and GRIB2: regular latitude/longitude grids, GRIB2 Lambert conformal
-//! and polar stereographic metadata and flat decode, simple packing, GRIB2
-//! complex packing with general group splitting, and optional image-backed
-//! GRIB2 packing codecs.
+//! The reader supports GRIB1 and GRIB2 regular geographic grids, GRIB2 rotated
+//! latitude/longitude, regular Gaussian, and common projected grids, simple and
+//! complex packing, multi-field bitmap reuse, bounded allocation, and optional
+//! image-backed packing codecs.
 //!
 //! # Example
 //!
@@ -51,6 +50,7 @@ pub use error::{Error, Result};
 pub use grib1::{BinaryDataSection, GridDescription, ProductDefinition as Grib1ProductDefinition};
 pub use grid::{
     GridDefinition, LambertConformalGrid, LatLonGrid, PolarStereographicGrid, ProjectedGridCore,
+    RegularGaussianGrid, RotatedLatLonGrid,
 };
 pub use metadata::{ForecastTimeUnit, Parameter, ParameterTableSource, ReferenceTime};
 pub use parameter::{
@@ -504,16 +504,30 @@ impl<'a> Message<'a> {
     pub fn latitudes(&self) -> Result<Option<Vec<f64>>> {
         self.metadata
             .grid
-            .as_lat_lon()
-            .map(|grid| grid.latitudes_with_limit(self.options.max_axis_points))
-            .transpose()
+            .latitudes_with_limit(self.options.max_axis_points)
     }
 
     pub fn longitudes(&self) -> Result<Option<Vec<f64>>> {
         self.metadata
             .grid
-            .as_lat_lon()
-            .map(|grid| grid.longitudes_with_limit(self.options.max_axis_points))
+            .longitudes_with_limit(self.options.max_axis_points)
+    }
+
+    /// Latitude axis in the rotated coordinate system for Template 3.1.
+    pub fn rotated_latitudes(&self) -> Result<Option<Vec<f64>>> {
+        self.metadata
+            .grid
+            .as_rotated_lat_lon()
+            .map(|grid| grid.rotated_latitudes_with_limit(self.options.max_axis_points))
+            .transpose()
+    }
+
+    /// Longitude axis in the rotated coordinate system for Template 3.1.
+    pub fn rotated_longitudes(&self) -> Result<Option<Vec<f64>>> {
+        self.metadata
+            .grid
+            .as_rotated_lat_lon()
+            .map(|grid| grid.rotated_longitudes_with_limit(self.options.max_axis_points))
             .transpose()
     }
 
@@ -1062,6 +1076,44 @@ mod tests {
         section
     }
 
+    fn build_rotated_grid() -> Vec<u8> {
+        let mut section = vec![0u8; 84];
+        section[..4].copy_from_slice(&84u32.to_be_bytes());
+        section[4] = 3;
+        section[6..10].copy_from_slice(&6u32.to_be_bytes());
+        section[12..14].copy_from_slice(&1u16.to_be_bytes());
+        section[30..34].copy_from_slice(&3u32.to_be_bytes());
+        section[34..38].copy_from_slice(&2u32.to_be_bytes());
+        section[46..50].copy_from_slice(&grib_i32_bytes(-10_000_000));
+        section[50..54].copy_from_slice(&grib_i32_bytes(-20_000_000));
+        section[55..59].copy_from_slice(&grib_i32_bytes(0));
+        section[59..63].copy_from_slice(&grib_i32_bytes(20_000_000));
+        section[63..67].copy_from_slice(&20_000_000u32.to_be_bytes());
+        section[67..71].copy_from_slice(&10_000_000u32.to_be_bytes());
+        section[71] = 0b0100_0000;
+        section[72..76].copy_from_slice(&grib_i32_bytes(-30_000_000));
+        section[76..80].copy_from_slice(&10_000_000u32.to_be_bytes());
+        section[80..84].copy_from_slice(&15.5f32.to_be_bytes());
+        section
+    }
+
+    fn build_regular_gaussian_grid() -> Vec<u8> {
+        let mut section = vec![0u8; 72];
+        section[..4].copy_from_slice(&72u32.to_be_bytes());
+        section[4] = 3;
+        section[6..10].copy_from_slice(&16u32.to_be_bytes());
+        section[12..14].copy_from_slice(&40u16.to_be_bytes());
+        section[30..34].copy_from_slice(&4u32.to_be_bytes());
+        section[34..38].copy_from_slice(&4u32.to_be_bytes());
+        section[46..50].copy_from_slice(&grib_i32_bytes(59_444_408));
+        section[50..54].copy_from_slice(&grib_i32_bytes(0));
+        section[55..59].copy_from_slice(&grib_i32_bytes(-59_444_408));
+        section[59..63].copy_from_slice(&grib_i32_bytes(270_000_000));
+        section[63..67].copy_from_slice(&90_000_000u32.to_be_bytes());
+        section[67..71].copy_from_slice(&2u32.to_be_bytes());
+        section
+    }
+
     fn build_product(parameter_category: u8, parameter_number: u8) -> Vec<u8> {
         let mut section = vec![0u8; 34];
         section[..4].copy_from_slice(&(34u32).to_be_bytes());
@@ -1258,6 +1310,63 @@ mod tests {
             array.iter().copied().collect::<Vec<_>>(),
             vec![1.0, 2.0, 3.0, 4.0]
         );
+    }
+
+    #[test]
+    fn decodes_rotated_latlon_grid_and_exposes_rotated_axes() {
+        let message = assemble_grib2_message(&[
+            build_identification(),
+            build_rotated_grid(),
+            build_product(0, 0),
+            build_simple_representation(6, 8),
+            build_data(&pack_u8_values(&[1, 2, 3, 4, 5, 6])),
+        ]);
+        let file = GribFile::from_bytes(message).unwrap();
+        let field = file.message(0).unwrap();
+
+        assert_eq!(field.grid_shape(), (3, 2));
+        assert_eq!(field.latitudes().unwrap(), None);
+        assert_eq!(
+            field.rotated_latitudes().unwrap().unwrap(),
+            vec![-10.0, 0.0]
+        );
+        assert_eq!(
+            field.rotated_longitudes().unwrap().unwrap(),
+            vec![-20.0, 0.0, 20.0]
+        );
+        assert_eq!(
+            field
+                .read_data_as_f64()
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        );
+    }
+
+    #[test]
+    fn decodes_regular_gaussian_grid_and_computes_axes() {
+        let values: Vec<_> = (0u8..16).collect();
+        let message = assemble_grib2_message(&[
+            build_identification(),
+            build_regular_gaussian_grid(),
+            build_product(0, 0),
+            build_simple_representation(values.len(), 8),
+            build_data(&pack_u8_values(&values)),
+        ]);
+        let file = GribFile::from_bytes(message).unwrap();
+        let field = file.message(0).unwrap();
+
+        assert_eq!(field.grid_shape(), (4, 4));
+        assert_eq!(
+            field.longitudes().unwrap().unwrap(),
+            vec![0.0, 90.0, 180.0, 270.0]
+        );
+        let latitudes = field.latitudes().unwrap().unwrap();
+        assert!((latitudes[0] - 59.444_408_289_166_77).abs() < 1e-12);
+        assert!((latitudes[3] + 59.444_408_289_166_77).abs() < 1e-12);
+        assert_eq!(field.read_data_as_f64().unwrap().shape(), &[4, 4]);
     }
 
     #[test]
