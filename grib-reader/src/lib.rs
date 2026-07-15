@@ -68,6 +68,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use grib_core::{ensure_limit, filled_vec};
+use memchr::memmem::Finder;
 use memmap2::Mmap;
 use ndarray::{ArrayD, IxDyn};
 
@@ -720,17 +721,29 @@ fn scan_messages(
 ) -> Result<Vec<MessageIndex>> {
     let mut messages = Vec::new();
     let mut pos = 0usize;
+    let finder = Finder::new(GRIB_MAGIC);
 
-    while pos + 8 <= data.len() {
-        if &data[pos..pos + 4] != GRIB_MAGIC {
-            pos += 1;
-            continue;
+    while data.len().saturating_sub(pos) >= 8 {
+        let Some(relative_pos) = finder.find(&data[pos..]) else {
+            break;
+        };
+        pos = pos
+            .checked_add(relative_pos)
+            .ok_or(Error::ArithmeticOverflow {
+                operation: "locating a GRIB signature",
+            })?;
+        if data.len().saturating_sub(pos) < 8 {
+            break;
         }
 
         let (indicator, next_pos) = match locate_message(data, pos) {
             Ok(located) => located,
             Err(err) if !options.strict && is_recoverable_candidate_error(&err) => {
-                pos += 4;
+                pos = pos
+                    .checked_add(GRIB_MAGIC.len())
+                    .ok_or(Error::ArithmeticOverflow {
+                        operation: "advancing past a rejected GRIB signature",
+                    })?;
                 continue;
             }
             Err(err) => return Err(err),
@@ -1210,6 +1223,23 @@ mod tests {
         let messages = scan_messages(&message, ReaderOptions::default(), &[], &[]).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].metadata.parameter.short_name, "TMP");
+    }
+
+    #[test]
+    fn scans_across_large_non_grib_prefix() {
+        let message = assemble_grib2_message(&[
+            build_identification(),
+            build_grid(2, 2, 0),
+            build_product(0, 0),
+            build_simple_representation(4, 8),
+            build_data(&pack_u8_values(&[1, 2, 3, 4])),
+        ]);
+        let mut input = vec![0xa5; 1024 * 1024];
+        input.extend_from_slice(&message);
+
+        let messages = scan_messages(&input, ReaderOptions::default(), &[], &[]).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].offset, 1024 * 1024);
     }
 
     #[test]

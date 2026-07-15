@@ -17,6 +17,7 @@ exclude = ["tests/corpus/interop/samples/.gitkeep"]
 grib-core = { path = "../grib-core", version = "0.7.0" }
 ndarray = { workspace = true }
 memmap2 = { workspace = true }
+memchr = { workspace = true }
 jpeg2k = { version = "0.10.1", default-features = false, features = ["openjpeg-sys"], optional = true }
 png = { version = "0.18.1", optional = true }
 

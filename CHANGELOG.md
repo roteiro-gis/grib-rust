@@ -18,6 +18,8 @@
   64-bit reads and byte-chunked writes
 - decode byte-aligned simple packing directly into dense output slices and
   expand bitmap gaps a byte at a time
+- locate GRIB messages with substring search instead of testing every byte
+  offset
 - raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
 
 ## 0.6.0 - 2026-06-25
