@@ -24,6 +24,8 @@
   quasi-regular geometry with a typed error
 - preserve GRIB2 generating-process and data-cutoff metadata and decode signed
   forecast offsets without unsigned wraparound
+- decode derived-ensemble, probability, and percentile forecasts with typed
+  probability thresholds for product templates 4.2, 4.5, and 4.6
 - raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
 
 ## 0.6.0 - 2026-06-25
