@@ -29,7 +29,8 @@ pub use parameter::{
     LOCAL_PARAMETER_TABLE_CSV_HEADER,
 };
 pub use product::{
-    AnalysisOrForecastTemplate, EnsembleStatisticalProcessTemplate, FixedSurface, Identification,
-    IndividualEnsembleForecastTemplate, ProductDefinition, ProductDefinitionTemplate, ScaledValue,
-    StatisticalProcessTemplate, StatisticalTimeRange,
+    AnalysisOrForecastTemplate, DerivedForecastTemplate, EnsembleStatisticalProcessTemplate,
+    FixedSurface, Identification, IndividualEnsembleForecastTemplate, PercentileForecastTemplate,
+    ProbabilityForecastTemplate, ProbabilityLimit, ProbabilityType, ProductDefinition,
+    ProductDefinitionTemplate, ScaledValue, StatisticalProcessTemplate, StatisticalTimeRange,
 };

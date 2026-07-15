@@ -176,7 +176,9 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Typed metadata access for reference time, parameter identity, product metadata, grid geometry, and lat/lon coordinates
 - Explicit north-up decode methods in addition to reader order that preserves
   the encoded i/j scan directions
-- Reader and writer GRIB2 product definition templates 4.0, 4.1, 4.8, and 4.11
+- Reader GRIB2 product definition templates 4.0, 4.1, 4.2, 4.5, 4.6, 4.8,
+  and 4.11
+- Writer GRIB2 product definition templates 4.0, 4.1, 4.8, and 4.11
 - Forecast valid-time helpers for supported fixed-width GRIB1/GRIB2 time units
 - `GribFile::builder()` for strict or tolerant scanning and allocation limits
 - Bitmap application with missing values surfaced as `NaN`
@@ -198,10 +200,14 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 
 - Remaining GRIB2 grid templates beyond 3.0, 3.1, 3.10, 3.20, 3.30, 3.31,
   and 3.40
-- Remaining GRIB2 product definition templates beyond 4.0, 4.1, 4.8, and 4.11
+- Remaining reader GRIB2 product definition templates beyond 4.0, 4.1, 4.2,
+  4.5, 4.6, 4.8, and 4.11
+- Remaining writer GRIB2 product definition templates beyond 4.0, 4.1, 4.8,
+  and 4.11
 - Writer GRIB2 row-by-row complex packing
 
-Unsupported cases fail explicitly with typed errors.
+Unsupported decode and encode operations fail explicitly with typed errors;
+unknown GRIB2 product templates remain indexable with their raw bytes preserved.
 Calendar-dependent forecast units such as months and years are exposed through
 raw metadata but currently return `None` from `valid_time()`.
 
