@@ -72,6 +72,9 @@ pub enum Error {
     #[error("bit offset overflow")]
     BitOffsetOverflow,
 
+    #[error("arithmetic overflow while {operation}")]
+    ArithmeticOverflow { operation: &'static str },
+
     #[error("value out of range: {0}")]
     ValueOutOfRange(String),
 

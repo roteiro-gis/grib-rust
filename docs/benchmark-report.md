@@ -51,6 +51,27 @@ Notes:
 
 ## Historical Results
 
+### Dense simple-packing decode (2026-07-12)
+
+The focused benchmark decodes 262,144 8-bit packed values, including allocation
+of the returned `Vec<f64>`:
+
+```sh
+cargo bench -p grib-reader --all-features --bench compare_eccodes -- \
+  'decode/simple-packed-u8' --sample-size 50 --warm-up-time 1 \
+  --measurement-time 3 --noplot
+```
+
+| implementation | Criterion interval |
+| --- | ---: |
+| buffered bit extraction through the bitmap-aware cursor | 1.752–1.758 ms |
+| byte-aligned dense decode directly into the output slice | 117.3–118.0 µs |
+
+Criterion reported a 93.3% improvement (`p < 0.05`). On the complete checked-in
+corpus, the same change reduced aggregate decode from 92.75–94.05 ms to
+90.87–91.24 ms, a 2.4% mean improvement (`p < 0.05`). The aggregate run includes
+image-packed fields whose codec time is unaffected by this optimization.
+
 ### Packed-bit writer hot loop (2026-07-12)
 
 The following measurements use the same optimized Criterion command before and
