@@ -20,6 +20,8 @@
   expand bitmap gaps a byte at a time
 - locate GRIB messages with substring search instead of testing every byte
   offset
+- decode rotated latitude/longitude and regular Gaussian grids while rejecting
+  quasi-regular geometry with a typed error
 - raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
 
 ## 0.6.0 - 2026-06-25

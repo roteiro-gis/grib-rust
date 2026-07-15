@@ -93,6 +93,30 @@ pub fn build_grib2_polar_stereographic_alternating_message() -> Vec<u8> {
     build_grib2_polar_stereographic_message_with_scanning_mode(0b0001_0000, &[1, 2, 3, 6, 5, 4])
 }
 
+pub fn build_grib2_rotated_latlon_message() -> Vec<u8> {
+    let values = [1, 2, 3, 4, 5, 6];
+    let sections = [
+        build_identification_section(),
+        build_rotated_latlon_grid_section(),
+        build_product_section(),
+        build_simple_representation_section(values.len(), 8),
+        build_data_section(&values),
+    ];
+    assemble_grib2_message(&sections)
+}
+
+pub fn build_grib2_regular_gaussian_message() -> Vec<u8> {
+    let values: Vec<_> = (0u8..16).collect();
+    let sections = [
+        build_identification_section(),
+        build_regular_gaussian_grid_section(),
+        build_product_section(),
+        build_simple_representation_section(values.len(), 8),
+        build_data_section(&values),
+    ];
+    assemble_grib2_message(&sections)
+}
+
 fn build_grib2_lambert_message_with_scanning_mode(scanning_mode: u8, values: &[u8]) -> Vec<u8> {
     let sections = [
         build_identification_section(),
@@ -177,6 +201,44 @@ fn build_polar_stereographic_grid_section(scanning_mode: u8) -> Vec<u8> {
     section[55..59].copy_from_slice(&3_000_000u32.to_be_bytes());
     section[59..63].copy_from_slice(&3_000_000u32.to_be_bytes());
     section[64] = scanning_mode;
+    section
+}
+
+fn build_rotated_latlon_grid_section() -> Vec<u8> {
+    let mut section = vec![0u8; 84];
+    section[..4].copy_from_slice(&84u32.to_be_bytes());
+    section[4] = 3;
+    section[6..10].copy_from_slice(&6u32.to_be_bytes());
+    section[12..14].copy_from_slice(&1u16.to_be_bytes());
+    section[30..34].copy_from_slice(&3u32.to_be_bytes());
+    section[34..38].copy_from_slice(&2u32.to_be_bytes());
+    section[46..50].copy_from_slice(&encode_wmo_i32(-10_000_000).unwrap());
+    section[50..54].copy_from_slice(&encode_wmo_i32(-20_000_000).unwrap());
+    section[55..59].copy_from_slice(&encode_wmo_i32(0).unwrap());
+    section[59..63].copy_from_slice(&encode_wmo_i32(20_000_000).unwrap());
+    section[63..67].copy_from_slice(&20_000_000u32.to_be_bytes());
+    section[67..71].copy_from_slice(&10_000_000u32.to_be_bytes());
+    section[71] = 0b0100_0000;
+    section[72..76].copy_from_slice(&encode_wmo_i32(-30_000_000).unwrap());
+    section[76..80].copy_from_slice(&10_000_000u32.to_be_bytes());
+    section[80..84].copy_from_slice(&15.5f32.to_be_bytes());
+    section
+}
+
+fn build_regular_gaussian_grid_section() -> Vec<u8> {
+    let mut section = vec![0u8; 72];
+    section[..4].copy_from_slice(&72u32.to_be_bytes());
+    section[4] = 3;
+    section[6..10].copy_from_slice(&16u32.to_be_bytes());
+    section[12..14].copy_from_slice(&40u16.to_be_bytes());
+    section[30..34].copy_from_slice(&4u32.to_be_bytes());
+    section[34..38].copy_from_slice(&4u32.to_be_bytes());
+    section[46..50].copy_from_slice(&encode_wmo_i32(59_444_408).unwrap());
+    section[50..54].copy_from_slice(&encode_wmo_i32(0).unwrap());
+    section[55..59].copy_from_slice(&encode_wmo_i32(-59_444_408).unwrap());
+    section[59..63].copy_from_slice(&encode_wmo_i32(270_000_000).unwrap());
+    section[63..67].copy_from_slice(&90_000_000u32.to_be_bytes());
+    section[67..71].copy_from_slice(&2u32.to_be_bytes());
     section
 }
 

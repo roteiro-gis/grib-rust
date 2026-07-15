@@ -9,7 +9,8 @@ pub use fixtures::{
     build_grib2_complex_packing_message_with_missing, build_grib2_lambert_alternating_message,
     build_grib2_lambert_message, build_grib2_message, build_grib2_message_with_forecast,
     build_grib2_multifield_message, build_grib2_polar_stereographic_alternating_message,
-    build_grib2_polar_stereographic_message, build_grib2_spatial_differencing_message,
+    build_grib2_polar_stereographic_message, build_grib2_regular_gaussian_message,
+    build_grib2_rotated_latlon_message, build_grib2_spatial_differencing_message,
     build_truncated_grib2_message,
 };
 

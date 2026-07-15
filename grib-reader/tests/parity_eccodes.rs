@@ -6,6 +6,7 @@ use common::{
     build_grib1_bitmap_message, build_grib1_message, build_grib2_complex_packing_message,
     build_grib2_complex_packing_message_with_missing, build_grib2_lambert_message,
     build_grib2_message, build_grib2_multifield_message, build_grib2_polar_stereographic_message,
+    build_grib2_regular_gaussian_message, build_grib2_rotated_latlon_message,
     build_grib2_spatial_differencing_message, collect_parity_samples, dump_reference, helper_path,
     write_fixture,
 };
@@ -56,6 +57,16 @@ fn generated_fixtures_match_eccodes_when_configured() {
             dir.path(),
             "polar-stereographic.grib2",
             &build_grib2_polar_stereographic_message(),
+        ),
+        write_fixture(
+            dir.path(),
+            "rotated-latlon.grib2",
+            &build_grib2_rotated_latlon_message(),
+        ),
+        write_fixture(
+            dir.path(),
+            "regular-gaussian.grib2",
+            &build_grib2_regular_gaussian_message(),
         ),
     ];
 
