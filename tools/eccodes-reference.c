@@ -55,6 +55,27 @@ static long get_long_or_default(
     return value;
 }
 
+static int get_optional_long(
+    codes_handle *handle,
+    const char *key,
+    long *value,
+    const char *path
+) {
+    int err = CODES_SUCCESS;
+    int missing = codes_is_missing(handle, key, &err);
+    if (err == CODES_NOT_FOUND) {
+        return 0;
+    }
+    if (err != CODES_SUCCESS) {
+        die_codes(err, key, path);
+    }
+    if (missing) {
+        return 0;
+    }
+    *value = get_long(handle, key, path);
+    return 1;
+}
+
 static long get_grid_dimension(
     codes_handle *handle,
     const char *primary_key,
@@ -249,6 +270,14 @@ static void print_json_string(const char *value) {
     fputc('"', stdout);
 }
 
+static void print_optional_long(int present, long value) {
+    if (present) {
+        fprintf(stdout, "%ld", value);
+    } else {
+        fputs("null", stdout);
+    }
+}
+
 static decode_totals decode_file(const char *path, int emit_json) {
     FILE *fp = fopen(path, "rb");
     if (fp == NULL) {
@@ -280,6 +309,71 @@ static decode_totals decode_file(const char *path, int emit_json) {
         long second = get_long(handle, "second", path);
         long ni = get_grid_dimension(handle, "Ni", "Nx", path);
         long nj = get_grid_dimension(handle, "Nj", "Ny", path);
+        long product_definition_template_number = 0;
+        long derived_forecast = 0;
+        long number_of_forecasts_in_ensemble = 0;
+        long forecast_probability_number = 0;
+        long total_number_of_forecast_probabilities = 0;
+        long probability_type = 0;
+        long scale_factor_of_lower_limit = 0;
+        long scaled_value_of_lower_limit = 0;
+        long scale_factor_of_upper_limit = 0;
+        long scaled_value_of_upper_limit = 0;
+        long percentile_value = 0;
+        int has_product_definition_template_number = get_optional_long(
+            handle,
+            "productDefinitionTemplateNumber",
+            &product_definition_template_number,
+            path
+        );
+        int has_derived_forecast =
+            get_optional_long(handle, "derivedForecast", &derived_forecast, path);
+        int has_number_of_forecasts_in_ensemble = get_optional_long(
+            handle,
+            "numberOfForecastsInEnsemble",
+            &number_of_forecasts_in_ensemble,
+            path
+        );
+        int has_forecast_probability_number = get_optional_long(
+            handle,
+            "forecastProbabilityNumber",
+            &forecast_probability_number,
+            path
+        );
+        int has_total_number_of_forecast_probabilities = get_optional_long(
+            handle,
+            "totalNumberOfForecastProbabilities",
+            &total_number_of_forecast_probabilities,
+            path
+        );
+        int has_probability_type =
+            get_optional_long(handle, "probabilityType", &probability_type, path);
+        int has_scale_factor_of_lower_limit = get_optional_long(
+            handle,
+            "scaleFactorOfLowerLimit",
+            &scale_factor_of_lower_limit,
+            path
+        );
+        int has_scaled_value_of_lower_limit = get_optional_long(
+            handle,
+            "scaledValueOfLowerLimit",
+            &scaled_value_of_lower_limit,
+            path
+        );
+        int has_scale_factor_of_upper_limit = get_optional_long(
+            handle,
+            "scaleFactorOfUpperLimit",
+            &scale_factor_of_upper_limit,
+            path
+        );
+        int has_scaled_value_of_upper_limit = get_optional_long(
+            handle,
+            "scaledValueOfUpperLimit",
+            &scaled_value_of_upper_limit,
+            path
+        );
+        int has_percentile_value =
+            get_optional_long(handle, "percentileValue", &percentile_value, path);
         char name[256];
         get_string(handle, "name", name, sizeof(name), path);
 
@@ -318,6 +412,37 @@ static decode_totals decode_file(const char *path, int emit_json) {
             fprintf(stdout, "%ld", ni);
             fputs(",\"nj\":", stdout);
             fprintf(stdout, "%ld", nj);
+            fputs(",\"product_definition_template_number\":", stdout);
+            print_optional_long(
+                has_product_definition_template_number,
+                product_definition_template_number
+            );
+            fputs(",\"derived_forecast\":", stdout);
+            print_optional_long(has_derived_forecast, derived_forecast);
+            fputs(",\"number_of_forecasts_in_ensemble\":", stdout);
+            print_optional_long(
+                has_number_of_forecasts_in_ensemble,
+                number_of_forecasts_in_ensemble
+            );
+            fputs(",\"forecast_probability_number\":", stdout);
+            print_optional_long(has_forecast_probability_number, forecast_probability_number);
+            fputs(",\"total_number_of_forecast_probabilities\":", stdout);
+            print_optional_long(
+                has_total_number_of_forecast_probabilities,
+                total_number_of_forecast_probabilities
+            );
+            fputs(",\"probability_type\":", stdout);
+            print_optional_long(has_probability_type, probability_type);
+            fputs(",\"scale_factor_of_lower_limit\":", stdout);
+            print_optional_long(has_scale_factor_of_lower_limit, scale_factor_of_lower_limit);
+            fputs(",\"scaled_value_of_lower_limit\":", stdout);
+            print_optional_long(has_scaled_value_of_lower_limit, scaled_value_of_lower_limit);
+            fputs(",\"scale_factor_of_upper_limit\":", stdout);
+            print_optional_long(has_scale_factor_of_upper_limit, scale_factor_of_upper_limit);
+            fputs(",\"scaled_value_of_upper_limit\":", stdout);
+            print_optional_long(has_scaled_value_of_upper_limit, scaled_value_of_upper_limit);
+            fputs(",\"percentile_value\":", stdout);
+            print_optional_long(has_percentile_value, percentile_value);
             fputs(",\"values\":[", stdout);
             for (size_t i = 0; i < value_len; ++i) {
                 if (i > 0) {
