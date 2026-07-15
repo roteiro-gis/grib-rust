@@ -11,11 +11,11 @@ use grib_core::binary::{
 use grib_core::bit::BitWriter;
 use grib_core::{
     AlbersEqualAreaGrid, AnalysisOrForecastTemplate, ComplexPackingParams, DataRepresentation,
-    FixedSurface, GridDefinition, Identification, ImagePackingParams, Jpeg2000PackingParams,
-    LambertConformalGrid, LatLonGrid, MercatorGrid, PngPackingParams, PolarStereographicGrid,
-    ProbabilityLimit, ProbabilityType, ProductDefinition, ProductDefinitionTemplate,
-    ProjectedGridCore, ReferenceTime, SimplePackingParams, SpatialDifferencingParams,
-    StatisticalInterval, StatisticalTimeRange,
+    FixedSurface, GridDefinition, Identification, Jpeg2000PackingParams, LambertConformalGrid,
+    LatLonGrid, MercatorGrid, PngPackingParams, PolarStereographicGrid, ProbabilityLimit,
+    ProbabilityType, ProductDefinition, ProductDefinitionTemplate, ProjectedGridCore,
+    ReferenceTime, ScaledPackingParams, SpatialDifferencingParams, StatisticalInterval,
+    StatisticalTimeRange,
 };
 
 pub use grib_core::grib1::ProductDefinition as Grib1ProductDefinition;
@@ -526,7 +526,7 @@ fn pack_simple_auto(
         writer.align_to_byte()?;
     }
 
-    let representation = DataRepresentation::SimplePacking(SimplePackingParams {
+    let representation = DataRepresentation::SimplePacking(ScaledPackingParams {
         encoded_values: present_count,
         reference_value,
         binary_scale: 0,
@@ -713,7 +713,7 @@ fn pack_png_auto(
 #[cfg(any(feature = "jpeg2000", feature = "png"))]
 #[derive(Debug, Clone)]
 struct PreparedImagePacking {
-    params: ImagePackingParams,
+    params: ScaledPackingParams,
     bitmap_payload: Option<Vec<u8>>,
     deltas: Vec<u64>,
     dimensions: ImageDimensions,
@@ -757,7 +757,7 @@ fn prepare_image_packing(
     validate_image_deltas_fit(&deltas, bits_per_value)?;
 
     Ok(PreparedImagePacking {
-        params: ImagePackingParams {
+        params: ScaledPackingParams {
             encoded_values: present_count,
             reference_value,
             binary_scale: 0,
@@ -2340,7 +2340,7 @@ fn write_data_representation_section(out: &mut Vec<u8>, packed: &PackedField) ->
 
 fn write_simple_data_representation_section(
     out: &mut Vec<u8>,
-    params: &SimplePackingParams,
+    params: &ScaledPackingParams,
 ) -> Result<()> {
     let encoded_values = u32::try_from(params.encoded_values)
         .map_err(|_| Error::Other("encoded value count exceeds u32".into()))?;
@@ -2433,7 +2433,7 @@ fn write_image_data_representation_base(
     out: &mut Vec<u8>,
     section_length: u32,
     template: u16,
-    params: &ImagePackingParams,
+    params: &ScaledPackingParams,
 ) -> Result<()> {
     let encoded_values = u32::try_from(params.encoded_values)
         .map_err(|_| Error::Other("encoded value count exceeds u32".into()))?;

@@ -8,7 +8,7 @@ use common::{
     RustBenchmark,
 };
 use criterion::{criterion_group, criterion_main, Criterion};
-use grib_reader::{data::unpack_simple, SimplePackingParams};
+use grib_reader::{data::unpack_simple, ScaledPackingParams};
 
 fn compare_against_eccodes(c: &mut Criterion) {
     let files = collect_parity_samples();
@@ -40,7 +40,7 @@ fn compare_against_eccodes(c: &mut Criterion) {
 
 fn benchmark_simple_packing(c: &mut Criterion) {
     let packed = vec![0x5a; 262_144];
-    let params = SimplePackingParams {
+    let params = ScaledPackingParams {
         encoded_values: packed.len(),
         reference_value: 1.0,
         binary_scale: 1,
