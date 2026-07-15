@@ -4,6 +4,6 @@ pub use grib_core::product::{
     IndividualEnsembleForecastTemplate, PercentileForecastTemplate,
     PercentileStatisticalProcessTemplate, ProbabilityForecastTemplate, ProbabilityLimit,
     ProbabilityStatisticalProcessTemplate, ProbabilityType, ProductDefinition,
-    ProductDefinitionTemplate, ScaledValue, StatisticalInterval, StatisticalProcessTemplate,
-    StatisticalTimeRange,
+    ProductDefinitionTemplate, ScaledValue, SpatialProcessTemplate, StatisticalInterval,
+    StatisticalProcessTemplate, StatisticalTimeRange,
 };

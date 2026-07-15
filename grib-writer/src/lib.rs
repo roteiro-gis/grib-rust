@@ -2070,6 +2070,12 @@ fn write_product_section(out: &mut Vec<u8>, product: &ProductDefinition) -> Resu
             write_derived_product_extra(out, &template.derived)?;
             write_statistical_interval(out, &template.interval, range_count)
         }
+        ProductDefinitionTemplate::SpatialProcess(template) => {
+            write_product_template_prefix(out, product, 15, 37, &template.base)?;
+            write_u8_be(out, template.statistical_process)?;
+            write_u8_be(out, template.spatial_processing)?;
+            write_u8_be(out, template.number_of_points_used)
+        }
         ProductDefinitionTemplate::Unsupported { number, .. } => {
             Err(Error::UnsupportedProductTemplate(*number))
         }
@@ -2599,6 +2605,9 @@ fn validate_supported_product(product: &ProductDefinition) -> Result<()> {
             validate_product_template_prefix(&template.derived.base)?;
             validate_statistical_interval(&template.interval)
         }
+        ProductDefinitionTemplate::SpatialProcess(template) => {
+            validate_product_template_prefix(&template.base)
+        }
         ProductDefinitionTemplate::Unsupported { number, .. } => {
             Err(Error::UnsupportedProductTemplate(*number))
         }
@@ -2629,7 +2638,8 @@ mod tests {
         PercentileForecastTemplate, PercentileStatisticalProcessTemplate, PolarStereographicGrid,
         ProbabilityForecastTemplate, ProbabilityLimit, ProbabilityStatisticalProcessTemplate,
         ProbabilityType, ProductDefinition, ProductDefinitionTemplate, ProjectedGridCore,
-        StatisticalInterval, StatisticalProcessTemplate, StatisticalTimeRange,
+        SpatialProcessTemplate, StatisticalInterval, StatisticalProcessTemplate,
+        StatisticalTimeRange,
     };
     use grib_reader::sections::scan_sections;
     use grib_reader::{GribFile, PredefinedBitmap};
@@ -3327,6 +3337,40 @@ mod tests {
             panic!("expected template 4.6");
         };
         assert_eq!(template.percentile_value, 90);
+        assert_eq!(
+            message.read_flat_data_as_f64().unwrap(),
+            [1.0, 2.0, 3.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn writes_spatial_process_product_template_readable_by_reader() {
+        let field = field_with_product_template(ProductDefinitionTemplate::SpatialProcess(
+            SpatialProcessTemplate {
+                base: analysis_or_forecast_template(),
+                statistical_process: 1,
+                spatial_processing: 2,
+                number_of_points_used: 4,
+            },
+        ));
+
+        let bytes = write_message([field]);
+        let product_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 4)
+            .unwrap();
+        assert_eq!(product_section.length, 37);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        let product = message.product_definition().unwrap();
+        let ProductDefinitionTemplate::SpatialProcess(template) = &product.template else {
+            panic!("expected template 4.15");
+        };
+        assert_eq!(template.statistical_process, 1);
+        assert_eq!(template.spatial_processing, 2);
+        assert_eq!(template.number_of_points_used, 4);
         assert_eq!(
             message.read_flat_data_as_f64().unwrap(),
             [1.0, 2.0, 3.0, 4.0]

@@ -129,6 +129,7 @@ pub enum ProductDefinitionTemplate {
     PercentileStatisticalProcess(PercentileStatisticalProcessTemplate),
     EnsembleStatisticalProcess(EnsembleStatisticalProcessTemplate),
     DerivedStatisticalProcess(DerivedStatisticalProcessTemplate),
+    SpatialProcess(SpatialProcessTemplate),
     /// A well-framed Section 4 whose template is not interpreted by this
     /// version of the library. `raw` contains the template-specific bytes
     /// following the common parameter category and number.
@@ -334,6 +335,15 @@ pub struct DerivedStatisticalProcessTemplate {
     pub interval: StatisticalInterval,
 }
 
+/// Product Definition Template 4.15: statistical processing over a spatial area.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpatialProcessTemplate {
+    pub base: AnalysisOrForecastTemplate,
+    pub statistical_process: u8,
+    pub spatial_processing: u8,
+    pub number_of_points_used: u8,
+}
+
 /// Statistical processing descriptor from GRIB2 Product Definition templates
 /// with one or more time range specifications.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -454,6 +464,9 @@ impl ProductDefinitionTemplate {
             12 => Ok(Self::DerivedStatisticalProcess(
                 DerivedStatisticalProcessTemplate::parse(section_bytes)?,
             )),
+            15 => Ok(Self::SpatialProcess(SpatialProcessTemplate::parse(
+                section_bytes,
+            )?)),
             number => {
                 let raw_len = section_bytes.len() - 11;
                 let mut raw = Vec::new();
@@ -478,6 +491,7 @@ impl ProductDefinitionTemplate {
             Self::PercentileStatisticalProcess(_) => 10,
             Self::EnsembleStatisticalProcess(_) => 11,
             Self::DerivedStatisticalProcess(_) => 12,
+            Self::SpatialProcess(_) => 15,
             Self::Unsupported { number, .. } => *number,
         }
     }
@@ -494,6 +508,7 @@ impl ProductDefinitionTemplate {
             Self::PercentileStatisticalProcess(template) => &template.percentile.base,
             Self::EnsembleStatisticalProcess(template) => &template.ensemble.base,
             Self::DerivedStatisticalProcess(template) => &template.derived.base,
+            Self::SpatialProcess(template) => &template.base,
             Self::Unsupported { .. } => return None,
         })
     }
@@ -519,7 +534,8 @@ impl ProductDefinitionTemplate {
             | Self::IndividualEnsembleForecast(_)
             | Self::DerivedForecast(_)
             | Self::ProbabilityForecast(_)
-            | Self::PercentileForecast(_) => None,
+            | Self::PercentileForecast(_)
+            | Self::SpatialProcess(_) => None,
             Self::Unsupported { .. } => None,
         }
     }
@@ -661,6 +677,21 @@ impl DerivedStatisticalProcessTemplate {
         Ok(Self {
             derived: DerivedForecastTemplate::parse(section_bytes)?,
             interval: StatisticalInterval::parse(section_bytes, 36, "template 4.12")?,
+        })
+    }
+}
+
+impl SpatialProcessTemplate {
+    const MINIMUM_LENGTH: usize = 37;
+
+    fn parse(section_bytes: &[u8]) -> Result<Self> {
+        require_len(section_bytes, Self::MINIMUM_LENGTH, "template 4.15")?;
+
+        Ok(Self {
+            base: AnalysisOrForecastTemplate::parse(section_bytes)?,
+            statistical_process: section_bytes[34],
+            spatial_processing: section_bytes[35],
+            number_of_points_used: section_bytes[36],
         })
     }
 }
@@ -1142,6 +1173,25 @@ mod tests {
     }
 
     #[test]
+    fn parses_spatial_process_template() {
+        let mut section = product_section_template_zero();
+        section.resize(37, 0);
+        set_product_template(&mut section, 15);
+        section[34] = 1;
+        section[35] = 2;
+        section[36] = 4;
+
+        let product = ProductDefinition::parse(&section).unwrap();
+        let ProductDefinitionTemplate::SpatialProcess(template) = product.template else {
+            panic!("expected template 4.15");
+        };
+        assert_eq!(template.statistical_process, 1);
+        assert_eq!(template.spatial_processing, 2);
+        assert_eq!(template.number_of_points_used, 4);
+        assert_eq!(template.base.forecast_time, 6);
+    }
+
+    #[test]
     fn rejects_invalid_statistical_process_end_time() {
         let mut section = product_section_template_eight();
         section[36] = 2;
@@ -1202,7 +1252,7 @@ mod tests {
 
     #[test]
     fn rejects_truncated_instantaneous_product_templates() {
-        for (template, length) in [(2, 35), (5, 46), (6, 34)] {
+        for (template, length) in [(2, 35), (5, 46), (6, 34), (15, 36)] {
             let mut section = product_section_template_zero();
             section.resize(length, 0);
             set_product_template(&mut section, template);
