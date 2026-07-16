@@ -1,5 +1,5 @@
 [workspace]
-members = ["grib-core", "grib-reader", "grib-writer"]
+members = ["grib-aec", "grib-core", "grib-reader", "grib-writer"]
 resolver = "2"
 
 [workspace.package]
@@ -11,6 +11,7 @@ repository = "https://github.com/roteiro-gis/grib-rust"
 homepage = "https://github.com/roteiro-gis/grib-rust"
 
 [workspace.dependencies]
+grib-aec = { path = "grib-aec", version = "0.7.0" }
 ndarray = "0.17"
 thiserror = "2"
 memmap2 = "0.9.11"
