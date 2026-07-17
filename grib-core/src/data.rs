@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 
 /// Data representation template number and parameters.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum DataRepresentation {
     /// Template 5.0: Simple packing.
     SimplePacking(ScaledPackingParams),
@@ -14,6 +15,8 @@ pub enum DataRepresentation {
     Jpeg2000Packing(Jpeg2000PackingParams),
     /// Template 5.41: PNG image packing.
     PngPacking(PngPackingParams),
+    /// Template 5.42: CCSDS 121.0 adaptive entropy coding.
+    CcsdsPacking(CcsdsPackingParams),
     /// Unsupported template.
     Unsupported(u16),
 }
@@ -44,6 +47,171 @@ pub struct Jpeg2000PackingParams {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PngPackingParams {
     pub packing: ScaledPackingParams,
+}
+
+/// CCSDS/AEC option mask stored by data representation template 5.42.
+///
+/// The bit assignments match the `libaec` API referenced by the WMO template.
+/// Bit 7 is reserved and therefore rejected by [`CcsdsFlags::from_bits`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CcsdsFlags(u8);
+
+impl CcsdsFlags {
+    /// No optional codec behavior.
+    pub const NONE: Self = Self(0);
+    /// Samples are signed two's-complement integers.
+    pub const SIGNED: Self = Self(1 << 0);
+    /// Samples with 17 through 24 bits use three-byte containers.
+    pub const THREE_BYTE: Self = Self(1 << 1);
+    /// Sample containers store their most-significant byte first.
+    pub const MSB: Self = Self(1 << 2);
+    /// Apply the CCSDS unit-delay preprocessor.
+    pub const PREPROCESS: Self = Self(1 << 3);
+    /// Use the restricted code-option set for samples no wider than four bits.
+    pub const RESTRICTED: Self = Self(1 << 4);
+    /// Decode legacy streams whose reference sample intervals are byte padded.
+    pub const PAD_RSI: Self = Self(1 << 5);
+    /// Permit non-standard even block sizes.
+    pub const NOT_ENFORCE: Self = Self(1 << 6);
+
+    const KNOWN_BITS: u8 = Self::SIGNED.0
+        | Self::THREE_BYTE.0
+        | Self::MSB.0
+        | Self::PREPROCESS.0
+        | Self::RESTRICTED.0
+        | Self::PAD_RSI.0
+        | Self::NOT_ENFORCE.0;
+
+    /// ecCodes' canonical template 5.42 options.
+    pub const DEFAULT: Self = Self(Self::THREE_BYTE.0 | Self::MSB.0 | Self::PREPROCESS.0);
+
+    /// Constructs flags when no reserved bits are set.
+    pub const fn from_bits(bits: u8) -> Option<Self> {
+        if bits & !Self::KNOWN_BITS == 0 {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
+
+    /// Returns the template 5.42 wire representation.
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// Returns whether all bits in `other` are present.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl Default for CcsdsFlags {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+impl std::ops::BitOr for CcsdsFlags {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for CcsdsFlags {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+/// Number of samples in a CCSDS/AEC coding block.
+///
+/// Standard streams use 8, 16, 32, or 64 samples. Other non-zero even sizes
+/// are representable because `libaec` permits them when
+/// [`CcsdsFlags::NOT_ENFORCE`] is present.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CcsdsBlockSize(u8);
+
+impl CcsdsBlockSize {
+    pub const EIGHT: Self = Self(8);
+    pub const SIXTEEN: Self = Self(16);
+    pub const THIRTY_TWO: Self = Self(32);
+    pub const SIXTY_FOUR: Self = Self(64);
+
+    /// Constructs a block size accepted by the AEC codec.
+    pub const fn new(samples: u8) -> Option<Self> {
+        if samples != 0 && samples.is_multiple_of(2) {
+            Some(Self(samples))
+        } else {
+            None
+        }
+    }
+
+    pub const fn samples(self) -> u8 {
+        self.0
+    }
+
+    pub const fn is_standard(self) -> bool {
+        matches!(self.0, 8 | 16 | 32 | 64)
+    }
+}
+
+impl Default for CcsdsBlockSize {
+    fn default() -> Self {
+        Self::THIRTY_TWO
+    }
+}
+
+/// Validated parameters for CCSDS 121.0 packing (template 5.42).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CcsdsPackingParams {
+    packing: ScaledPackingParams,
+    flags: CcsdsFlags,
+    block_size: CcsdsBlockSize,
+    reference_sample_interval: u16,
+}
+
+impl CcsdsPackingParams {
+    /// Constructs a parameter set after validating the interdependent AEC
+    /// width, flag, block-size, and reference-interval constraints.
+    pub fn new(
+        packing: ScaledPackingParams,
+        flags: CcsdsFlags,
+        block_size: CcsdsBlockSize,
+        reference_sample_interval: u16,
+    ) -> Result<Self> {
+        validate_ccsds_parameters(
+            packing.bits_per_value,
+            flags,
+            block_size,
+            reference_sample_interval,
+        )
+        .map_err(Error::ValueOutOfRange)?;
+
+        Ok(Self {
+            packing,
+            flags,
+            block_size,
+            reference_sample_interval,
+        })
+    }
+
+    pub const fn packing(&self) -> &ScaledPackingParams {
+        &self.packing
+    }
+
+    pub const fn flags(&self) -> CcsdsFlags {
+        self.flags
+    }
+
+    pub const fn block_size(&self) -> CcsdsBlockSize {
+        self.block_size
+    }
+
+    pub const fn reference_sample_interval(&self) -> u16 {
+        self.reference_sample_interval
+    }
 }
 
 /// Parameters for complex packing (Templates 5.2 and 5.3).
@@ -98,6 +266,7 @@ impl DataRepresentation {
             3 => parse_complex_packing(section_bytes, true),
             40 => parse_jpeg2000_packing(section_bytes),
             41 => parse_png_packing(section_bytes),
+            42 => parse_ccsds_packing(section_bytes),
             _ => Ok(Self::Unsupported(template)),
         }
     }
@@ -108,6 +277,7 @@ impl DataRepresentation {
             Self::ComplexPacking(params) => Some(params.encoded_values),
             Self::Jpeg2000Packing(params) => Some(params.packing.encoded_values),
             Self::PngPacking(params) => Some(params.packing.encoded_values),
+            Self::CcsdsPacking(params) => Some(params.packing().encoded_values),
             Self::Unsupported(_) => None,
         }
     }
@@ -156,6 +326,73 @@ fn parse_png_packing(data: &[u8]) -> Result<DataRepresentation> {
     Ok(DataRepresentation::PngPacking(PngPackingParams {
         packing: parse_scaled_packing_base(data, 41, 21)?,
     }))
+}
+
+fn parse_ccsds_packing(data: &[u8]) -> Result<DataRepresentation> {
+    let packing = parse_scaled_packing_base(data, 42, 25)?;
+    let flags = CcsdsFlags::from_bits(data[21]).ok_or_else(|| Error::InvalidSection {
+        section: 5,
+        reason: format!(
+            "template 5.42 has reserved CCSDS flag bits set: 0x{:02x}",
+            data[21]
+        ),
+    })?;
+    let block_size = CcsdsBlockSize::new(data[22]).ok_or_else(|| Error::InvalidSection {
+        section: 5,
+        reason: format!(
+            "template 5.42 block size must be a non-zero even value, got {}",
+            data[22]
+        ),
+    })?;
+    let reference_sample_interval = u16::from_be_bytes(data[23..25].try_into().unwrap());
+
+    validate_ccsds_parameters(
+        packing.bits_per_value,
+        flags,
+        block_size,
+        reference_sample_interval,
+    )
+    .map_err(|reason| Error::InvalidSection {
+        section: 5,
+        reason: format!("invalid template 5.42 parameters: {reason}"),
+    })?;
+
+    Ok(DataRepresentation::CcsdsPacking(CcsdsPackingParams {
+        packing,
+        flags,
+        block_size,
+        reference_sample_interval,
+    }))
+}
+
+fn validate_ccsds_parameters(
+    bits_per_value: u8,
+    flags: CcsdsFlags,
+    block_size: CcsdsBlockSize,
+    reference_sample_interval: u16,
+) -> std::result::Result<(), String> {
+    if bits_per_value > 32 {
+        return Err(format!(
+            "CCSDS bits per value must be at most 32, got {bits_per_value}"
+        ));
+    }
+    if !block_size.is_standard() && !flags.contains(CcsdsFlags::NOT_ENFORCE) {
+        return Err(format!(
+            "CCSDS block size {} requires the NOT_ENFORCE flag",
+            block_size.samples()
+        ));
+    }
+    if !(1..=4096).contains(&reference_sample_interval) {
+        return Err(format!(
+            "CCSDS reference sample interval must be between 1 and 4096, got {reference_sample_interval}"
+        ));
+    }
+    if flags.contains(CcsdsFlags::RESTRICTED) && bits_per_value > 4 {
+        return Err(format!(
+            "CCSDS RESTRICTED flag requires at most 4 bits per value, got {bits_per_value}"
+        ));
+    }
+    Ok(())
 }
 
 fn parse_complex_packing(
@@ -225,7 +462,10 @@ fn parse_complex_packing(
 
 #[cfg(test)]
 mod tests {
-    use super::{DataRepresentation, Jpeg2000PackingParams, PngPackingParams, ScaledPackingParams};
+    use super::{
+        CcsdsBlockSize, CcsdsFlags, CcsdsPackingParams, DataRepresentation, Jpeg2000PackingParams,
+        PngPackingParams, ScaledPackingParams,
+    };
     use crate::binary::encode_wmo_i16;
 
     #[test]
@@ -312,5 +552,95 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn parses_ccsds_packing_template() {
+        let section = ccsds_section(20, CcsdsFlags::DEFAULT.bits(), 32, 128);
+
+        assert_eq!(
+            DataRepresentation::parse(&section).unwrap(),
+            DataRepresentation::CcsdsPacking(
+                CcsdsPackingParams::new(
+                    ScaledPackingParams {
+                        encoded_values: 6,
+                        reference_value: 1.25,
+                        binary_scale: -1,
+                        decimal_scale: 2,
+                        bits_per_value: 20,
+                        original_field_type: 0,
+                    },
+                    CcsdsFlags::DEFAULT,
+                    CcsdsBlockSize::THIRTY_TWO,
+                    128,
+                )
+                .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn parses_unenforced_even_ccsds_block_size() {
+        let flags = CcsdsFlags::DEFAULT | CcsdsFlags::NOT_ENFORCE;
+        let section = ccsds_section(8, flags.bits(), 12, 1);
+        let parsed = DataRepresentation::parse(&section).unwrap();
+        let DataRepresentation::CcsdsPacking(params) = parsed else {
+            panic!("expected CCSDS representation");
+        };
+
+        assert_eq!(params.flags(), flags);
+        assert_eq!(params.block_size().samples(), 12);
+        assert_eq!(params.reference_sample_interval(), 1);
+    }
+
+    #[test]
+    fn rejects_reserved_ccsds_flag_bit() {
+        let error = DataRepresentation::parse(&ccsds_section(8, 0x80, 32, 128)).unwrap_err();
+        assert!(matches!(
+            error,
+            crate::Error::InvalidSection { section: 5, .. }
+        ));
+        assert!(error.to_string().contains("reserved CCSDS flag bits"));
+    }
+
+    #[test]
+    fn rejects_nonstandard_ccsds_block_without_flag() {
+        let error = DataRepresentation::parse(&ccsds_section(8, 0, 12, 128)).unwrap_err();
+        assert!(error.to_string().contains("requires the NOT_ENFORCE flag"));
+    }
+
+    #[test]
+    fn rejects_restricted_ccsds_width_above_four_bits() {
+        let error =
+            DataRepresentation::parse(&ccsds_section(5, CcsdsFlags::RESTRICTED.bits(), 32, 128))
+                .unwrap_err();
+        assert!(error.to_string().contains("requires at most 4 bits"));
+    }
+
+    #[test]
+    fn rejects_ccsds_reference_interval_outside_codec_range() {
+        for interval in [0, 4097] {
+            let error = DataRepresentation::parse(&ccsds_section(8, 0, 32, interval)).unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("reference sample interval must be between 1 and 4096"));
+        }
+    }
+
+    fn ccsds_section(bits_per_value: u8, flags: u8, block_size: u8, rsi: u16) -> Vec<u8> {
+        let mut section = vec![0u8; 25];
+        section[..4].copy_from_slice(&25u32.to_be_bytes());
+        section[4] = 5;
+        section[5..9].copy_from_slice(&6u32.to_be_bytes());
+        section[9..11].copy_from_slice(&42u16.to_be_bytes());
+        section[11..15].copy_from_slice(&1.25f32.to_be_bytes());
+        section[15..17].copy_from_slice(&encode_wmo_i16(-1).unwrap());
+        section[17..19].copy_from_slice(&2i16.to_be_bytes());
+        section[19] = bits_per_value;
+        section[20] = 0;
+        section[21] = flags;
+        section[22] = block_size;
+        section[23..25].copy_from_slice(&rsi.to_be_bytes());
+        section
     }
 }

@@ -17,6 +17,6 @@ pub use fixtures::{
 #[allow(unused_imports)]
 pub use reference::{
     benchmark_reference, benchmark_rust, collect_parity_samples, dump_reference, finite_sum,
-    helper_path, write_fixture, ReferenceBenchmark, ReferenceDump, ReferenceMessage,
-    ReferenceTimeDump, RustBenchmark,
+    generate_ccsds_reference, helper_path, write_fixture, ReferenceBenchmark, ReferenceDump,
+    ReferenceMessage, ReferenceTimeDump, RustBenchmark,
 };

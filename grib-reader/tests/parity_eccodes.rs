@@ -7,8 +7,8 @@ use common::{
     build_grib2_complex_packing_message_with_missing, build_grib2_lambert_message,
     build_grib2_message, build_grib2_multifield_message, build_grib2_polar_stereographic_message,
     build_grib2_regular_gaussian_message, build_grib2_rotated_latlon_message,
-    build_grib2_spatial_differencing_message, collect_parity_samples, dump_reference, helper_path,
-    write_fixture,
+    build_grib2_spatial_differencing_message, collect_parity_samples, dump_reference,
+    generate_ccsds_reference, helper_path, write_fixture,
 };
 use grib_reader::{DataRepresentation, GribFile, ParameterTableSource};
 
@@ -20,7 +20,7 @@ fn generated_fixtures_match_eccodes_when_configured() {
     });
 
     let dir = tempfile::tempdir().unwrap();
-    let fixtures = [
+    let mut fixtures = vec![
         write_fixture(
             dir.path(),
             "sample.grib1",
@@ -69,6 +69,17 @@ fn generated_fixtures_match_eccodes_when_configured() {
             &build_grib2_regular_gaussian_message(),
         ),
     ];
+    for profile in [
+        "default",
+        "constant",
+        "restricted",
+        "incompressible32",
+        "unenforced",
+    ] {
+        let ccsds_path = dir.path().join(format!("ccsds-{profile}.grib2"));
+        generate_ccsds_reference(&helper, profile, &ccsds_path);
+        fixtures.push(ccsds_path);
+    }
 
     for path in fixtures {
         assert_matches_reference(&helper, &path);
@@ -215,6 +226,7 @@ fn sample_requires_disabled_codec(file: &GribFile) -> bool {
         match &message.metadata().data_representation {
             DataRepresentation::Jpeg2000Packing(_) if !cfg!(feature = "jpeg2000") => return true,
             DataRepresentation::PngPacking(_) if !cfg!(feature = "png") => return true,
+            DataRepresentation::CcsdsPacking(_) if !cfg!(feature = "ccsds") => return true,
             _ => {}
         }
     }

@@ -2334,7 +2334,11 @@ fn write_data_representation_section(out: &mut Vec<u8>, packed: &PackedField) ->
         DataRepresentation::PngPacking(params) => {
             write_png_data_representation_section(out, params)
         }
+        DataRepresentation::CcsdsPacking(_) => Err(Error::UnsupportedDataTemplate(42)),
         DataRepresentation::Unsupported(template) => Err(Error::UnsupportedDataTemplate(*template)),
+        _ => Err(Error::Other(
+            "data representation variant is not supported by this writer".into(),
+        )),
     }
 }
 

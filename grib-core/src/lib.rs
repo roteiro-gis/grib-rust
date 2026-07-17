@@ -15,8 +15,8 @@ pub mod product;
 
 pub use allocation::{ensure_limit, filled_vec};
 pub use data::{
-    ComplexPackingParams, DataRepresentation, Jpeg2000PackingParams, PngPackingParams,
-    ScaledPackingParams, SpatialDifferencingParams,
+    CcsdsBlockSize, CcsdsFlags, CcsdsPackingParams, ComplexPackingParams, DataRepresentation,
+    Jpeg2000PackingParams, PngPackingParams, ScaledPackingParams, SpatialDifferencingParams,
 };
 pub use error::{Error, Result};
 pub use grid::{
