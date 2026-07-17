@@ -225,8 +225,13 @@ cargo test -p grib-reader --no-default-features
 ./scripts/run-reference-parity.sh
 cargo check --manifest-path grib-reader/fuzz/Cargo.toml --bins
 cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins -- -D warnings
-cargo package --workspace --locked
+./scripts/verify-packages.sh
 ```
+
+`verify-packages.sh` assembles each normalized crate archive and compiles all
+of those archives together through local registry patches. This verifies
+unpublished workspace dependencies without relying on stable Cargo's broken
+temporary-registry workspace verifier.
 
 The `Reference Compat` workflow runs the Dockerized ecCodes parity suite for
 pull requests, `main`/`master` pushes, release tags, and a weekly scheduled
@@ -244,7 +249,7 @@ git switch main
 git pull --ff-only
 git merge <release-branch>
 
-cargo package --workspace --locked
+./scripts/verify-packages.sh
 cargo publish -p grib-core --dry-run --locked
 cargo publish -p grib-core --locked
 cargo publish -p grib-reader --dry-run --locked
