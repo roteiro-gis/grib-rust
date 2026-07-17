@@ -451,12 +451,10 @@ fn unpack_ccsds_into<T: DecodeSample>(
                 "CCSDS sample container 0x{container:08x} has invalid extension bits for its {bits}-bit width"
             )));
         }
-        let packed = if signed {
-            sign_extend_ccsds_sample(raw, bits) as f64
-        } else {
-            f64::from(raw)
-        };
-        output.push_present(scale_ccsds_value(packing, packed))?;
+        // SIGNED controls the AEC preprocessor. GRIB template 5.42 still
+        // stores non-negative scaled differences, so reconstruction uses the
+        // declared low bits as an unsigned value.
+        output.push_present(scale_ccsds_value(packing, f64::from(raw)))?;
     }
     Ok(())
 }
@@ -479,16 +477,6 @@ fn ccsds_decoder_flags(flags: CcsdsFlags) -> AecFlags {
         }
     }
     codec_flags
-}
-
-#[cfg(feature = "ccsds")]
-fn sign_extend_ccsds_sample(raw: u32, bits: u8) -> i64 {
-    let sign_bit = 1u32 << (bits - 1);
-    if raw & sign_bit == 0 {
-        i64::from(raw)
-    } else {
-        i64::from(raw) - (1i64 << bits)
-    }
 }
 
 #[cfg(feature = "ccsds")]
@@ -1740,8 +1728,8 @@ mod tests {
 
     #[cfg(feature = "ccsds")]
     #[test]
-    fn decodes_ccsds_signed_samples_and_applies_grib_scaling() {
-        let values = [-17, -1, 0, 1, 511];
+    fn decodes_ccsds_signed_preprocessing_as_unsigned_grib_differences() {
+        let values = [0, 1, 2047, 2048, 4095];
         let flags = CcsdsFlags::SIGNED | CcsdsFlags::PREPROCESS;
         let (payload, mut representation) = encode_ccsds_test_values(&values, 12, flags, 16);
         let DataRepresentation::CcsdsPacking(params) = &mut representation else {

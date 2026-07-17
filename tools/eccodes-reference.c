@@ -492,6 +492,13 @@ static void command_generate_ccsds(const char *profile, const char *path) {
         for (size_t i = 0; i < point_count; ++i) {
             values[i] = (double)(i % 16);
         }
+    } else if (strcmp(profile, "signed") == 0) {
+        bits_per_value = 8;
+        decimal_scale = 0;
+        flags |= 1;
+        for (size_t i = 0; i < point_count; ++i) {
+            values[i] = (double)(i % 256);
+        }
     } else if (strcmp(profile, "incompressible32") == 0) {
         bits_per_value = 32;
         decimal_scale = 0;
