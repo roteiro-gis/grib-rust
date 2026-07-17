@@ -73,6 +73,7 @@ fn generated_fixtures_match_eccodes_when_configured() {
         "default",
         "constant",
         "restricted",
+        "signed",
         "incompressible32",
         "unenforced",
     ] {

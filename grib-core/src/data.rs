@@ -59,7 +59,10 @@ pub struct CcsdsFlags(u8);
 impl CcsdsFlags {
     /// No optional codec behavior.
     pub const NONE: Self = Self(0);
-    /// Samples are signed two's-complement integers.
+    /// Treat sample bit patterns as signed during AEC preprocessing.
+    ///
+    /// GRIB reconstruction still interprets the decoded samples as unsigned
+    /// scaled differences from the field reference value.
     pub const SIGNED: Self = Self(1 << 0);
     /// Samples with 17 through 24 bits use three-byte containers.
     pub const THREE_BYTE: Self = Self(1 << 1);
