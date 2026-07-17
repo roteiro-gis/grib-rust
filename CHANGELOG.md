@@ -36,6 +36,9 @@
   process type, spatial method, and source-point count against ecCodes
 - replace duplicate simple- and image-packing parameter structs with one
   `ScaledPackingParams` model shared by every scaled representation
+- decode CCSDS/AEC data representation template 5.42 behind the `ccsds`
+  feature with validated option masks, block sizes, reference sample intervals,
+  and one shared safe interface to bundled libaec 1.1.7
 - raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
 
 ## 0.6.0 - 2026-06-25

@@ -90,6 +90,13 @@ pub enum Error {
     #[error("value out of range: {0}")]
     ValueOutOfRange(String),
 
+    #[error("{codec} {operation} failed: {reason}")]
+    Codec {
+        codec: &'static str,
+        operation: &'static str,
+        reason: String,
+    },
+
     #[error("failed to allocate {requested} {what}: {reason}")]
     AllocationFailed {
         what: String,

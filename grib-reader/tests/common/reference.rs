@@ -79,6 +79,22 @@ pub fn dump_reference(helper: &Path, path: &Path) -> ReferenceDump {
     })
 }
 
+pub fn generate_ccsds_reference(helper: &Path, profile: &str, path: &Path) {
+    let output = Command::new(helper)
+        .arg("generate-ccsds")
+        .arg(profile)
+        .arg(path)
+        .output()
+        .unwrap_or_else(|err| panic!("failed to run {}: {err}", helper.display()));
+    assert!(
+        output.status.success(),
+        "CCSDS {profile} reference generation failed for {}:\nstdout:\n{}\nstderr:\n{}",
+        path.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 pub fn benchmark_reference(
     helper: &Path,
     paths: &[PathBuf],

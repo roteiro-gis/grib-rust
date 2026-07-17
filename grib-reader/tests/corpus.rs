@@ -166,6 +166,7 @@ fn sample_requires_disabled_codec(file: &GribFile) -> bool {
         match &message.metadata().data_representation {
             DataRepresentation::Jpeg2000Packing(_) if !cfg!(feature = "jpeg2000") => return true,
             DataRepresentation::PngPacking(_) if !cfg!(feature = "png") => return true,
+            DataRepresentation::CcsdsPacking(_) if !cfg!(feature = "ccsds") => return true,
             _ => {}
         }
     }
