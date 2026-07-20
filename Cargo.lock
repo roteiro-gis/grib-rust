@@ -325,6 +325,7 @@ name = "grib-writer"
 version = "0.7.0"
 dependencies = [
  "criterion",
+ "grib-aec",
  "grib-core",
  "grib-reader",
  "openjp2",
