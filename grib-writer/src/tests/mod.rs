@@ -463,8 +463,8 @@ fn writes_grib1_ibm_float_reference_value() {
 
 #[test]
 fn rejects_grib1_u24_length_overflow() {
-    let err =
-        super::checked_grib1_u24_length(grib_core::binary::U24_MAX as usize + 1, 0).unwrap_err();
+    let err = super::grib1::checked_grib1_u24_length(grib_core::binary::U24_MAX as usize + 1, 0)
+        .unwrap_err();
     assert!(matches!(
         err,
         grib_core::Error::InvalidSection { section: 0, .. }
@@ -473,7 +473,7 @@ fn rejects_grib1_u24_length_overflow() {
 
 #[test]
 fn rejects_unsupported_grib1_binary_data_flags() {
-    let err = super::validate_grib1_binary_data_flags(0b0001).unwrap_err();
+    let err = super::grib1::validate_grib1_binary_data_flags(0b0001).unwrap_err();
     assert!(matches!(
         err,
         grib_core::Error::UnsupportedDataTemplate(1007)

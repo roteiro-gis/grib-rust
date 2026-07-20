@@ -1,14 +1,15 @@
 use grib_core::grib1::ProductDefinition as Grib1ProductDefinition;
 use grib_core::{DataRepresentation, GridDefinition, Identification, ProductDefinition};
 
+use crate::grib1::validate_supported_grib1_grid;
 use crate::packing::{
     pack_ccsds_auto, pack_complex_auto, pack_jpeg2000_auto, pack_png_auto, pack_simple_auto,
     reorder_field_to_grib_scan_order, PackedField, PackingStrategy,
 };
-use crate::{
-    checked_grid_point_count, validate_supported_grib1_grid, validate_supported_grid,
-    validate_supported_product, Error, Result,
+use crate::sections::{
+    checked_grid_point_count, validate_supported_grid, validate_supported_product,
 };
+use crate::{Error, Result};
 
 /// Order of values supplied to field builders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
