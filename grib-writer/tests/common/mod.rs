@@ -5,12 +5,15 @@ use std::process::Command;
 
 use grib_core::metadata::ReferenceTime;
 use grib_core::{
-    AnalysisOrForecastTemplate, DerivedForecastTemplate, DerivedStatisticalProcessTemplate,
-    FixedSurface, GridDefinition, Identification, LatLonGrid, PercentileForecastTemplate,
-    PercentileStatisticalProcessTemplate, ProbabilityForecastTemplate, ProbabilityLimit,
-    ProbabilityStatisticalProcessTemplate, ProbabilityType, ProductDefinition,
-    ProductDefinitionTemplate, SpatialProcessTemplate, StatisticalInterval, StatisticalTimeRange,
+    AnalysisOrForecastTemplate, DataRepresentation, DerivedForecastTemplate,
+    DerivedStatisticalProcessTemplate, FixedSurface, GridDefinition, Identification, LatLonGrid,
+    PercentileForecastTemplate, PercentileStatisticalProcessTemplate, ProbabilityForecastTemplate,
+    ProbabilityLimit, ProbabilityStatisticalProcessTemplate, ProbabilityType, ProductDefinition,
+    ProductDefinitionTemplate, ScaledPackingParams, SpatialProcessTemplate, StatisticalInterval,
+    StatisticalTimeRange,
 };
+#[cfg(feature = "ccsds")]
+use grib_core::{CcsdsBlockSize, CcsdsFlags};
 use grib_reader::GribFile;
 use grib_writer::{
     Grib1Field, Grib1FieldBuilder, Grib1ProductDefinition, Grib2Field, Grib2FieldBuilder,
@@ -27,9 +30,20 @@ pub struct ReferenceDump {
 pub struct ReferenceMessage {
     pub edition: u8,
     pub name: String,
+    pub discipline: Option<i64>,
+    pub parameter_category: Option<i64>,
+    pub parameter_number: Option<i64>,
     pub reference_time: ReferenceTimeDump,
     pub ni: usize,
     pub nj: usize,
+    pub data_representation_template_number: Option<i64>,
+    pub number_of_values: Option<i64>,
+    pub bits_per_value: Option<i64>,
+    pub binary_scale_factor: Option<i64>,
+    pub decimal_scale_factor: Option<i64>,
+    pub ccsds_flags: Option<i64>,
+    pub ccsds_block_size: Option<i64>,
+    pub ccsds_rsi: Option<i64>,
     pub product_definition_template_number: Option<i64>,
     pub derived_forecast: Option<i64>,
     pub number_of_forecasts_in_ensemble: Option<i64>,
@@ -125,13 +139,7 @@ pub fn assert_matches_reference(helper: &Path, path: &Path, bytes: &[u8]) {
             path.display(),
             index
         );
-        assert_eq!(
-            message.parameter_description(),
-            expected.name,
-            "parameter description mismatch for {} field {}",
-            path.display(),
-            index
-        );
+        assert_parameter_identity(&message, expected, path, index);
         assert_eq!(
             message.reference_time().year,
             expected.reference_time.year,
@@ -182,6 +190,7 @@ pub fn assert_matches_reference(helper: &Path, path: &Path, bytes: &[u8]) {
             index
         );
         assert_product_metadata(&message, expected, path, index);
+        assert_data_representation_metadata(&message, expected, path, index);
         assert_eq!(
             actual.len(),
             expected.values.len(),
@@ -220,6 +229,153 @@ pub fn assert_matches_reference(helper: &Path, path: &Path, bytes: &[u8]) {
             }
         }
     }
+}
+
+fn assert_parameter_identity(
+    message: &grib_reader::Message<'_>,
+    expected: &ReferenceMessage,
+    path: &Path,
+    field_index: usize,
+) {
+    if message.edition() != 2 {
+        return;
+    }
+
+    let product = message
+        .product_definition()
+        .expect("GRIB2 message must expose its product definition");
+    assert_eq!(
+        message.metadata().discipline.map(i64::from),
+        expected.discipline,
+        "discipline mismatch for {} field {}",
+        path.display(),
+        field_index
+    );
+    assert_eq!(
+        Some(i64::from(product.parameter_category)),
+        expected.parameter_category,
+        "parameter category mismatch for {} field {}",
+        path.display(),
+        field_index
+    );
+    assert_eq!(
+        Some(i64::from(product.parameter_number)),
+        expected.parameter_number,
+        "parameter number mismatch for {} field {}",
+        path.display(),
+        field_index
+    );
+}
+
+fn assert_data_representation_metadata(
+    message: &grib_reader::Message<'_>,
+    expected: &ReferenceMessage,
+    path: &Path,
+    field_index: usize,
+) {
+    if message.edition() != 2 {
+        return;
+    }
+
+    let representation = &message.metadata().data_representation;
+    let (template, encoded_values, bits_per_value, binary_scale, decimal_scale) =
+        match representation {
+            DataRepresentation::SimplePacking(params) => scaled_metadata(0, params),
+            DataRepresentation::ComplexPacking(params) => (
+                if params.spatial_differencing.is_some() {
+                    3
+                } else {
+                    2
+                },
+                params.encoded_values,
+                params.group_reference_bits,
+                params.binary_scale,
+                params.decimal_scale,
+            ),
+            DataRepresentation::Jpeg2000Packing(params) => scaled_metadata(40, &params.packing),
+            DataRepresentation::PngPacking(params) => scaled_metadata(41, &params.packing),
+            DataRepresentation::CcsdsPacking(params) => {
+                assert_eq!(
+                    expected.ccsds_flags,
+                    Some(i64::from(params.flags().bits())),
+                    "CCSDS flags mismatch for {} field {}",
+                    path.display(),
+                    field_index
+                );
+                assert_eq!(
+                    expected.ccsds_block_size,
+                    Some(i64::from(params.block_size().samples())),
+                    "CCSDS block size mismatch for {} field {}",
+                    path.display(),
+                    field_index
+                );
+                assert_eq!(
+                    expected.ccsds_rsi,
+                    Some(i64::from(params.reference_sample_interval())),
+                    "CCSDS reference sample interval mismatch for {} field {}",
+                    path.display(),
+                    field_index
+                );
+                scaled_metadata(42, params.packing())
+            }
+            DataRepresentation::Unsupported(template) => {
+                assert_eq!(
+                    expected.data_representation_template_number,
+                    Some(i64::from(*template)),
+                    "data representation template mismatch for {} field {}",
+                    path.display(),
+                    field_index
+                );
+                return;
+            }
+            _ => return,
+        };
+
+    assert_eq!(
+        expected.data_representation_template_number,
+        Some(i64::from(template)),
+        "data representation template mismatch for {} field {}",
+        path.display(),
+        field_index
+    );
+    assert_eq!(
+        expected.number_of_values,
+        Some(i64::try_from(encoded_values).unwrap()),
+        "encoded value count mismatch for {} field {}",
+        path.display(),
+        field_index
+    );
+    assert_eq!(
+        expected.bits_per_value,
+        Some(i64::from(bits_per_value)),
+        "bits per value mismatch for {} field {}",
+        path.display(),
+        field_index
+    );
+    assert_eq!(
+        expected.binary_scale_factor,
+        Some(i64::from(binary_scale)),
+        "binary scale mismatch for {} field {}",
+        path.display(),
+        field_index
+    );
+    assert_eq!(
+        expected.decimal_scale_factor,
+        Some(i64::from(decimal_scale)),
+        "decimal scale mismatch for {} field {}",
+        path.display(),
+        field_index
+    );
+}
+
+fn scaled_metadata(template: u16, params: &ScaledPackingParams) -> (u16, usize, u8, i16, i16) {
+    (
+        template,
+        params.encoded_values,
+        params.bits_per_value,
+        params.binary_scale,
+        params.decimal_scale,
+    )
 }
 
 fn assert_product_metadata(
@@ -555,7 +711,7 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
         },
     ));
 
-    vec![
+    let samples = vec![
         (
             "writer-simple.grib2",
             write_grib2_message([simple_grib2_field(&[1.0, 2.0, 3.0, 4.0], 0, 0)]),
@@ -612,7 +768,171 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
             "writer-bitmap.grib1",
             write_grib1_message(simple_grib1_field(&[5.0, f64::NAN, 7.0, 8.0])),
         ),
+    ];
+    #[cfg(feature = "ccsds")]
+    let samples = {
+        let mut samples = samples;
+        samples.extend(ccsds_reference_samples());
+        samples
+    };
+    samples
+}
+
+#[cfg(feature = "ccsds")]
+fn ccsds_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
+    let ccsds_field =
+        |values: &[f64], decimal_scale, flags, block_size, reference_sample_interval| {
+            let ni = u32::try_from(values.len()).unwrap();
+            Grib2FieldBuilder::new()
+                .identification(identification())
+                .grid(latlon_grid(ni, 1, 0))
+                .product(product(0, 0))
+                .packing(PackingStrategy::CcsdsAuto {
+                    decimal_scale,
+                    flags,
+                    block_size,
+                    reference_sample_interval,
+                })
+                .values(values)
+                .build()
+                .unwrap()
+        };
+
+    let default_values = (0..64)
+        .map(|index| 250.0 + f64::from(index / 16) * 0.5 + f64::from(index % 16) * 0.25)
+        .collect::<Vec<_>>();
+    let constant_values = vec![42.0; 64];
+    let bitmap_values = vec![5.0, f64::NAN, 7.0, 8.0];
+    let all_missing_values = vec![f64::NAN; 4];
+    let restricted_values = (0..64)
+        .map(|index| f64::from(index % 16))
+        .collect::<Vec<_>>();
+    let signed_values = (0..256).map(f64::from).collect::<Vec<_>>();
+    let signed_non_byte_values = vec![0.0, 31.0, 1.0, 30.0];
+    let signed_twenty_four_bit_values = vec![0.0, 16_777_215.0, 1.0, 0xaaaaaa as f64];
+    let layout_independent_values = vec![0.0, 1_048_575.0, 0x54321 as f64, 1.0];
+    let incompressible_values = (0..64)
+        .map(|index| f64::from((index as u32).wrapping_mul(2_654_435_761)))
+        .collect::<Vec<_>>();
+    let unenforced_values = (0..252)
+        .map(|index| f64::from(index % 251))
+        .collect::<Vec<_>>();
+
+    [
+        (
+            "writer-ccsds-default.grib2",
+            ccsds_field(
+                &default_values,
+                2,
+                CcsdsFlags::DEFAULT,
+                CcsdsBlockSize::THIRTY_TWO,
+                128,
+            ),
+        ),
+        (
+            "writer-ccsds-constant.grib2",
+            ccsds_field(
+                &constant_values,
+                1,
+                CcsdsFlags::DEFAULT,
+                CcsdsBlockSize::THIRTY_TWO,
+                128,
+            ),
+        ),
+        (
+            "writer-ccsds-bitmap.grib2",
+            ccsds_field(
+                &bitmap_values,
+                0,
+                CcsdsFlags::DEFAULT,
+                CcsdsBlockSize::THIRTY_TWO,
+                128,
+            ),
+        ),
+        (
+            "writer-ccsds-all-missing.grib2",
+            ccsds_field(
+                &all_missing_values,
+                0,
+                CcsdsFlags::DEFAULT,
+                CcsdsBlockSize::THIRTY_TWO,
+                128,
+            ),
+        ),
+        (
+            "writer-ccsds-restricted.grib2",
+            ccsds_field(
+                &restricted_values,
+                0,
+                CcsdsFlags::DEFAULT | CcsdsFlags::RESTRICTED,
+                CcsdsBlockSize::THIRTY_TWO,
+                128,
+            ),
+        ),
+        (
+            "writer-ccsds-signed.grib2",
+            ccsds_field(
+                &signed_values,
+                0,
+                CcsdsFlags::DEFAULT | CcsdsFlags::SIGNED,
+                CcsdsBlockSize::THIRTY_TWO,
+                128,
+            ),
+        ),
+        (
+            "writer-ccsds-signed-five-bit.grib2",
+            ccsds_field(
+                &signed_non_byte_values,
+                0,
+                CcsdsFlags::DEFAULT | CcsdsFlags::SIGNED,
+                CcsdsBlockSize::THIRTY_TWO,
+                128,
+            ),
+        ),
+        (
+            "writer-ccsds-signed-twenty-four-bit.grib2",
+            ccsds_field(
+                &signed_twenty_four_bit_values,
+                0,
+                CcsdsFlags::DEFAULT | CcsdsFlags::SIGNED,
+                CcsdsBlockSize::THIRTY_TWO,
+                128,
+            ),
+        ),
+        (
+            "writer-ccsds-layout-independent.grib2",
+            ccsds_field(
+                &layout_independent_values,
+                0,
+                CcsdsFlags::NONE,
+                CcsdsBlockSize::THIRTY_TWO,
+                128,
+            ),
+        ),
+        (
+            "writer-ccsds-incompressible32.grib2",
+            ccsds_field(
+                &incompressible_values,
+                0,
+                CcsdsFlags::MSB,
+                CcsdsBlockSize::THIRTY_TWO,
+                128,
+            ),
+        ),
+        (
+            "writer-ccsds-unenforced.grib2",
+            ccsds_field(
+                &unenforced_values,
+                0,
+                CcsdsFlags::DEFAULT | CcsdsFlags::NOT_ENFORCE,
+                CcsdsBlockSize::new(12).unwrap(),
+                128,
+            ),
+        ),
     ]
+    .into_iter()
+    .map(|(name, field)| (name, write_grib2_message([field])))
+    .collect()
 }
 
 pub fn simple_grib2_field(
