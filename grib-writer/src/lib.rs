@@ -11,12 +11,12 @@ use grib_core::binary::{
     write_u24_be, write_u32_be, write_u64_be, write_u8_be, U24_MAX,
 };
 use grib_core::{
-    AlbersEqualAreaGrid, AnalysisOrForecastTemplate, CcsdsBlockSize, CcsdsFlags,
-    CcsdsPackingParams, ComplexPackingParams, DataRepresentation, FixedSurface, GridDefinition,
-    Identification, Jpeg2000PackingParams, LambertConformalGrid, LatLonGrid, MercatorGrid,
-    PngPackingParams, PolarStereographicGrid, ProbabilityLimit, ProbabilityType, ProductDefinition,
-    ProductDefinitionTemplate, ProjectedGridCore, ReferenceTime, ScaledPackingParams,
-    StatisticalInterval, StatisticalTimeRange,
+    AlbersEqualAreaGrid, AnalysisOrForecastTemplate, CcsdsPackingParams, ComplexPackingParams,
+    DataRepresentation, FixedSurface, GridDefinition, Identification, Jpeg2000PackingParams,
+    LambertConformalGrid, LatLonGrid, MercatorGrid, PngPackingParams, PolarStereographicGrid,
+    ProbabilityLimit, ProbabilityType, ProductDefinition, ProductDefinitionTemplate,
+    ProjectedGridCore, ReferenceTime, ScaledPackingParams, StatisticalInterval,
+    StatisticalTimeRange,
 };
 
 use packing::{
@@ -26,42 +26,7 @@ use packing::{
 
 pub use grib_core::grib1::ProductDefinition as Grib1ProductDefinition;
 pub use grib_core::{Error, Result};
-
-/// Field packing strategy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PackingStrategy {
-    /// Simple packing with binary scale 0 and automatic bit-width selection.
-    SimpleAuto { decimal_scale: i16 },
-    /// GRIB2 complex packing with fixed-size general groups.
-    ComplexAuto {
-        decimal_scale: i16,
-        spatial_differencing: Option<SpatialDifferencingOrder>,
-    },
-    /// GRIB2 JPEG 2000 code stream packing template 5.40.
-    Jpeg2000Auto { decimal_scale: i16 },
-    /// GRIB2 PNG image packing template 5.41.
-    PngAuto { decimal_scale: i16 },
-    /// GRIB2 CCSDS/AEC packing template 5.42.
-    ///
-    /// The interoperable baseline uses [`CcsdsFlags::DEFAULT`],
-    /// [`CcsdsBlockSize::THIRTY_TWO`], and reference-sample interval 128.
-    /// [`CcsdsFlags::PAD_RSI`] is decode-only and is rejected by the writer.
-    CcsdsAuto {
-        decimal_scale: i16,
-        flags: CcsdsFlags,
-        block_size: CcsdsBlockSize,
-        reference_sample_interval: u16,
-    },
-}
-
-/// Spatial differencing order for GRIB2 complex packing template 5.3.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpatialDifferencingOrder {
-    /// First-order spatial differencing.
-    First,
-    /// Second-order spatial differencing.
-    Second,
-}
+pub use packing::{PackingStrategy, SpatialDifferencingOrder};
 
 /// Order of values supplied to field builders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
