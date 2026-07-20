@@ -10,7 +10,7 @@ use common::{
     build_grib2_spatial_differencing_message, collect_parity_samples, dump_reference,
     generate_ccsds_reference, helper_path, write_fixture,
 };
-use grib_reader::{DataRepresentation, GribFile, ParameterTableSource};
+use grib_reader::{DataRepresentation, GribFile};
 
 #[test]
 #[ignore = "requires GRIB_READER_ECCODES_HELPER"]
@@ -126,11 +126,28 @@ fn assert_matches_reference(helper: &Path, path: &Path) {
             path.display(),
             index
         );
-        if !has_unknown_local_use_parameter(&message) {
+        if message.edition() == 2 {
+            let product = message
+                .product_definition()
+                .expect("GRIB2 message must expose its product definition");
             assert_eq!(
-                message.parameter_description(),
-                expected.name,
-                "parameter description mismatch for {} field {}",
+                message.metadata().discipline.map(i64::from),
+                expected.discipline,
+                "discipline mismatch for {} field {}",
+                path.display(),
+                index
+            );
+            assert_eq!(
+                Some(i64::from(product.parameter_category)),
+                expected.parameter_category,
+                "parameter category mismatch for {} field {}",
+                path.display(),
+                index
+            );
+            assert_eq!(
+                Some(i64::from(product.parameter_number)),
+                expected.parameter_number,
+                "parameter number mismatch for {} field {}",
                 path.display(),
                 index
             );
@@ -232,11 +249,4 @@ fn sample_requires_disabled_codec(file: &GribFile) -> bool {
         }
     }
     false
-}
-
-fn has_unknown_local_use_parameter(message: &grib_reader::Message<'_>) -> bool {
-    matches!(
-        message.parameter().source,
-        ParameterTableSource::UnknownLocal { .. }
-    )
 }

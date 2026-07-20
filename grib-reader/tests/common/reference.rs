@@ -18,6 +18,9 @@ pub struct ReferenceDump {
 pub struct ReferenceMessage {
     pub edition: u8,
     pub name: String,
+    pub discipline: Option<i64>,
+    pub parameter_category: Option<i64>,
+    pub parameter_number: Option<i64>,
     pub reference_time: ReferenceTimeDump,
     pub ni: usize,
     pub nj: usize,

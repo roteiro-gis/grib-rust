@@ -338,6 +338,17 @@ static decode_totals decode_file(const char *path, int emit_json) {
         long ni = get_grid_dimension(handle, "Ni", "Nx", path);
         long nj = get_grid_dimension(handle, "Nj", "Ny", path);
         optional_long_field product_metadata[] = {
+            {"discipline", "discipline", 0, 0},
+            {"parameterCategory", "parameter_category", 0, 0},
+            {"parameterNumber", "parameter_number", 0, 0},
+            {"dataRepresentationTemplateNumber", "data_representation_template_number", 0, 0},
+            {"numberOfValues", "number_of_values", 0, 0},
+            {"bitsPerValue", "bits_per_value", 0, 0},
+            {"binaryScaleFactor", "binary_scale_factor", 0, 0},
+            {"decimalScaleFactor", "decimal_scale_factor", 0, 0},
+            {"ccsdsFlags", "ccsds_flags", 0, 0},
+            {"ccsdsBlockSize", "ccsds_block_size", 0, 0},
+            {"ccsdsRsi", "ccsds_rsi", 0, 0},
             {"productDefinitionTemplateNumber", "product_definition_template_number", 0, 0},
             {"derivedForecast", "derived_forecast", 0, 0},
             {"numberOfForecastsInEnsemble", "number_of_forecasts_in_ensemble", 0, 0},
