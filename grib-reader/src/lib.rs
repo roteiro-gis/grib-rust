@@ -5,6 +5,12 @@
 //! complex packing, multi-field bitmap reuse, bounded allocation, and optional
 //! image-backed and CCSDS packing codecs.
 //!
+//! Missing grid points from bitmaps and embedded complex-packing codes decode
+//! as `NaN`. Complex-packing substitute metadata remains available through
+//! [`ComplexPackingParams::primary_missing_substitute`] and
+//! [`ComplexPackingParams::secondary_missing_substitute`] for callers that
+//! need producer-specific replacement values.
+//!
 //! # Example
 //!
 //! ```no_run
@@ -556,6 +562,8 @@ impl<'a> Message<'a> {
     /// Alternating scan rows are normalized, but the GRIB i/j scan directions
     /// are preserved. Use [`Message::decode_into_north_up`] when deterministic
     /// +i columns and -j rows are required.
+    /// Bitmap omissions and embedded complex-packing missing codes are written
+    /// as `NaN`; substitute metadata is not applied automatically.
     pub fn decode_into<T: DecodeSample>(&self, out: &mut [T]) -> Result<()> {
         self.decode_scan_order_into(out)?;
         self.metadata.grid.reorder_for_ndarray_in_place(out)
@@ -563,6 +571,9 @@ impl<'a> Message<'a> {
 
     /// Decodes into deterministic row-major orientation: +i columns and -j
     /// rows (north-to-south for conventional geographic grids).
+    ///
+    /// Bitmap omissions and embedded complex-packing missing codes are written
+    /// as `NaN`; substitute metadata is not applied automatically.
     pub fn decode_into_north_up<T: DecodeSample>(&self, out: &mut [T]) -> Result<()> {
         self.decode_scan_order_into(out)?;
         self.metadata.grid.normalize_north_up_in_place(out)

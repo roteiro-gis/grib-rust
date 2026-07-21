@@ -2233,8 +2233,8 @@ mod tests {
             original_field_type: 0,
             group_splitting_method: 1,
             missing_value_management: 1,
-            primary_missing_substitute: u32::MAX,
-            secondary_missing_substitute: u32::MAX,
+            primary_missing_substitute: 0x6655_4433,
+            secondary_missing_substitute: 0x2211_00ff,
             num_groups: 2,
             group_width_reference: 0,
             group_width_bits: 2,
@@ -2244,6 +2244,9 @@ mod tests {
             scaled_group_length_bits: 0,
             spatial_differencing: None,
         };
+
+        assert_eq!(params.primary_missing_substitute(), Some(0x6655_4433));
+        assert_eq!(params.secondary_missing_substitute(), None);
 
         let values = unpack_complex(&[0x79, 0x90, 0x34], &params).unwrap();
         assert_eq!(values[0], 7.0);

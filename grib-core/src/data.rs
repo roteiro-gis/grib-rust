@@ -218,6 +218,11 @@ impl CcsdsPackingParams {
 }
 
 /// Parameters for complex packing (Templates 5.2 and 5.3).
+///
+/// Decoders represent embedded primary and secondary missing codes as `NaN`.
+/// The template's substitute metadata is preserved separately and can be
+/// queried with [`ComplexPackingParams::primary_missing_substitute`] and
+/// [`ComplexPackingParams::secondary_missing_substitute`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComplexPackingParams {
     pub encoded_values: usize,
@@ -238,6 +243,36 @@ pub struct ComplexPackingParams {
     pub true_length_last_group: u32,
     pub scaled_group_length_bits: u8,
     pub spatial_differencing: Option<SpatialDifferencingParams>,
+}
+
+impl ComplexPackingParams {
+    /// Returns the raw four-octet primary substitute when primary missing
+    /// values are enabled by Code Table 5.5.
+    ///
+    /// The decoder intentionally emits `NaN` instead of applying this value.
+    /// Callers that need producer-specific substitution can inspect
+    /// [`ComplexPackingParams::original_field_type`] and interpret this raw
+    /// Template 5.2/5.3 value accordingly.
+    pub const fn primary_missing_substitute(&self) -> Option<u32> {
+        match self.missing_value_management {
+            1 | 2 => Some(self.primary_missing_substitute),
+            _ => None,
+        }
+    }
+
+    /// Returns the raw four-octet secondary substitute when both primary and
+    /// secondary missing values are enabled by Code Table 5.5.
+    ///
+    /// The decoder intentionally emits `NaN` instead of applying this value.
+    /// Callers that need producer-specific substitution can inspect
+    /// [`ComplexPackingParams::original_field_type`] and interpret this raw
+    /// Template 5.2/5.3 value accordingly.
+    pub const fn secondary_missing_substitute(&self) -> Option<u32> {
+        match self.missing_value_management {
+            2 => Some(self.secondary_missing_substitute),
+            _ => None,
+        }
+    }
 }
 
 /// Parameters specific to template 5.3 spatial differencing.
@@ -466,8 +501,8 @@ fn parse_complex_packing(
 #[cfg(test)]
 mod tests {
     use super::{
-        CcsdsBlockSize, CcsdsFlags, CcsdsPackingParams, DataRepresentation, Jpeg2000PackingParams,
-        PngPackingParams, ScaledPackingParams,
+        CcsdsBlockSize, CcsdsFlags, CcsdsPackingParams, ComplexPackingParams, DataRepresentation,
+        Jpeg2000PackingParams, PngPackingParams, ScaledPackingParams,
     };
     use crate::binary::encode_wmo_i16;
 
@@ -555,6 +590,41 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn exposes_only_enabled_complex_missing_value_substitutes() {
+        let mut params = ComplexPackingParams {
+            encoded_values: 1,
+            reference_value: 0.0,
+            binary_scale: 0,
+            decimal_scale: 0,
+            group_reference_bits: 1,
+            original_field_type: 0,
+            group_splitting_method: 1,
+            missing_value_management: 0,
+            primary_missing_substitute: 0x1122_3344,
+            secondary_missing_substitute: 0x5566_7788,
+            num_groups: 1,
+            group_width_reference: 0,
+            group_width_bits: 0,
+            group_length_reference: 1,
+            group_length_increment: 1,
+            true_length_last_group: 1,
+            scaled_group_length_bits: 0,
+            spatial_differencing: None,
+        };
+
+        assert_eq!(params.primary_missing_substitute(), None);
+        assert_eq!(params.secondary_missing_substitute(), None);
+
+        params.missing_value_management = 1;
+        assert_eq!(params.primary_missing_substitute(), Some(0x1122_3344));
+        assert_eq!(params.secondary_missing_substitute(), None);
+
+        params.missing_value_management = 2;
+        assert_eq!(params.primary_missing_substitute(), Some(0x1122_3344));
+        assert_eq!(params.secondary_missing_substitute(), Some(0x5566_7788));
     }
 
     #[test]

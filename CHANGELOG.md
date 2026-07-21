@@ -45,6 +45,8 @@
 - encode JPEG2000 payloads directly into memory through an isolated OpenJPEG
   interface, remove writer runtime temporary-file I/O, and reject component
   precision above the backend's 25-bit lossless numeric limit
+- document `NaN` as the default decode result for embedded complex-packing
+  missing values and expose active primary and secondary substitute metadata
 - build the parity image from SHA-256-verified ecCodes 2.47.0 and libaec 1.1.7
   source archives, limit native builds to two compile jobs, and default parity
   containers to two CPUs and two Cargo build jobs without sharing incompatible

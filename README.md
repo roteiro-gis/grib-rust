@@ -183,7 +183,8 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
   4.9, 4.10, 4.11, 4.12, and 4.15
 - Forecast valid-time helpers for supported fixed-width GRIB1/GRIB2 time units
 - `GribFile::builder()` for strict or tolerant scanning and allocation limits
-- Bitmap application with missing values surfaced as `NaN`
+- Bitmap and embedded complex-packing missing values surfaced as `NaN`, with
+  primary and secondary substitute metadata available to callers
 - Parallel field decoding via Rayon
 - Output: caller-owned `&mut [f32]`/`&mut [f64]`, flat `Vec<f32>`/`Vec<f64>`, or `ndarray::ArrayD<f32>`/`ArrayD<f64>`
 - Memory-mapped files, owned byte buffers, or arbitrary `Read` streams
