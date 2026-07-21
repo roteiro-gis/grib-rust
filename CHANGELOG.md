@@ -42,6 +42,9 @@
 - write CCSDS/AEC template 5.42 with automatic bit-width selection, bitmap and
   constant-field handling, configurable codec parameters, and ecCodes parity
   for default, restricted, signed, 32-bit, and nonstandard-block streams
+- encode JPEG2000 payloads directly into memory through an isolated OpenJPEG
+  interface, remove writer runtime temporary-file I/O, and reject component
+  precision above the backend's 25-bit lossless numeric limit
 - build the parity image from SHA-256-verified ecCodes 2.47.0 and libaec 1.1.7
   source archives, limit native builds to two compile jobs, and default parity
   containers to two CPUs and two Cargo build jobs without sharing incompatible

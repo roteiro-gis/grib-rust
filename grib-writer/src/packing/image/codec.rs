@@ -5,6 +5,9 @@ use super::super::{
 };
 use crate::{Error, Result};
 
+#[cfg(feature = "jpeg2000")]
+use super::openjpeg::{encode_jpeg2000_codestream, MAX_LOSSLESS_BITS_PER_VALUE};
+
 #[cfg(any(feature = "jpeg2000", feature = "png"))]
 #[derive(Debug, Clone)]
 pub(super) struct PreparedImagePacking {
@@ -107,7 +110,7 @@ fn validate_image_deltas_fit(deltas: &[u64], bits_per_value: u8) -> Result<()> {
 
 #[cfg(feature = "jpeg2000")]
 pub(super) fn jpeg2000_bits_per_value(minimum_bits: u8) -> Result<u8> {
-    if (1..=31).contains(&minimum_bits) {
+    if (1..=MAX_LOSSLESS_BITS_PER_VALUE).contains(&minimum_bits) {
         Ok(minimum_bits)
     } else {
         Err(Error::UnsupportedPackingWidth(minimum_bits))
@@ -271,92 +274,7 @@ pub(super) fn encode_jpeg2000_payload(
     dimensions: ImageDimensions,
 ) -> Result<Vec<u8>> {
     validate_image_sample_count(deltas.len(), dimensions)?;
-
-    let component = openjp2::opj_image_comptparm {
-        dx: 1,
-        dy: 1,
-        w: dimensions.width,
-        h: dimensions.height,
-        prec: u32::from(bits_per_value),
-        bpp: u32::from(bits_per_value),
-        sgnd: 0,
-        ..Default::default()
-    };
-    let mut image = openjp2::opj_image::create(&[component], openjp2::OPJ_CLRSPC_GRAY)
-        .ok_or_else(|| Error::Other("failed to create JPEG2000 image".into()))?;
-    image.x1 = dimensions.width;
-    image.y1 = dimensions.height;
-
-    let components = image
-        .comps_mut()
-        .ok_or_else(|| Error::Other("JPEG2000 image has no components".into()))?;
-    let component = components
-        .get_mut(0)
-        .ok_or_else(|| Error::Other("JPEG2000 image has no components".into()))?;
-    component.bpp = u32::from(bits_per_value);
-    component.prec = u32::from(bits_per_value);
-    let data = components
-        .get_mut(0)
-        .and_then(|component| component.data_mut())
-        .ok_or_else(|| Error::Other("JPEG2000 image component has no data".into()))?;
-    if data.len() != deltas.len() {
-        return Err(Error::DataLengthMismatch {
-            expected: deltas.len(),
-            actual: data.len(),
-        });
-    }
-    for (target, delta) in data.iter_mut().zip(deltas) {
-        *target =
-            i32::try_from(*delta).map_err(|_| Error::UnsupportedPackingWidth(bits_per_value))?;
-    }
-
-    let path = tempfile::Builder::new()
-        .prefix("grib-writer-")
-        .suffix(".j2k")
-        .tempfile()
-        .map_err(|err| Error::Io(err, "JPEG2000 temporary codestream".into()))?
-        .into_temp_path();
-
-    {
-        let mut stream = openjp2::Stream::new_file(&path, 64 * 1024, false)
-            .map_err(|err| Error::Io(err, "JPEG2000 temporary codestream".into()))?;
-        let mut codec = openjp2::Codec::new_encoder(openjp2::OPJ_CODEC_J2K)
-            .ok_or_else(|| Error::Other("failed to create JPEG2000 encoder".into()))?;
-        let mut params = openjp2::opj_cparameters_t {
-            tcp_numlayers: 1,
-            cp_disto_alloc: 1,
-            numresolution: jpeg2000_num_resolutions(dimensions),
-            ..Default::default()
-        };
-
-        if codec.setup_encoder(&mut params, &mut image) == 0 {
-            return Err(Error::Other("JPEG2000 encoder setup failed".into()));
-        }
-        if codec.start_compress(&mut image, &mut stream) == 0 {
-            return Err(Error::Other("JPEG2000 start-compress failed".into()));
-        }
-        if codec.encode(&mut stream) == 0 {
-            return Err(Error::Other("JPEG2000 codestream encode failed".into()));
-        }
-        if codec.end_compress(&mut stream) == 0 {
-            return Err(Error::Other("JPEG2000 end-compress failed".into()));
-        }
-        stream
-            .flush()
-            .map_err(|err| Error::Io(err, "JPEG2000 temporary codestream".into()))?;
-    }
-
-    std::fs::read(&path).map_err(|err| Error::Io(err, "JPEG2000 temporary codestream".into()))
-}
-
-#[cfg(feature = "jpeg2000")]
-fn jpeg2000_num_resolutions(dimensions: ImageDimensions) -> i32 {
-    let min_dimension = dimensions.width.min(dimensions.height);
-    let mut resolutions = 1;
-    while resolutions < 32 && min_dimension >= (1u32 << resolutions) {
-        resolutions += 1;
-    }
-    resolutions
+    encode_jpeg2000_codestream(deltas, bits_per_value, dimensions.width, dimensions.height)
 }
 
 #[cfg(any(feature = "jpeg2000", feature = "png"))]

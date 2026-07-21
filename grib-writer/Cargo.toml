@@ -1,6 +1,6 @@
 [package]
 name = "grib-writer"
-description = "Pure-Rust GRIB encoder for weather and climate data"
+description = "GRIB encoder for weather and climate data"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,13 +15,12 @@ categories = ["science", "encoding"]
 [dependencies]
 grib-core = { path = "../grib-core", version = "0.7.0" }
 grib-aec = { workspace = true, optional = true }
-openjp2 = { version = "0.6.1", default-features = false, features = ["file-io", "std"], optional = true }
+openjpeg-sys = { version = "1.0.12", default-features = false, optional = true }
 png = { version = "0.18.1", optional = true }
-tempfile = { version = "3", optional = true }
 
 [features]
 default = []
-jpeg2000 = ["dep:openjp2", "dep:tempfile"]
+jpeg2000 = ["dep:openjpeg-sys"]
 png = ["dep:png"]
 ccsds = ["dep:grib-aec"]
 codecs = ["jpeg2000", "png", "ccsds"]

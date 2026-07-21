@@ -7,7 +7,7 @@
 [![grib-writer crates.io](https://img.shields.io/crates/v/grib-writer.svg)](https://crates.io/crates/grib-writer)
 [![grib-writer docs.rs](https://docs.rs/grib-writer/badge.svg)](https://docs.rs/grib-writer)
 
-Rust GRIB reader, writer, and shared core primitives for weather and climate data. Default `grib-core`, `grib-reader`, and `grib-writer` builds have no C libraries or build scripts and no unsafe crate code beyond `memmap2`; optional GRIB2 image and CCSDS packing codecs are behind feature flags. The `ccsds` feature compiles the pinned libaec source through the isolated safe `grib-aec` interface.
+Rust GRIB reader, writer, and shared core primitives for weather and climate data. Default `grib-core`, `grib-reader`, and `grib-writer` builds have no C libraries or build scripts and no unsafe crate code beyond `memmap2`; optional GRIB2 image and CCSDS packing codecs are behind feature flags. The `jpeg2000` feature compiles OpenJPEG behind isolated safe reader/writer interfaces, and the `ccsds` feature compiles the pinned libaec source through the isolated safe `grib-aec` interface.
 
 ## Crates
 
@@ -230,7 +230,7 @@ template families.
 | Flag | Default | Description |
 |---|---|---|
 | `rayon` | yes | Parallel field decoding |
-| `jpeg2000` | no | GRIB2 template 5.40 JPEG2000 packed-data decode in `grib-reader` and encode in `grib-writer` |
+| `jpeg2000` | no | GRIB2 template 5.40 JPEG2000 decode and lossless in-memory encode through 25 bits/sample using OpenJPEG behind isolated safe interfaces |
 | `png` | no | GRIB2 template 5.41 PNG packed-data decode in `grib-reader` and encode in `grib-writer` |
 | `ccsds` | no | GRIB2 template 5.42 CCSDS/AEC packed-data decode in `grib-reader` and encode in `grib-writer` using bundled libaec 1.1.7 |
 | `codecs` | no | Enables `jpeg2000`, `png`, and `ccsds` |

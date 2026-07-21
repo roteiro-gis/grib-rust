@@ -23,7 +23,11 @@ pub enum PackingStrategy {
         decimal_scale: i16,
         spatial_differencing: Option<SpatialDifferencingOrder>,
     },
-    /// GRIB2 JPEG 2000 code stream packing template 5.40.
+    /// GRIB2 lossless JPEG 2000 code stream packing template 5.40.
+    ///
+    /// The OpenJPEG encoder supports automatically selected component
+    /// precision through 25 bits. Wider fields return
+    /// [`Error::UnsupportedPackingWidth`].
     Jpeg2000Auto { decimal_scale: i16 },
     /// GRIB2 PNG image packing template 5.41.
     PngAuto { decimal_scale: i16 },

@@ -6,6 +6,8 @@ use std::process::Command;
 
 use grib_core::binary::decode_ibm_f32;
 use grib_core::metadata::ReferenceTime;
+#[cfg(feature = "jpeg2000")]
+use grib_core::Error;
 use grib_core::{
     AlbersEqualAreaGrid, AnalysisOrForecastTemplate, CcsdsBlockSize, CcsdsFlags,
     DataRepresentation, DerivedForecastTemplate, DerivedStatisticalProcessTemplate,
@@ -1426,6 +1428,58 @@ fn writes_jpeg2000_grib2_field() {
 
     let payload = section_payload(&bytes, 7);
     assert!(payload.starts_with(&[0xff, 0x4f, 0xff, 0x51]));
+}
+
+#[cfg(feature = "jpeg2000")]
+#[test]
+fn writes_lossless_jpeg2000_fields_through_the_maximum_supported_precision() {
+    for bits_per_value in [1u8, 8, 16, 20, 22, 24, 25] {
+        let maximum = ((1u64 << bits_per_value) - 1) as f64;
+        let values = (0..64)
+            .map(|index| {
+                if (index + index / 8) % 2 == 0 {
+                    0.0
+                } else {
+                    maximum
+                }
+            })
+            .collect::<Vec<_>>();
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid_with_shape_and_scanning_mode(8, 8, 0))
+            .product(product(0, 0))
+            .packing(PackingStrategy::Jpeg2000Auto { decimal_scale: 0 })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        let DataRepresentation::Jpeg2000Packing(params) = field.data_representation() else {
+            panic!("expected JPEG2000 packing");
+        };
+        assert_eq!(params.packing.bits_per_value, bits_per_value);
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        let decoded = file.message(0).unwrap().read_flat_data_as_f64().unwrap();
+        assert_eq!(
+            decoded, values,
+            "precision failure at {bits_per_value} bits"
+        );
+    }
+}
+
+#[cfg(feature = "jpeg2000")]
+#[test]
+fn rejects_jpeg2000_values_that_need_more_than_25_bits() {
+    let error = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(grid_with_shape_and_scanning_mode(2, 1, 0))
+        .product(product(0, 0))
+        .packing(PackingStrategy::Jpeg2000Auto { decimal_scale: 0 })
+        .values(&[0.0, (1u64 << 25) as f64])
+        .build()
+        .unwrap_err();
+
+    assert!(matches!(error, Error::UnsupportedPackingWidth(26)));
 }
 
 #[cfg(feature = "ccsds")]

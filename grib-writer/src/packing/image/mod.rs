@@ -1,5 +1,8 @@
 #[cfg(any(feature = "jpeg2000", feature = "png"))]
 mod codec;
+#[cfg(feature = "jpeg2000")]
+#[allow(unsafe_code)]
+mod openjpeg;
 
 #[cfg(any(feature = "jpeg2000", feature = "png"))]
 use self::codec::prepare_image_packing;
