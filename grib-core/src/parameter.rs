@@ -85,7 +85,7 @@ impl OwnedLocalParameterEntry {
 
     fn validate(&self) -> Result<()> {
         if !is_local_parameter_code(self.category) && !is_local_parameter_code(self.number) {
-            return Err(Error::Other(format!(
+            return Err(Error::InvalidLocalParameterTable(format!(
                 "local parameter entry {}.{}.{} must use a local category or parameter number (192..=254)",
                 self.discipline, self.category, self.number
             )));
@@ -93,7 +93,7 @@ impl OwnedLocalParameterEntry {
         validate_local_parameter_text("short_name", &self.short_name)?;
         validate_local_parameter_text("description", &self.description)?;
         if self.short_name.contains(',') {
-            return Err(Error::Other(
+            return Err(Error::InvalidLocalParameterTable(
                 "local parameter short_name cannot contain a comma".into(),
             ));
         }
@@ -152,7 +152,7 @@ impl LocalParameterTable {
             .iter()
             .any(|existing| local_parameter_keys_overlap(existing, &entry))
         {
-            return Err(Error::Other(format!(
+            return Err(Error::InvalidLocalParameterTable(format!(
                 "duplicate local parameter entry for center {} discipline {} category {} number {}",
                 entry.center_id, entry.discipline, entry.category, entry.number
             )));
@@ -239,7 +239,7 @@ fn parse_local_parameter_csv_record(
 ) -> Result<OwnedLocalParameterEntry> {
     let fields = line.splitn(8, ',').map(str::trim).collect::<Vec<_>>();
     if fields.len() != 8 {
-        return Err(Error::Other(format!(
+        return Err(Error::InvalidLocalParameterTable(format!(
             "local parameter CSV line {line_number} has {} fields, expected 8",
             fields.len()
         )));
@@ -263,12 +263,12 @@ fn is_local_parameter_csv_header(line: &str) -> bool {
 
 fn parse_required_u16_field(value: &str, name: &str, line_number: usize) -> Result<u16> {
     if value.is_empty() {
-        return Err(Error::Other(format!(
+        return Err(Error::InvalidLocalParameterTable(format!(
             "local parameter CSV line {line_number} missing {name}"
         )));
     }
     value.parse::<u16>().map_err(|err| {
-        Error::Other(format!(
+        Error::InvalidLocalParameterTable(format!(
             "local parameter CSV line {line_number} invalid {name}: {err}"
         ))
     })
@@ -276,12 +276,12 @@ fn parse_required_u16_field(value: &str, name: &str, line_number: usize) -> Resu
 
 fn parse_required_u8_field(value: &str, name: &str, line_number: usize) -> Result<u8> {
     if value.is_empty() {
-        return Err(Error::Other(format!(
+        return Err(Error::InvalidLocalParameterTable(format!(
             "local parameter CSV line {line_number} missing {name}"
         )));
     }
     value.parse::<u8>().map_err(|err| {
-        Error::Other(format!(
+        Error::InvalidLocalParameterTable(format!(
             "local parameter CSV line {line_number} invalid {name}: {err}"
         ))
     })
@@ -309,12 +309,12 @@ fn is_wildcard_local_parameter_field(value: &str) -> bool {
 
 fn validate_local_parameter_text(field_name: &str, value: &str) -> Result<()> {
     if value.trim().is_empty() {
-        return Err(Error::Other(format!(
+        return Err(Error::InvalidLocalParameterTable(format!(
             "local parameter {field_name} cannot be empty"
         )));
     }
     if value.chars().any(|ch| ch == '\n' || ch == '\r') {
-        return Err(Error::Other(format!(
+        return Err(Error::InvalidLocalParameterTable(format!(
             "local parameter {field_name} cannot contain newlines"
         )));
     }
@@ -774,7 +774,9 @@ mod tests {
         .unwrap();
 
         let err = LocalParameterTable::from_entries([first, second]).unwrap_err();
-        assert!(matches!(err, Error::Other(message) if message.contains("duplicate")));
+        assert!(
+            matches!(err, Error::InvalidLocalParameterTable(message) if message.contains("duplicate"))
+        );
     }
 
     #[test]
@@ -792,7 +794,7 @@ mod tests {
         .unwrap_err();
 
         assert!(
-            matches!(err, Error::Other(message) if message.contains("local category or parameter number"))
+            matches!(err, Error::InvalidLocalParameterTable(message) if message.contains("local category or parameter number"))
         );
     }
 }

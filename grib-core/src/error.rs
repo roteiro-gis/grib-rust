@@ -90,6 +90,9 @@ pub enum Error {
     #[error("value out of range: {0}")]
     ValueOutOfRange(String),
 
+    #[error("invalid local parameter table: {0}")]
+    InvalidLocalParameterTable(String),
+
     #[error("{codec} {operation} failed: {reason}")]
     Codec {
         codec: &'static str,
