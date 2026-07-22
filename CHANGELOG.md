@@ -15,6 +15,8 @@
   aliases
 - report unsigned 24-bit range violations and invalid local parameter tables
   through dedicated error variants instead of the catch-all string error
+- report image-codec failures, malformed image layouts, packing arithmetic,
+  and decoded grid-shape failures through structured reader error variants
 - remove the unused reader `flate2` dependency
 - replace byte-at-a-time bit reads and bit-at-a-time writes with buffered
   64-bit reads and byte-chunked writes

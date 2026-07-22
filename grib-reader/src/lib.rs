@@ -679,8 +679,7 @@ impl<'a> Message<'a> {
     /// +i columns and -j rows.
     pub fn read_data_as_f64(&self) -> Result<ArrayD<f64>> {
         let ordered = self.read_flat_data_as_f64()?;
-        ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
-            .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
+        decoded_array(self.metadata.grid.ndarray_shape(), ordered)
     }
 
     /// Returns an `f32` ndarray in row-major reader order.
@@ -690,22 +689,19 @@ impl<'a> Message<'a> {
     /// +i columns and -j rows.
     pub fn read_data_as_f32(&self) -> Result<ArrayD<f32>> {
         let ordered = self.read_flat_data_as_f32()?;
-        ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
-            .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
+        decoded_array(self.metadata.grid.ndarray_shape(), ordered)
     }
 
     /// Returns an `f64` ndarray with +i columns and -j rows.
     pub fn read_data_north_up_as_f64(&self) -> Result<ArrayD<f64>> {
         let ordered = self.read_flat_data_north_up_as_f64()?;
-        ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
-            .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
+        decoded_array(self.metadata.grid.ndarray_shape(), ordered)
     }
 
     /// Returns an `f32` ndarray with +i columns and -j rows.
     pub fn read_data_north_up_as_f32(&self) -> Result<ArrayD<f32>> {
         let ordered = self.read_flat_data_north_up_as_f32()?;
-        ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
-            .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
+        decoded_array(self.metadata.grid.ndarray_shape(), ordered)
     }
 
     pub fn raw_bytes(&self) -> &[u8] {
@@ -721,6 +717,13 @@ impl<'a> Message<'a> {
         )?;
         Ok(num_grid_points)
     }
+}
+
+fn decoded_array<T>(shape: Vec<usize>, values: Vec<T>) -> Result<ArrayD<T>> {
+    ArrayD::from_shape_vec(IxDyn(&shape), values).map_err(|error| Error::InvalidSection {
+        section: 3,
+        reason: format!("grid shape cannot represent decoded field: {error}"),
+    })
 }
 
 /// Iterator over fields in a GRIB file.
