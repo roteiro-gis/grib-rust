@@ -40,10 +40,9 @@ pub(crate) fn write_grib1_product_section(
     write_u8_be(out, product.missing_count)?;
     write_u8_be(out, century)?;
     write_u8_be(out, product.subcenter_id)?;
-    out.extend_from_slice(
-        &encode_wmo_i16(product.decimal_scale)
-            .ok_or_else(|| Error::Other("decimal scale does not fit GRIB signed i16".into()))?,
-    );
+    out.extend_from_slice(&encode_wmo_i16(product.decimal_scale).ok_or_else(|| {
+        Error::ValueOutOfRange("decimal scale does not fit GRIB signed i16".into())
+    })?);
     Ok(())
 }
 
@@ -106,7 +105,7 @@ pub(crate) fn write_grib1_predefined_bitmap_section(
     table_reference: u16,
 ) -> Result<()> {
     if table_reference == 0 {
-        return Err(Error::Other(
+        return Err(Error::ValueOutOfRange(
             "GRIB1 predefined bitmap table reference must be nonzero".into(),
         ));
     }
@@ -130,14 +129,12 @@ pub(crate) fn write_grib1_data_section(
     write_u24_be(out, length)?;
     let unused_bits = unused_bits_for_width(params.encoded_values, params.bits_per_value)?;
     write_u8_be(out, (flags << 4) | unused_bits)?;
-    out.extend_from_slice(
-        &encode_wmo_i16(params.binary_scale)
-            .ok_or_else(|| Error::Other("binary scale does not fit GRIB signed i16".into()))?,
-    );
-    out.extend_from_slice(
-        &encode_ibm_f32(params.reference_value)
-            .ok_or_else(|| Error::Other("reference value does not fit GRIB1 IBM float".into()))?,
-    );
+    out.extend_from_slice(&encode_wmo_i16(params.binary_scale).ok_or_else(|| {
+        Error::ValueOutOfRange("binary scale does not fit GRIB signed i16".into())
+    })?);
+    out.extend_from_slice(&encode_ibm_f32(params.reference_value).ok_or_else(|| {
+        Error::ValueOutOfRange("reference value does not fit GRIB1 IBM float".into())
+    })?);
     write_u8_be(out, params.bits_per_value)?;
     out.extend_from_slice(&packed.data_payload);
     Ok(())
@@ -148,7 +145,7 @@ pub(crate) fn validate_grib1_binary_data_flags(flags: u8) -> Result<()> {
         return Ok(());
     }
     if flags > 0x0f {
-        return Err(Error::Other(
+        return Err(Error::ValueOutOfRange(
             "GRIB1 binary data flags must fit in four bits".into(),
         ));
     }
@@ -165,15 +162,18 @@ pub(crate) fn validate_grib1_binary_data_flags(flags: u8) -> Result<()> {
 }
 
 fn unused_bits_for_width(values: usize, bits_per_value: u8) -> Result<u8> {
-    let bits = values
-        .checked_mul(usize::from(bits_per_value))
-        .ok_or_else(|| Error::Other("packed bit count overflow".into()))?;
+    let bits =
+        values
+            .checked_mul(usize::from(bits_per_value))
+            .ok_or(Error::ArithmeticOverflow {
+                operation: "computing GRIB1 packed bit count",
+            })?;
     Ok(((8 - (bits % 8)) % 8) as u8)
 }
 
 fn grib1_reference_year_fields(year: u16) -> Result<(u8, u8)> {
     if year == 0 {
-        return Err(Error::Other(
+        return Err(Error::ValueOutOfRange(
             "GRIB1 reference year 0 cannot be encoded".into(),
         ));
     }
@@ -182,33 +182,35 @@ fn grib1_reference_year_fields(year: u16) -> Result<(u8, u8)> {
     let year_of_century = year - ((century - 1) * 100);
     Ok((
         u8::try_from(year_of_century)
-            .map_err(|_| Error::Other("GRIB1 year of century exceeds u8".into()))?,
-        u8::try_from(century).map_err(|_| Error::Other("GRIB1 century exceeds u8".into()))?,
+            .map_err(|_| Error::ValueOutOfRange("GRIB1 year of century exceeds u8".into()))?,
+        u8::try_from(century)
+            .map_err(|_| Error::ValueOutOfRange("GRIB1 century exceeds u8".into()))?,
     ))
 }
 
 fn encode_grib1_coordinate(value: i32, name: &str) -> Result<[u8; 3]> {
     if value.rem_euclid(1_000) != 0 {
-        return Err(Error::Other(format!(
+        return Err(Error::ValueOutOfRange(format!(
             "{name} must be representable in GRIB1 millidegrees"
         )));
     }
     encode_wmo_i24(value / 1_000)
-        .ok_or_else(|| Error::Other(format!("{name} does not fit GRIB signed i24")))
+        .ok_or_else(|| Error::ValueOutOfRange(format!("{name} does not fit GRIB signed i24")))
 }
 
 fn checked_grib1_grid_dimension(value: u32, name: &str) -> Result<u16> {
-    u16::try_from(value).map_err(|_| Error::Other(format!("{name} exceeds GRIB1 u16 limit")))
+    u16::try_from(value)
+        .map_err(|_| Error::ValueOutOfRange(format!("{name} exceeds GRIB1 u16 limit")))
 }
 
 fn checked_grib1_increment(value: u32, name: &str) -> Result<u16> {
     if !value.is_multiple_of(1_000) {
-        return Err(Error::Other(format!(
+        return Err(Error::ValueOutOfRange(format!(
             "{name} must be representable in GRIB1 millidegrees"
         )));
     }
     u16::try_from(value / 1_000)
-        .map_err(|_| Error::Other(format!("{name} exceeds GRIB1 u16 millidegree limit")))
+        .map_err(|_| Error::ValueOutOfRange(format!("{name} exceeds GRIB1 u16 millidegree limit")))
 }
 
 pub(crate) fn checked_grib1_u24_length(length: usize, section: u8) -> Result<u32> {

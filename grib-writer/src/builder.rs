@@ -86,18 +86,18 @@ impl Grib1FieldBuilder {
     }
 
     pub fn build(self) -> Result<Grib1Field> {
-        let mut product = self
-            .product
-            .ok_or_else(|| Error::Other("missing GRIB1 product definition".into()))?;
-        let grid = self
-            .grid
-            .ok_or_else(|| Error::Other("missing GRIB1 grid definition".into()))?;
-        let packing = self
-            .packing
-            .ok_or_else(|| Error::Other("missing GRIB1 packing strategy".into()))?;
-        let mut values = self
-            .values
-            .ok_or_else(|| Error::Other("missing GRIB1 field values".into()))?;
+        let mut product = self.product.ok_or(Error::MissingRequiredField {
+            field: "GRIB1 product definition",
+        })?;
+        let grid = self.grid.ok_or(Error::MissingRequiredField {
+            field: "GRIB1 grid definition",
+        })?;
+        let packing = self.packing.ok_or(Error::MissingRequiredField {
+            field: "GRIB1 packing strategy",
+        })?;
+        let mut values = self.values.ok_or(Error::MissingRequiredField {
+            field: "GRIB1 field values",
+        })?;
         let mut bitmap = self.bitmap;
 
         validate_supported_grib1_grid(&grid)?;
@@ -117,7 +117,7 @@ impl Grib1FieldBuilder {
                 });
             }
             if bitmap.table_reference == Some(0) {
-                return Err(Error::Other(
+                return Err(Error::ValueOutOfRange(
                     "GRIB1 predefined bitmap table reference must be nonzero".into(),
                 ));
             }
@@ -140,24 +140,28 @@ impl Grib1FieldBuilder {
                 pack_simple_auto(&values, bitmap_mask, decimal_scale)?
             }
             PackingStrategy::ComplexAuto { .. } => {
-                return Err(Error::Other(
-                    "GRIB1 writer does not support complex packing".into(),
-                ));
+                return Err(Error::UnsupportedPackingForEdition {
+                    edition: 1,
+                    packing: "complex",
+                });
             }
             PackingStrategy::Jpeg2000Auto { .. } => {
-                return Err(Error::Other(
-                    "GRIB1 writer does not support JPEG2000 packing".into(),
-                ));
+                return Err(Error::UnsupportedPackingForEdition {
+                    edition: 1,
+                    packing: "JPEG 2000",
+                });
             }
             PackingStrategy::PngAuto { .. } => {
-                return Err(Error::Other(
-                    "GRIB1 writer does not support PNG packing".into(),
-                ));
+                return Err(Error::UnsupportedPackingForEdition {
+                    edition: 1,
+                    packing: "PNG",
+                });
             }
             PackingStrategy::CcsdsAuto { .. } => {
-                return Err(Error::Other(
-                    "GRIB1 writer does not support CCSDS packing".into(),
-                ));
+                return Err(Error::UnsupportedPackingForEdition {
+                    edition: 1,
+                    packing: "CCSDS/AEC",
+                });
             }
         };
         if predefined_bitmap_reference.is_some() {
@@ -275,21 +279,21 @@ impl Grib2FieldBuilder {
     }
 
     pub fn build(self) -> Result<Grib2Field> {
-        let identification = self
-            .identification
-            .ok_or_else(|| Error::Other("missing GRIB2 identification".into()))?;
-        let grid = self
-            .grid
-            .ok_or_else(|| Error::Other("missing GRIB2 grid definition".into()))?;
-        let product = self
-            .product
-            .ok_or_else(|| Error::Other("missing GRIB2 product definition".into()))?;
-        let packing = self
-            .packing
-            .ok_or_else(|| Error::Other("missing GRIB2 packing strategy".into()))?;
-        let mut values = self
-            .values
-            .ok_or_else(|| Error::Other("missing GRIB2 field values".into()))?;
+        let identification = self.identification.ok_or(Error::MissingRequiredField {
+            field: "GRIB2 identification",
+        })?;
+        let grid = self.grid.ok_or(Error::MissingRequiredField {
+            field: "GRIB2 grid definition",
+        })?;
+        let product = self.product.ok_or(Error::MissingRequiredField {
+            field: "GRIB2 product definition",
+        })?;
+        let packing = self.packing.ok_or(Error::MissingRequiredField {
+            field: "GRIB2 packing strategy",
+        })?;
+        let mut values = self.values.ok_or(Error::MissingRequiredField {
+            field: "GRIB2 field values",
+        })?;
         let mut bitmap = self.bitmap;
 
         validate_supported_grid(&grid)?;

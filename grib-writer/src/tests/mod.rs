@@ -341,6 +341,22 @@ fn grib1_simple_field(values: &[f64]) -> super::Grib1Field {
 }
 
 #[test]
+fn reports_missing_builder_fields_with_typed_errors() {
+    assert!(matches!(
+        Grib1FieldBuilder::new().build().unwrap_err(),
+        grib_core::Error::MissingRequiredField {
+            field: "GRIB1 product definition",
+        }
+    ));
+    assert!(matches!(
+        Grib2FieldBuilder::new().build().unwrap_err(),
+        grib_core::Error::MissingRequiredField {
+            field: "GRIB2 identification",
+        }
+    ));
+}
+
+#[test]
 fn writes_simple_grib1_field_readable_by_reader() {
     let values = [1.0, 2.0, 3.0, 4.0];
     let bytes = write_grib1_message(grib1_simple_field(&values));
@@ -446,7 +462,9 @@ fn rejects_zero_grib1_predefined_bitmap_reference() {
         .build()
         .unwrap_err();
 
-    assert!(matches!(err, grib_core::Error::Other(message) if message.contains("must be nonzero")));
+    assert!(
+        matches!(err, grib_core::Error::ValueOutOfRange(message) if message.contains("must be nonzero"))
+    );
 }
 
 #[test]
@@ -501,7 +519,9 @@ fn rejects_grib1_grid_dimensions_beyond_u16() {
         .values(&[1.0])
         .build()
         .unwrap_err();
-    assert!(matches!(err, grib_core::Error::Other(message) if message.contains("Ni exceeds")));
+    assert!(
+        matches!(err, grib_core::Error::ValueOutOfRange(message) if message.contains("Ni exceeds"))
+    );
 }
 
 #[test]
@@ -2015,9 +2035,13 @@ fn rejects_complex_packing_for_grib1() {
         .build()
         .unwrap_err();
 
-    assert!(
-        matches!(err, grib_core::Error::Other(message) if message.contains("GRIB1 writer does not support complex packing"))
-    );
+    assert!(matches!(
+        err,
+        grib_core::Error::UnsupportedPackingForEdition {
+            edition: 1,
+            packing: "complex",
+        }
+    ));
 }
 
 #[test]

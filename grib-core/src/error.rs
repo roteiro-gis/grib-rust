@@ -68,6 +68,12 @@ pub enum Error {
     #[error("data truncated at offset {offset}")]
     Truncated { offset: u64 },
 
+    #[error("missing required field: {field}")]
+    MissingRequiredField { field: &'static str },
+
+    #[error("GRIB{edition} does not support {packing} packing")]
+    UnsupportedPackingForEdition { edition: u8, packing: &'static str },
+
     #[error("decoded data length mismatch: expected {expected}, got {actual}")]
     DataLengthMismatch { expected: usize, actual: usize },
 
