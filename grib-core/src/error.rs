@@ -112,9 +112,6 @@ pub enum Error {
         requested: usize,
         reason: String,
     },
-
-    #[error("{0}")]
-    Other(String),
 }
 
 impl Error {

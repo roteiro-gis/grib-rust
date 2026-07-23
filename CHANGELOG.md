@@ -21,6 +21,8 @@
   GRIB1 representation limits through dedicated error variants
 - report GRIB2 section coordinate, scale, count, and length failures through
   typed range, overflow, and data-length errors
+- report packing-value, image-codec, grouping, and spatial-differencing
+  failures through typed errors and remove the catch-all error variant
 - remove the unused reader `flate2` dependency
 - replace byte-at-a-time bit reads and bit-at-a-time writes with buffered
   64-bit reads and byte-chunked writes

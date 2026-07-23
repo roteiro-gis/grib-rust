@@ -1,3 +1,5 @@
+#[cfg(feature = "png")]
+use grib_core::filled_vec;
 use grib_core::{GridDefinition, ScaledPackingParams};
 
 use super::super::{
@@ -25,6 +27,18 @@ pub(super) struct ImageDimensions {
 }
 
 #[cfg(any(feature = "jpeg2000", feature = "png"))]
+fn image_dimension_u32(value: usize, dimension: &str) -> Result<u32> {
+    u32::try_from(value)
+        .map_err(|_| Error::ValueOutOfRange(format!("image {dimension} {value} exceeds GRIB2 u32")))
+}
+
+#[cfg(any(feature = "jpeg2000", feature = "png"))]
+fn image_dimension_usize(value: u32, dimension: &str) -> Result<usize> {
+    usize::try_from(value)
+        .map_err(|_| Error::ValueOutOfRange(format!("image {dimension} {value} exceeds usize")))
+}
+
+#[cfg(any(feature = "jpeg2000", feature = "png"))]
 pub(super) fn prepare_image_packing(
     values: &[f64],
     explicit_bitmap: Option<&[bool]>,
@@ -36,7 +50,7 @@ pub(super) fn prepare_image_packing(
     let present = present_mask(values, explicit_bitmap)?;
     let present_count = present.iter().filter(|present| **present).count();
     if present_count == 0 {
-        return Err(Error::Other(format!(
+        return Err(Error::ValueOutOfRange(format!(
             "{packing_name} requires at least one present value"
         )));
     }
@@ -50,7 +64,7 @@ pub(super) fn prepare_image_packing(
     let quantized = quantize_present_values(values, &present, decimal_scale, packing_name)?;
     let (reference_value, deltas) = simple_packing_deltas(&quantized)?;
     let max_delta = deltas.iter().copied().max().unwrap_or(0);
-    let minimum_bits = bits_needed(max_delta)?.max(1);
+    let minimum_bits = bits_needed(max_delta).max(1);
     let bits_per_value = select_bits_per_value(minimum_bits)?;
     validate_image_deltas_fit(&deltas, bits_per_value)?;
 
@@ -81,16 +95,13 @@ fn image_dimensions(
             return Err(Error::UnsupportedGridTemplate(grid.template_number()));
         }
         return Ok(ImageDimensions {
-            width: u32::try_from(width)
-                .map_err(|_| Error::Other("image width exceeds u32".into()))?,
-            height: u32::try_from(height)
-                .map_err(|_| Error::Other("image height exceeds u32".into()))?,
+            width: image_dimension_u32(width, "width")?,
+            height: image_dimension_u32(height, "height")?,
         });
     }
 
     Ok(ImageDimensions {
-        width: u32::try_from(present_count)
-            .map_err(|_| Error::Other("image width exceeds u32".into()))?,
+        width: image_dimension_u32(present_count, "width")?,
         height: 1,
     })
 }
@@ -145,12 +156,18 @@ pub(super) fn encode_png_payload(
         let mut encoder = png::Encoder::new(&mut payload, dimensions.width, dimensions.height);
         encoder.set_color(color_type);
         encoder.set_depth(bit_depth);
-        let mut writer = encoder
-            .write_header()
-            .map_err(|err| Error::Other(format!("PNG encode failed: {err}")))?;
+        let mut writer = encoder.write_header().map_err(|error| Error::Codec {
+            codec: "PNG",
+            operation: "write header",
+            reason: error.to_string(),
+        })?;
         writer
             .write_image_data(&image_data)
-            .map_err(|err| Error::Other(format!("PNG encode failed: {err}")))?;
+            .map_err(|error| Error::Codec {
+                codec: "PNG",
+                operation: "encode image data",
+                reason: error.to_string(),
+            })?;
     }
     Ok(payload)
 }
@@ -187,7 +204,15 @@ fn png_image_data(
                 .map_err(|_| Error::UnsupportedPackingWidth(bits_per_value))?,
         )),
         16 => {
-            let mut data = Vec::with_capacity(deltas.len() * 2);
+            let byte_count = deltas
+                .len()
+                .checked_mul(2)
+                .ok_or(Error::ArithmeticOverflow {
+                    operation: "computing PNG sample byte count",
+                })?;
+            let mut data = Vec::new();
+            data.try_reserve_exact(byte_count)
+                .map_err(|error| Error::allocation("bytes for PNG samples", byte_count, error))?;
             for delta in deltas {
                 data.extend_from_slice(
                     &u16::try_from(*delta)
@@ -217,32 +242,32 @@ fn pack_png_subbyte_rows(
     dimensions: ImageDimensions,
     bits_per_value: u8,
 ) -> Result<Vec<u8>> {
-    let width =
-        usize::try_from(dimensions.width).map_err(|_| Error::Other("PNG width overflow".into()))?;
-    let height = usize::try_from(dimensions.height)
-        .map_err(|_| Error::Other("PNG height overflow".into()))?;
+    let width = image_dimension_usize(dimensions.width, "width")?;
+    let height = image_dimension_usize(dimensions.height, "height")?;
     let bits = usize::from(bits_per_value);
-    let row_bits = width
-        .checked_mul(bits)
-        .ok_or_else(|| Error::Other("PNG row width overflow".into()))?;
+    let row_bits = width.checked_mul(bits).ok_or(Error::ArithmeticOverflow {
+        operation: "computing PNG row width",
+    })?;
     let row_bytes = row_bits.div_ceil(8);
-    let mut data = vec![
-        0;
-        row_bytes
-            .checked_mul(height)
-            .ok_or_else(|| Error::Other("PNG data length overflow".into()))?
-    ];
+    let byte_count = row_bytes
+        .checked_mul(height)
+        .ok_or(Error::ArithmeticOverflow {
+            operation: "computing PNG data length",
+        })?;
+    let mut data = filled_vec(byte_count, 0, "PNG image")?;
 
     for (index, delta) in deltas.iter().copied().enumerate() {
         let row = index / width;
         let column = index % width;
-        let bit_offset = column
-            .checked_mul(bits)
-            .ok_or_else(|| Error::Other("PNG bit offset overflow".into()))?;
+        let bit_offset = column.checked_mul(bits).ok_or(Error::ArithmeticOverflow {
+            operation: "computing a PNG bit offset",
+        })?;
         let byte_index = row
             .checked_mul(row_bytes)
             .and_then(|row_offset| row_offset.checked_add(bit_offset / 8))
-            .ok_or_else(|| Error::Other("PNG byte offset overflow".into()))?;
+            .ok_or(Error::ArithmeticOverflow {
+                operation: "computing a PNG byte offset",
+            })?;
         let shift = 8 - bits - (bit_offset % 8);
         data[byte_index] |= (delta as u8) << shift;
     }
@@ -252,12 +277,16 @@ fn pack_png_subbyte_rows(
 
 #[cfg(feature = "png")]
 fn pack_png_multibyte_samples(deltas: &[u64], bytes_per_sample: usize) -> Result<Vec<u8>> {
-    let mut data = Vec::with_capacity(
+    let byte_count =
         deltas
             .len()
             .checked_mul(bytes_per_sample)
-            .ok_or_else(|| Error::Other("PNG data length overflow".into()))?,
-    );
+            .ok_or(Error::ArithmeticOverflow {
+                operation: "computing PNG data length",
+            })?;
+    let mut data = Vec::new();
+    data.try_reserve_exact(byte_count)
+        .map_err(|error| Error::allocation("bytes for PNG samples", byte_count, error))?;
     for delta in deltas {
         let bytes = u32::try_from(*delta)
             .map_err(|_| Error::UnsupportedPackingWidth((bytes_per_sample * 8) as u8))?
@@ -279,13 +308,11 @@ pub(super) fn encode_jpeg2000_payload(
 
 #[cfg(any(feature = "jpeg2000", feature = "png"))]
 fn validate_image_sample_count(sample_count: usize, dimensions: ImageDimensions) -> Result<()> {
-    let width = usize::try_from(dimensions.width)
-        .map_err(|_| Error::Other("image width overflow".into()))?;
-    let height = usize::try_from(dimensions.height)
-        .map_err(|_| Error::Other("image height overflow".into()))?;
-    let expected = width
-        .checked_mul(height)
-        .ok_or_else(|| Error::Other("image sample count overflow".into()))?;
+    let width = image_dimension_usize(dimensions.width, "width")?;
+    let height = image_dimension_usize(dimensions.height, "height")?;
+    let expected = width.checked_mul(height).ok_or(Error::ArithmeticOverflow {
+        operation: "computing image sample count",
+    })?;
     if sample_count != expected {
         return Err(Error::DataLengthMismatch {
             expected,

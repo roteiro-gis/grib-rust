@@ -1313,6 +1313,39 @@ fn reports_unrepresentable_grid_coordinates_with_typed_errors() {
     ));
 }
 
+#[test]
+fn reports_invalid_packing_inputs_with_typed_errors() {
+    let infinite_value = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(grid())
+        .product(product(0, 0))
+        .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+        .values(&[f64::INFINITY, 2.0, 3.0, 4.0])
+        .build()
+        .unwrap_err();
+    assert!(matches!(
+        infinite_value,
+        grib_core::Error::ValueOutOfRange(message)
+            if message.contains("infinite values")
+    ));
+
+    let invalid_scale = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(grid())
+        .product(product(0, 0))
+        .packing(PackingStrategy::SimpleAuto {
+            decimal_scale: i16::MAX,
+        })
+        .values(&[1.0, 2.0, 3.0, 4.0])
+        .build()
+        .unwrap_err();
+    assert!(matches!(
+        invalid_scale,
+        grib_core::Error::ValueOutOfRange(message)
+            if message.contains("decimal scale")
+    ));
+}
+
 #[cfg(not(feature = "png"))]
 #[test]
 fn png_packing_requires_png_feature() {
