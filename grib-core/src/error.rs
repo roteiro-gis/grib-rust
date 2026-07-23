@@ -74,7 +74,7 @@ pub enum Error {
     #[error("GRIB{edition} does not support {packing} packing")]
     UnsupportedPackingForEdition { edition: u8, packing: &'static str },
 
-    #[error("decoded data length mismatch: expected {expected}, got {actual}")]
+    #[error("data length mismatch: expected {expected}, got {actual}")]
     DataLengthMismatch { expected: usize, actual: usize },
 
     #[error("{what} limit exceeded: requested {requested}, limit {limit}")]

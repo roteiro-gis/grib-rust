@@ -1032,9 +1032,10 @@ fn rejects_too_many_statistical_time_ranges() {
         .build()
         .unwrap_err();
 
-    assert!(
-        matches!(err, grib_core::Error::Other(message) if message.contains("time-range count"))
-    );
+    assert!(matches!(
+        err,
+        grib_core::Error::ValueOutOfRange(message) if message.contains("time-range count")
+    ));
 }
 
 #[test]
@@ -1275,9 +1276,41 @@ fn rejects_projected_grid_point_count_mismatch_before_writing() {
         .build()
         .unwrap_err();
 
-    assert!(
-        matches!(err, grib_core::Error::Other(message) if message.contains("number_of_points"))
-    );
+    assert!(matches!(
+        err,
+        grib_core::Error::DataLengthMismatch {
+            expected: 6,
+            actual: 5,
+        }
+    ));
+}
+
+#[test]
+fn reports_unrepresentable_grid_coordinates_with_typed_errors() {
+    let mut invalid_grid = match grid() {
+        GridDefinition::LatLon(grid) => grid,
+        other => panic!("expected latitude-longitude grid, got {other:?}"),
+    };
+    invalid_grid.lat_first = i32::MIN;
+    let field = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(GridDefinition::LatLon(invalid_grid))
+        .product(product(0, 0))
+        .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+        .values(&[1.0, 2.0, 3.0, 4.0])
+        .build()
+        .unwrap();
+
+    let mut bytes = Vec::new();
+    let err = GribWriter::new(&mut bytes)
+        .write_grib2_message([field])
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        grib_core::Error::ValueOutOfRange(message)
+            if message.contains("latitude of first grid point")
+    ));
 }
 
 #[cfg(not(feature = "png"))]
