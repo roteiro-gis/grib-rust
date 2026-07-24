@@ -16,7 +16,7 @@ Rust GRIB reader, writer, and shared core primitives for weather and climate dat
 | `grib-aec` | Safe shared interface to the bundled libaec CCSDS codec |
 | `grib-core` | Shared GRIB data model, code tables, binary primitives, bit I/O, and validation helpers |
 | `grib-reader` | GRIB1/GRIB2 file opening, message scanning, metadata parsing, and packed data decoding |
-| `grib-writer` | GRIB1/GRIB2 field builders, simple/complex/image/CCSDS packing, bitmap handling, and message serialization |
+| `grib-writer` | GRIB1/GRIB2 field builders, simple/complex/IEEE/image/CCSDS packing, bitmap handling, and message serialization |
 
 ## Reader Usage
 
@@ -172,6 +172,10 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Reader simple packing for GRIB1 and GRIB2
 - Reader GRIB1 predefined bitmaps via caller-supplied center-defined bitmap tables
 - GRIB2 complex packing with general group splitting, including spatial differencing
+- Reader and writer GRIB2 IEEE template 5.4 with binary32, binary64, and
+  correctly rounded binary128 conversion
+- Reader GRIB2 run-length template 5.200 with scaled level values and embedded
+  missing-value runs
 - Feature-gated reader GRIB2 JPEG2000 template 5.40 and PNG template 5.41 packed data decode
 - WMO parameter table lookups (Code Table 4.2) plus center/subcenter/local-table-aware GRIB2 local parameter entries and CSV authoring helpers
 - Typed metadata access for reference time, parameter identity, product metadata, grid geometry, and lat/lon coordinates

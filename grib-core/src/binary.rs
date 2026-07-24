@@ -9,6 +9,9 @@ const WMO_I16_MAX: i64 = 0x7fff;
 const WMO_I24_MAX: i64 = 0x7f_ffff;
 const WMO_I32_MAX: i64 = 0x7fff_ffff;
 const IBM_FRACTION_SCALE: f64 = 16_777_216.0;
+const IEEE_BINARY128_EXPONENT_BIAS: i32 = 16_383;
+const IEEE_BINARY128_FRACTION_BITS: u32 = 112;
+const IEEE_BINARY128_FRACTION_MASK: u128 = (1_u128 << IEEE_BINARY128_FRACTION_BITS) - 1;
 
 pub fn write_u8_be(out: &mut Vec<u8>, value: u8) -> Result<()> {
     reserve_bytes(out, 1)?;
@@ -199,6 +202,123 @@ pub fn encode_ibm_f32(value: f32) -> Option<[u8; 4]> {
     ])
 }
 
+/// Converts a big-endian IEEE 754 binary128 value to binary64.
+///
+/// Values outside the binary64 range become signed infinity or signed zero.
+/// Finite values are rounded to nearest, with ties to even.
+pub fn decode_ieee_binary128(bytes: [u8; 16]) -> f64 {
+    let bits = u128::from_be_bytes(bytes);
+    let sign = ((bits >> 127) as u64) << 63;
+    let exponent = ((bits >> IEEE_BINARY128_FRACTION_BITS) & 0x7fff) as u16;
+    let fraction = bits & IEEE_BINARY128_FRACTION_MASK;
+
+    if exponent == 0x7fff {
+        if fraction == 0 {
+            return f64::from_bits(sign | (0x7ff_u64 << 52));
+        }
+        let mut payload = (fraction >> (IEEE_BINARY128_FRACTION_BITS - 52)) as u64;
+        if payload == 0 {
+            payload = 1;
+        }
+        return f64::from_bits(sign | (0x7ff_u64 << 52) | payload);
+    }
+
+    let (significand, binary_exponent) = if exponent == 0 {
+        (fraction, 1 - IEEE_BINARY128_EXPONENT_BIAS - 112)
+    } else {
+        (
+            (1_u128 << IEEE_BINARY128_FRACTION_BITS) | fraction,
+            i32::from(exponent) - IEEE_BINARY128_EXPONENT_BIAS - 112,
+        )
+    };
+    if significand == 0 {
+        return f64::from_bits(sign);
+    }
+
+    let leading_bit = 127 - significand.leading_zeros() as i32;
+    let mut result_exponent = leading_bit + binary_exponent;
+    if result_exponent > 1023 {
+        return f64::from_bits(sign | (0x7ff_u64 << 52));
+    }
+
+    if result_exponent >= -1022 {
+        let shift = u32::try_from(leading_bit - 52)
+            .expect("binary128 normal significand always exceeds binary64 precision");
+        let mut rounded = round_shift_right_to_even(significand, shift);
+        if rounded == 1_u128 << 53 {
+            rounded >>= 1;
+            result_exponent += 1;
+            if result_exponent > 1023 {
+                return f64::from_bits(sign | (0x7ff_u64 << 52));
+            }
+        }
+
+        let exponent_bits = u64::try_from(result_exponent + 1023)
+            .expect("normal binary64 exponent is non-negative");
+        let fraction_bits = (rounded as u64) & ((1_u64 << 52) - 1);
+        return f64::from_bits(sign | (exponent_bits << 52) | fraction_bits);
+    }
+
+    let subnormal_shift = u32::try_from(-(binary_exponent + 1074))
+        .expect("binary64 subnormal conversion requires a right shift");
+    let rounded = round_shift_right_to_even(significand, subnormal_shift);
+    if rounded >= 1_u128 << 52 {
+        return f64::from_bits(sign | (1_u64 << 52));
+    }
+    f64::from_bits(sign | rounded as u64)
+}
+
+/// Encodes a binary64 value exactly as big-endian IEEE 754 binary128.
+pub fn encode_ieee_binary128(value: f64) -> [u8; 16] {
+    let bits = value.to_bits();
+    let sign = u128::from(bits >> 63) << 127;
+    let exponent = ((bits >> 52) & 0x7ff) as u16;
+    let fraction = bits & ((1_u64 << 52) - 1);
+
+    let encoded = match exponent {
+        0 if fraction == 0 => sign,
+        0 => {
+            let leading_bit = 63 - fraction.leading_zeros();
+            let unbiased_exponent = leading_bit as i32 - 1074;
+            let binary128_exponent =
+                u128::try_from(unbiased_exponent + IEEE_BINARY128_EXPONENT_BIAS)
+                    .expect("every binary64 subnormal is normal in binary128");
+            let trailing = u128::from(fraction ^ (1_u64 << leading_bit));
+            let binary128_fraction = trailing << (IEEE_BINARY128_FRACTION_BITS - leading_bit);
+            sign | (binary128_exponent << IEEE_BINARY128_FRACTION_BITS) | binary128_fraction
+        }
+        0x7ff => {
+            sign | (0x7fff_u128 << IEEE_BINARY128_FRACTION_BITS) | (u128::from(fraction) << 60)
+        }
+        _ => {
+            let unbiased_exponent = i32::from(exponent) - 1023;
+            let binary128_exponent =
+                u128::try_from(unbiased_exponent + IEEE_BINARY128_EXPONENT_BIAS)
+                    .expect("every finite binary64 value is representable in binary128");
+            sign | (binary128_exponent << IEEE_BINARY128_FRACTION_BITS)
+                | (u128::from(fraction) << 60)
+        }
+    };
+
+    encoded.to_be_bytes()
+}
+
+fn round_shift_right_to_even(value: u128, shift: u32) -> u128 {
+    match shift {
+        0 => value,
+        1..=127 => {
+            let quotient = value >> shift;
+            let remainder_mask = (1_u128 << shift) - 1;
+            let remainder = value & remainder_mask;
+            let halfway = 1_u128 << (shift - 1);
+            quotient
+                + u128::from(remainder > halfway || (remainder == halfway && quotient & 1 != 0))
+        }
+        128 => u128::from(value > (1_u128 << 127)),
+        _ => 0,
+    }
+}
+
 fn reserve_bytes(out: &mut Vec<u8>, additional: usize) -> Result<()> {
     out.try_reserve(additional)
         .map_err(|error| Error::allocation("output bytes", additional, error))
@@ -216,10 +336,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_ibm_f32, decode_ibm_f32_slice, decode_wmo_i16, decode_wmo_i24, decode_wmo_i32,
-        decode_wmo_i8, encode_ibm_f32, encode_wmo_i16, encode_wmo_i24, encode_wmo_i32,
-        encode_wmo_i8, read_u24_be, write_u16_be, write_u24_be, write_u32_be, write_u64_be,
-        write_u8_be,
+        decode_ibm_f32, decode_ibm_f32_slice, decode_ieee_binary128, decode_wmo_i16,
+        decode_wmo_i24, decode_wmo_i32, decode_wmo_i8, encode_ibm_f32, encode_ieee_binary128,
+        encode_wmo_i16, encode_wmo_i24, encode_wmo_i32, encode_wmo_i8, read_u24_be, write_u16_be,
+        write_u24_be, write_u32_be, write_u64_be, write_u8_be,
     };
 
     #[test]
@@ -327,5 +447,70 @@ mod tests {
         assert_eq!(encode_ibm_f32(f32::NAN), None);
         assert_eq!(encode_ibm_f32(f32::INFINITY), None);
         assert_eq!(encode_ibm_f32(f32::NEG_INFINITY), None);
+    }
+
+    #[test]
+    fn roundtrips_binary64_values_through_binary128() {
+        for value in [
+            0.0,
+            -0.0,
+            1.0,
+            -2.5,
+            f64::MIN_POSITIVE,
+            f64::from_bits(1),
+            f64::MAX,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            let decoded = decode_ieee_binary128(encode_ieee_binary128(value));
+            assert_eq!(decoded.to_bits(), value.to_bits(), "failed for {value:?}");
+        }
+
+        assert!(decode_ieee_binary128(encode_ieee_binary128(f64::NAN)).is_nan());
+    }
+
+    #[test]
+    fn decodes_known_binary128_values() {
+        assert_eq!(
+            decode_ieee_binary128(0x3fff_0000_0000_0000_0000_0000_0000_0000_u128.to_be_bytes()),
+            1.0
+        );
+        assert_eq!(
+            decode_ieee_binary128(0xc000_0000_0000_0000_0000_0000_0000_0000_u128.to_be_bytes()),
+            -2.0
+        );
+    }
+
+    #[test]
+    fn rounds_binary128_ties_to_even_binary64_values() {
+        let exponent = 0x3fff_u128 << 112;
+        let halfway_above_one = exponent | (1_u128 << 59);
+        let above_halfway = halfway_above_one | 1;
+        let halfway_above_odd = exponent | (3_u128 << 59);
+
+        assert_eq!(
+            decode_ieee_binary128(halfway_above_one.to_be_bytes()).to_bits(),
+            1.0_f64.to_bits()
+        );
+        assert_eq!(
+            decode_ieee_binary128(above_halfway.to_be_bytes()).to_bits(),
+            1.0_f64.to_bits() + 1
+        );
+        assert_eq!(
+            decode_ieee_binary128(halfway_above_odd.to_be_bytes()).to_bits(),
+            1.0_f64.to_bits() + 2
+        );
+    }
+
+    #[test]
+    fn rounds_binary128_at_binary64_subnormal_boundary() {
+        let half_minimum_subnormal = (15_308_u128 << 112).to_be_bytes();
+        let above_half_minimum_subnormal = ((15_308_u128 << 112) | 1).to_be_bytes();
+
+        assert_eq!(decode_ieee_binary128(half_minimum_subnormal).to_bits(), 0);
+        assert_eq!(
+            decode_ieee_binary128(above_half_minimum_subnormal).to_bits(),
+            1
+        );
     }
 }

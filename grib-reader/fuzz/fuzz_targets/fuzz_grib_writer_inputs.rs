@@ -4,9 +4,10 @@ use grib_core::metadata::ReferenceTime;
 use grib_core::{
     AnalysisOrForecastTemplate, CcsdsBlockSize, CcsdsFlags, DerivedForecastTemplate,
     DerivedStatisticalProcessTemplate, FixedSurface, GridDefinition, Identification, LatLonGrid,
-    PercentileForecastTemplate, PercentileStatisticalProcessTemplate, ProbabilityForecastTemplate,
-    ProbabilityLimit, ProbabilityStatisticalProcessTemplate, ProbabilityType, ProductDefinition,
-    ProductDefinitionTemplate, SpatialProcessTemplate, StatisticalInterval, StatisticalTimeRange,
+    IeeePrecision, PercentileForecastTemplate, PercentileStatisticalProcessTemplate,
+    ProbabilityForecastTemplate, ProbabilityLimit, ProbabilityStatisticalProcessTemplate,
+    ProbabilityType, ProductDefinition, ProductDefinitionTemplate, SpatialProcessTemplate,
+    StatisticalInterval, StatisticalTimeRange,
 };
 use grib_reader::GribFile;
 use grib_writer::{
@@ -86,7 +87,7 @@ fn generated_grib2_field(
     values: Vec<f64>,
 ) -> grib_writer::Result<Grib2Field> {
     let decimal_scale = decimal_scale(input);
-    let packing = match input.u8() % 3 {
+    let packing = match input.u8() % 4 {
         0 => {
             let spatial_differencing = match input.u8() % 4 {
                 0 => Some(SpatialDifferencingOrder::First),
@@ -117,6 +118,13 @@ fn generated_grib2_field(
                 reference_sample_interval: u16::from(input.u8()) + 1,
             }
         }
+        2 => PackingStrategy::Ieee {
+            precision: match input.u8() % 3 {
+                0 => IeeePrecision::Single,
+                1 => IeeePrecision::Double,
+                _ => IeeePrecision::Quadruple,
+            },
+        },
         _ => PackingStrategy::SimpleAuto { decimal_scale },
     };
     let mut builder = Grib2FieldBuilder::new()

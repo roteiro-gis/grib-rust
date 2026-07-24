@@ -12,11 +12,12 @@ use grib_core::{
     AlbersEqualAreaGrid, AnalysisOrForecastTemplate, CcsdsBlockSize, CcsdsFlags,
     DataRepresentation, DerivedForecastTemplate, DerivedStatisticalProcessTemplate,
     EnsembleStatisticalProcessTemplate, FixedSurface, GridDefinition, Identification,
-    IndividualEnsembleForecastTemplate, LambertConformalGrid, LatLonGrid, MercatorGrid,
-    PercentileForecastTemplate, PercentileStatisticalProcessTemplate, PolarStereographicGrid,
-    ProbabilityForecastTemplate, ProbabilityLimit, ProbabilityStatisticalProcessTemplate,
-    ProbabilityType, ProductDefinition, ProductDefinitionTemplate, ProjectedGridCore,
-    SpatialProcessTemplate, StatisticalInterval, StatisticalProcessTemplate, StatisticalTimeRange,
+    IeeePrecision, IndividualEnsembleForecastTemplate, LambertConformalGrid, LatLonGrid,
+    MercatorGrid, PercentileForecastTemplate, PercentileStatisticalProcessTemplate,
+    PolarStereographicGrid, ProbabilityForecastTemplate, ProbabilityLimit,
+    ProbabilityStatisticalProcessTemplate, ProbabilityType, ProductDefinition,
+    ProductDefinitionTemplate, ProjectedGridCore, SpatialProcessTemplate, StatisticalInterval,
+    StatisticalProcessTemplate, StatisticalTimeRange,
 };
 use grib_reader::sections::scan_sections;
 use grib_reader::{GribFile, PredefinedBitmap};
@@ -535,6 +536,109 @@ fn writes_simple_grib2_field_readable_by_reader() {
     assert_eq!(message.grid_shape(), (2, 2));
     assert_eq!(message.forecast_time(), Some(6));
     assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+}
+
+#[test]
+fn writes_all_ieee_grib2_precisions_readable_by_reader() {
+    let values = [1.0, -2.5, 65_536.125, f64::MIN_POSITIVE];
+
+    for precision in [
+        IeeePrecision::Single,
+        IeeePrecision::Double,
+        IeeePrecision::Quadruple,
+    ] {
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 0))
+            .packing(PackingStrategy::Ieee { precision })
+            .values(&values)
+            .build()
+            .unwrap();
+        let bytes = write_message([field]);
+        let data_representation_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 5)
+            .unwrap();
+        assert_eq!(data_representation_section.length, 12);
+        assert_eq!(
+            bytes[data_representation_section.offset + 11],
+            precision.code()
+        );
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        assert_eq!(message.metadata().data_representation.template_number(), 4);
+        let decoded = message.read_flat_data_as_f64().unwrap();
+        let expected = values.map(|value| match precision {
+            IeeePrecision::Single => f64::from(value as f32),
+            IeeePrecision::Double | IeeePrecision::Quadruple => value,
+            _ => unreachable!("test covers all supported IEEE precisions"),
+        });
+        assert_eq!(decoded, expected);
+    }
+}
+
+#[test]
+fn writes_ieee_nonfinite_values_when_explicitly_present() {
+    let field = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(grid())
+        .product(product(0, 0))
+        .packing(PackingStrategy::Ieee {
+            precision: IeeePrecision::Double,
+        })
+        .values(&[f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 999.0])
+        .bitmap(&[true, true, true, false])
+        .build()
+        .unwrap();
+
+    let file = GribFile::from_bytes(write_message([field])).unwrap();
+    let decoded = file.message(0).unwrap().read_flat_data_as_f64().unwrap();
+    assert!(decoded[0].is_nan());
+    assert_eq!(decoded[1], f64::INFINITY);
+    assert_eq!(decoded[2], f64::NEG_INFINITY);
+    assert!(decoded[3].is_nan());
+}
+
+#[test]
+fn rejects_finite_ieee_binary32_overflow() {
+    let error = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(grid())
+        .product(product(0, 0))
+        .packing(PackingStrategy::Ieee {
+            precision: IeeePrecision::Single,
+        })
+        .values(&[f64::MAX, 2.0, 3.0, 4.0])
+        .build()
+        .unwrap_err();
+
+    assert!(
+        matches!(error, grib_core::Error::ValueOutOfRange(message) if message.contains("does not fit IEEE binary32"))
+    );
+}
+
+#[test]
+fn rejects_ieee_packing_for_grib1() {
+    let error = Grib1FieldBuilder::new()
+        .product(grib1_product())
+        .grid(grid())
+        .packing(PackingStrategy::Ieee {
+            precision: IeeePrecision::Double,
+        })
+        .values(&[1.0, 2.0, 3.0, 4.0])
+        .build()
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        grib_core::Error::UnsupportedPackingForEdition {
+            edition: 1,
+            packing: "IEEE"
+        }
+    ));
 }
 
 #[test]

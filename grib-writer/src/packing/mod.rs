@@ -1,15 +1,17 @@
 mod ccsds;
 mod complex;
+mod ieee;
 mod image;
 mod simple;
 
 pub(crate) use ccsds::pack_ccsds_auto;
 pub(crate) use complex::pack_complex_auto;
+pub(crate) use ieee::pack_ieee;
 pub(crate) use image::{pack_jpeg2000_auto, pack_png_auto};
 pub(crate) use simple::pack_simple_auto;
 
 use grib_core::bit::BitWriter;
-use grib_core::{CcsdsBlockSize, CcsdsFlags, DataRepresentation, GridDefinition};
+use grib_core::{CcsdsBlockSize, CcsdsFlags, DataRepresentation, GridDefinition, IeeePrecision};
 
 use crate::{Error, Result};
 
@@ -23,6 +25,12 @@ pub enum PackingStrategy {
         decimal_scale: i16,
         spatial_differencing: Option<SpatialDifferencingOrder>,
     },
+    /// GRIB2 IEEE floating-point packing template 5.4.
+    ///
+    /// Without an explicit bitmap, NaN values are treated as missing. An
+    /// explicit bitmap can mark NaN and infinity as present because the IEEE
+    /// template represents them directly.
+    Ieee { precision: IeeePrecision },
     /// GRIB2 lossless JPEG 2000 code stream packing template 5.40.
     ///
     /// The OpenJPEG encoder supports automatically selected component

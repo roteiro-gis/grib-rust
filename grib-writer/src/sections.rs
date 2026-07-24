@@ -4,11 +4,11 @@ use grib_core::binary::{
 };
 use grib_core::{
     AlbersEqualAreaGrid, AnalysisOrForecastTemplate, CcsdsPackingParams, ComplexPackingParams,
-    DataRepresentation, FixedSurface, GridDefinition, Identification, Jpeg2000PackingParams,
-    LambertConformalGrid, LatLonGrid, MercatorGrid, PngPackingParams, PolarStereographicGrid,
-    ProbabilityLimit, ProbabilityType, ProductDefinition, ProductDefinitionTemplate,
-    ProjectedGridCore, ReferenceTime, ScaledPackingParams, StatisticalInterval,
-    StatisticalTimeRange,
+    DataRepresentation, FixedSurface, GridDefinition, Identification, IeeePackingParams,
+    Jpeg2000PackingParams, LambertConformalGrid, LatLonGrid, MercatorGrid, PngPackingParams,
+    PolarStereographicGrid, ProbabilityLimit, ProbabilityType, ProductDefinition,
+    ProductDefinitionTemplate, ProjectedGridCore, ReferenceTime, ScaledPackingParams,
+    StatisticalInterval, StatisticalTimeRange,
 };
 
 use crate::packing::PackedField;
@@ -632,6 +632,9 @@ pub(crate) fn write_data_representation_section(
         DataRepresentation::ComplexPacking(params) => {
             write_complex_data_representation_section(out, params)
         }
+        DataRepresentation::IeeePacking(params) => {
+            write_ieee_data_representation_section(out, params)
+        }
         DataRepresentation::Jpeg2000Packing(params) => {
             write_jpeg2000_data_representation_section(out, params)
         }
@@ -705,6 +708,18 @@ fn write_complex_data_representation_section(
         write_u8_be(out, spatial.descriptor_octets)?;
     }
     Ok(())
+}
+
+fn write_ieee_data_representation_section(
+    out: &mut Vec<u8>,
+    params: &IeeePackingParams,
+) -> Result<()> {
+    let encoded_values = checked_u32(params.encoded_values, "encoded value count")?;
+    write_u32_be(out, 12)?;
+    write_u8_be(out, 5)?;
+    write_u32_be(out, encoded_values)?;
+    write_u16_be(out, 4)?;
+    write_u8_be(out, params.precision.code())
 }
 
 fn write_jpeg2000_data_representation_section(

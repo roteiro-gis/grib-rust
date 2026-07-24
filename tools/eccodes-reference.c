@@ -343,6 +343,7 @@ static decode_totals decode_file(const char *path, int emit_json) {
             {"parameterNumber", "parameter_number", 0, 0},
             {"dataRepresentationTemplateNumber", "data_representation_template_number", 0, 0},
             {"numberOfValues", "number_of_values", 0, 0},
+            {"precision", "precision", 0, 0},
             {"bitsPerValue", "bits_per_value", 0, 0},
             {"binaryScaleFactor", "binary_scale_factor", 0, 0},
             {"decimalScaleFactor", "decimal_scale_factor", 0, 0},

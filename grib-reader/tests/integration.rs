@@ -7,7 +7,8 @@ use common::{
     build_grib2_complex_packing_message_with_missing, build_grib2_lambert_alternating_message,
     build_grib2_lambert_message, build_grib2_message, build_grib2_message_with_forecast,
     build_grib2_multifield_message, build_grib2_polar_stereographic_alternating_message,
-    build_grib2_polar_stereographic_message, build_grib2_spatial_differencing_message,
+    build_grib2_polar_stereographic_message, build_grib2_run_length_message,
+    build_grib2_spatial_differencing_message,
 };
 use grib_reader::{
     Error, ForecastTimeUnit, GribFile, GridDefinition, LocalParameterEntry, ParameterTableSource,
@@ -61,6 +62,18 @@ fn open_grib2_from_reader_and_decode() {
         opened.message(0).unwrap().read_flat_data_as_f64().unwrap(),
         vec![1.0, 2.0, 3.0, 4.0]
     );
+}
+
+#[test]
+fn decodes_run_length_packing_message() {
+    let opened = GribFile::from_bytes(build_grib2_run_length_message()).unwrap();
+    let field = opened.message(0).unwrap();
+    assert_eq!(field.metadata().data_representation.template_number(), 200);
+
+    let values = field.read_flat_data_as_f64().unwrap();
+    assert_eq!(values[..3], [10.0, 10.0, 10.0]);
+    assert!(values[3].is_nan());
+    assert_eq!(values[4..], [20.0, 20.0]);
 }
 
 #[test]

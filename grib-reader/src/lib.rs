@@ -2,8 +2,8 @@
 //!
 //! The reader supports GRIB1 and GRIB2 regular geographic grids, GRIB2 rotated
 //! latitude/longitude, regular Gaussian, and common projected grids, simple and
-//! complex packing, multi-field bitmap reuse, bounded allocation, and optional
-//! image-backed and CCSDS packing codecs.
+//! complex and IEEE packing, multi-field bitmap reuse, bounded allocation, and
+//! optional image-backed and CCSDS packing codecs.
 //!
 //! Missing grid points from bitmaps and embedded complex-packing codes decode
 //! as `NaN`. Complex-packing substitute metadata remains available through
@@ -50,8 +50,8 @@ pub mod sections;
 
 pub use data::{
     CcsdsBlockSize, CcsdsFlags, CcsdsPackingParams, ComplexPackingParams, DataRepresentation,
-    DecodeSample, Jpeg2000PackingParams, PngPackingParams, ScaledPackingParams,
-    SpatialDifferencingParams,
+    DecodeSample, IeeePackingParams, IeeePrecision, Jpeg2000PackingParams, PngPackingParams,
+    RunLengthPackingParams, ScaledPackingParams, SpatialDifferencingParams,
 };
 pub use error::{Error, Result};
 pub use grib1::{BinaryDataSection, GridDescription, ProductDefinition as Grib1ProductDefinition};

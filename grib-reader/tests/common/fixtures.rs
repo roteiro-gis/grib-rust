@@ -117,6 +117,18 @@ pub fn build_grib2_regular_gaussian_message() -> Vec<u8> {
     assemble_grib2_message(&sections)
 }
 
+pub fn build_grib2_run_length_message() -> Vec<u8> {
+    let sections = [
+        build_identification_section(),
+        build_rotated_latlon_grid_section(),
+        build_product_section(),
+        build_run_length_representation_section(),
+        // 10 repeated three times, missing once, then 20 repeated twice.
+        build_data_section(&[1, 5, 0, 2, 4]),
+    ];
+    assemble_grib2_message(&sections)
+}
+
 fn build_grib2_lambert_message_with_scanning_mode(scanning_mode: u8, values: &[u8]) -> Vec<u8> {
     let sections = [
         build_identification_section(),
@@ -265,6 +277,21 @@ fn build_simple_representation_section(encoded_values: usize, bits_per_value: u8
     section[9..11].copy_from_slice(&0u16.to_be_bytes());
     section[11..15].copy_from_slice(&0f32.to_be_bytes());
     section[19] = bits_per_value;
+    section
+}
+
+fn build_run_length_representation_section() -> Vec<u8> {
+    let mut section = vec![0u8; 21];
+    section[..4].copy_from_slice(&21u32.to_be_bytes());
+    section[4] = 5;
+    section[5..9].copy_from_slice(&6u32.to_be_bytes());
+    section[9..11].copy_from_slice(&200u16.to_be_bytes());
+    section[11] = 8;
+    section[12..14].copy_from_slice(&2u16.to_be_bytes());
+    section[14..16].copy_from_slice(&2u16.to_be_bytes());
+    section[16] = 0;
+    section[17..19].copy_from_slice(&10u16.to_be_bytes());
+    section[19..21].copy_from_slice(&20u16.to_be_bytes());
     section
 }
 

@@ -6,11 +6,11 @@ use std::process::Command;
 use grib_core::metadata::ReferenceTime;
 use grib_core::{
     AnalysisOrForecastTemplate, DataRepresentation, DerivedForecastTemplate,
-    DerivedStatisticalProcessTemplate, FixedSurface, GridDefinition, Identification, LatLonGrid,
-    PercentileForecastTemplate, PercentileStatisticalProcessTemplate, ProbabilityForecastTemplate,
-    ProbabilityLimit, ProbabilityStatisticalProcessTemplate, ProbabilityType, ProductDefinition,
-    ProductDefinitionTemplate, ScaledPackingParams, SpatialProcessTemplate, StatisticalInterval,
-    StatisticalTimeRange,
+    DerivedStatisticalProcessTemplate, FixedSurface, GridDefinition, Identification, IeeePrecision,
+    LatLonGrid, PercentileForecastTemplate, PercentileStatisticalProcessTemplate,
+    ProbabilityForecastTemplate, ProbabilityLimit, ProbabilityStatisticalProcessTemplate,
+    ProbabilityType, ProductDefinition, ProductDefinitionTemplate, ScaledPackingParams,
+    SpatialProcessTemplate, StatisticalInterval, StatisticalTimeRange,
 };
 #[cfg(feature = "ccsds")]
 use grib_core::{CcsdsBlockSize, CcsdsFlags};
@@ -38,6 +38,7 @@ pub struct ReferenceMessage {
     pub nj: usize,
     pub data_representation_template_number: Option<i64>,
     pub number_of_values: Option<i64>,
+    pub precision: Option<i64>,
     pub bits_per_value: Option<i64>,
     pub binary_scale_factor: Option<i64>,
     pub decimal_scale_factor: Option<i64>,
@@ -292,6 +293,30 @@ fn assert_data_representation_metadata(
                 params.binary_scale,
                 params.decimal_scale,
             ),
+            DataRepresentation::IeeePacking(params) => {
+                assert_eq!(
+                    expected.data_representation_template_number,
+                    Some(4),
+                    "data representation template mismatch for {} field {}",
+                    path.display(),
+                    field_index
+                );
+                assert_eq!(
+                    expected.number_of_values,
+                    Some(i64::try_from(params.encoded_values).unwrap()),
+                    "encoded value count mismatch for {} field {}",
+                    path.display(),
+                    field_index
+                );
+                assert_eq!(
+                    expected.precision,
+                    Some(i64::from(params.precision.code())),
+                    "IEEE precision mismatch for {} field {}",
+                    path.display(),
+                    field_index
+                );
+                return;
+            }
             DataRepresentation::Jpeg2000Packing(params) => scaled_metadata(40, &params.packing),
             DataRepresentation::PngPacking(params) => scaled_metadata(41, &params.packing),
             DataRepresentation::CcsdsPacking(params) => {
@@ -710,6 +735,21 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
             number_of_points_used: 4,
         },
     ));
+    let ieee_field = |precision, values: &[f64]| {
+        Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(latlon_grid(2, 2, 0))
+            .product(product(0, 0))
+            .packing(PackingStrategy::Ieee { precision })
+            .values(values)
+            .build()
+            .unwrap()
+    };
+    let ieee_single = ieee_field(IeeePrecision::Single, &[1.25, -2.5, f64::NAN, 65_536.125]);
+    let ieee_double = ieee_field(
+        IeeePrecision::Double,
+        &[1.0 / 3.0, -2.5, 1.0e100, f64::MIN_POSITIVE],
+    );
 
     let samples = vec![
         (
@@ -744,6 +784,14 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
             write_grib2_message([derived_interval]),
         ),
         ("writer-spatial.grib2", write_grib2_message([spatial])),
+        (
+            "writer-ieee-single.grib2",
+            write_grib2_message([ieee_single]),
+        ),
+        (
+            "writer-ieee-double.grib2",
+            write_grib2_message([ieee_double]),
+        ),
         ("writer-complex.grib2", write_grib2_message([complex])),
         (
             "writer-complex-spatial-first.grib2",
