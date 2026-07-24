@@ -45,6 +45,15 @@ pub fn build_grib1_message(values: &[u8]) -> Vec<u8> {
     }
 }
 
+pub fn build_grib1_large_message_convention() -> Vec<u8> {
+    let mut message = GRIB1_1234.to_vec();
+    // A compact fixture using the same formula as an ECMWF >8 MiB message:
+    // ceil((84 - 4) / 120) = 1 block and 40 padding octets.
+    message[4..7].copy_from_slice(&[0x80, 0, 1]);
+    message[68..71].copy_from_slice(&[0, 0, 40]);
+    message
+}
+
 pub fn build_grib1_message_with_bitmap(
     values: &[u8],
     ni: u16,

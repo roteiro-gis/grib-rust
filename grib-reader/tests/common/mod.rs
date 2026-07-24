@@ -4,8 +4,8 @@ mod reference;
 
 #[allow(unused_imports)]
 pub use fixtures::{
-    build_bitmap_prefixed_stream, build_grib1_bitmap_message, build_grib1_message,
-    build_grib1_message_with_bitmap, build_grib2_complex_packing_message,
+    build_bitmap_prefixed_stream, build_grib1_bitmap_message, build_grib1_large_message_convention,
+    build_grib1_message, build_grib1_message_with_bitmap, build_grib2_complex_packing_message,
     build_grib2_complex_packing_message_with_missing, build_grib2_lambert_alternating_message,
     build_grib2_lambert_message, build_grib2_message, build_grib2_message_with_forecast,
     build_grib2_multifield_message, build_grib2_polar_stereographic_alternating_message,

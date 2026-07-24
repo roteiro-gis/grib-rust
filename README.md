@@ -170,6 +170,8 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
   3.20, Lambert conformal grid template 3.30, and Albers equal-area grid
   template 3.31 metadata, projected coordinate offsets, and flat data decode
 - Reader simple packing for GRIB1 and GRIB2
+- Reader framing for ECMWF-era GRIB1 messages larger than the 24-bit standard
+  length limit
 - Reader GRIB1 predefined bitmaps via caller-supplied center-defined bitmap tables
 - GRIB2 complex packing with general group splitting, including spatial differencing
 - Reader and writer GRIB2 IEEE template 5.4 with binary32, binary64, and

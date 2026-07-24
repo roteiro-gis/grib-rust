@@ -3,12 +3,12 @@ mod common;
 use std::io::{Cursor, Write};
 
 use common::{
-    build_grib1_message, build_grib1_message_with_bitmap, build_grib2_complex_packing_message,
-    build_grib2_complex_packing_message_with_missing, build_grib2_lambert_alternating_message,
-    build_grib2_lambert_message, build_grib2_message, build_grib2_message_with_forecast,
-    build_grib2_multifield_message, build_grib2_polar_stereographic_alternating_message,
-    build_grib2_polar_stereographic_message, build_grib2_run_length_message,
-    build_grib2_spatial_differencing_message,
+    build_grib1_large_message_convention, build_grib1_message, build_grib1_message_with_bitmap,
+    build_grib2_complex_packing_message, build_grib2_complex_packing_message_with_missing,
+    build_grib2_lambert_alternating_message, build_grib2_lambert_message, build_grib2_message,
+    build_grib2_message_with_forecast, build_grib2_multifield_message,
+    build_grib2_polar_stereographic_alternating_message, build_grib2_polar_stereographic_message,
+    build_grib2_run_length_message, build_grib2_spatial_differencing_message,
 };
 use grib_reader::{
     Error, ForecastTimeUnit, GribFile, GridDefinition, LocalParameterEntry, ParameterTableSource,
@@ -99,6 +99,15 @@ fn open_grib1_from_file_and_decode() {
             .collect::<Vec<_>>(),
         vec![5.0, 6.0, 7.0, 8.0]
     );
+}
+
+#[test]
+fn opens_grib1_large_message_convention_and_resolves_section4_length() {
+    let opened = GribFile::from_bytes(build_grib1_large_message_convention()).unwrap();
+    let field = opened.message(0).unwrap();
+
+    assert_eq!(field.metadata().message_length, 84);
+    assert_eq!(field.read_flat_data_as_f64().unwrap(), [1.0, 2.0, 3.0, 4.0]);
 }
 
 #[test]
