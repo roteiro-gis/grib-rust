@@ -240,6 +240,36 @@ impl GridDefinition {
         }
     }
 
+    /// Returns the grid's Code Table 3.4 scanning-mode byte.
+    pub fn scanning_mode(&self) -> Option<u8> {
+        match self {
+            Self::LatLon(g) => Some(g.scanning_mode),
+            Self::RotatedLatLon(g) => Some(g.grid.scanning_mode),
+            Self::Mercator(g) => Some(g.core.scanning_mode),
+            Self::PolarStereographic(g) => Some(g.core.scanning_mode),
+            Self::LambertConformal(g) => Some(g.core.scanning_mode),
+            Self::AlbersEqualArea(g) => Some(g.core.scanning_mode),
+            Self::RegularGaussian(g) => Some(g.scanning_mode),
+            Self::Unsupported(_) => None,
+        }
+    }
+
+    /// Returns `(points_per_scan_line, number_of_scan_lines)`.
+    ///
+    /// This is the grouping geometry used by GRIB1 row-by-row second-order
+    /// packing and GRIB2 complex-packing group splitting method 0.
+    pub fn scan_line_shape(&self) -> Result<(usize, usize)> {
+        let (ni, nj) = self.shape();
+        let scanning_mode = self
+            .scanning_mode()
+            .ok_or_else(|| Error::UnsupportedGridTemplate(self.template_number()))?;
+        if i_points_are_consecutive(scanning_mode) {
+            Ok((ni, nj))
+        } else {
+            Ok((nj, ni))
+        }
+    }
+
     pub fn shape_num_points(&self) -> Result<usize> {
         match self {
             Self::LatLon(g) => checked_grid_point_count(g.ni, g.nj),

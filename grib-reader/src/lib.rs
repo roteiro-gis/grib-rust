@@ -50,8 +50,9 @@ pub mod sections;
 
 pub use data::{
     CcsdsBlockSize, CcsdsFlags, CcsdsPackingParams, ComplexPackingParams, DataRepresentation,
-    DecodeSample, IeeePackingParams, IeeePrecision, Jpeg2000PackingParams, PngPackingParams,
-    RunLengthPackingParams, ScaledPackingParams, SpatialDifferencingParams,
+    DecodeSample, Grib1SecondOrderLayout, Grib1SecondOrderPackingParams, IeeePackingParams,
+    IeeePrecision, Jpeg2000PackingParams, PngPackingParams, RunLengthPackingParams,
+    ScaledPackingParams, SpatialDifferencingParams,
 };
 pub use error::{Error, Result};
 pub use grib1::{BinaryDataSection, GridDescription, ProductDefinition as Grib1ProductDefinition};
@@ -78,14 +79,15 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
+use grib_core::bit::read_bit;
 use grib_core::{ensure_limit, filled_vec};
 use memchr::memmem::Finder;
 use memmap2::Mmap;
 use ndarray::{ArrayD, IxDyn};
 
 use crate::data::{
-    bitmap_payload as grib2_bitmap_payload, count_bitmap_present_points, decode_field_into,
-    decode_payload_into,
+    bitmap_payload as grib2_bitmap_payload, count_bitmap_present_points,
+    decode_field_into_with_group_lengths, decode_payload_into_with_group_lengths,
 };
 use crate::indicator::Indicator;
 use crate::parameter::lookup_parameter_with_local_entries;
@@ -268,6 +270,7 @@ struct MessageIndex {
     length: usize,
     metadata: MessageMetadata,
     decode_plan: DecodePlan,
+    row_group_lengths: Option<Arc<[usize]>>,
 }
 
 #[derive(Clone)]
@@ -358,6 +361,7 @@ impl GribFile {
             bytes,
             metadata: &record.metadata,
             decode_plan: &record.decode_plan,
+            row_group_lengths: record.row_group_lengths.as_deref(),
             options: self.options,
         }
     }
@@ -410,6 +414,7 @@ pub struct Message<'a> {
     bytes: &'a [u8],
     metadata: &'a MessageMetadata,
     decode_plan: &'a DecodePlan,
+    row_group_lengths: Option<&'a [usize]>,
     options: ReaderOptions,
     index: usize,
 }
@@ -596,12 +601,13 @@ impl<'a> Message<'a> {
                     Some(section) => grib2_bitmap_payload(section_bytes(self.bytes, section))?,
                     None => None,
                 };
-                decode_field_into(
+                decode_field_into_with_group_lengths(
                     data_section,
                     &self.metadata.data_representation,
                     bitmap_section,
                     num_grid_points,
                     out,
+                    self.row_group_lengths,
                 )?
             }
             DecodePlan::Grib1 { bitmap, data } => {
@@ -619,12 +625,13 @@ impl<'a> Message<'a> {
                         reason: format!("expected at least 11 bytes, got {}", data_section.len()),
                     });
                 }
-                decode_payload_into(
+                decode_payload_into_with_group_lengths(
                     &data_section[11..],
                     &self.metadata.data_representation,
                     bitmap_section,
                     num_grid_points,
                     out,
+                    self.row_group_lengths,
                 )?
             }
         }
@@ -893,6 +900,15 @@ fn index_grib1_message(
         sections.product.decimal_scale,
         bitmap_present_count,
     )?;
+    let bitmap_payload = match &bitmap {
+        Some(Grib1BitmapSource::Explicit(section)) => {
+            grib1::bitmap_payload(section_bytes(message_bytes, *section))?
+        }
+        Some(Grib1BitmapSource::Predefined(payload)) => Some(payload.as_ref()),
+        None => None,
+    };
+    let row_group_lengths =
+        row_group_lengths_for_representation(&grid, bitmap_payload, &data_representation)?;
     let parameter = sections.product.parameter();
 
     Ok(vec![MessageIndex {
@@ -902,6 +918,7 @@ fn index_grib1_message(
             bitmap,
             data: sections.data,
         },
+        row_group_lengths,
         metadata: MessageMetadata {
             edition: 1,
             center_id: sections.product.center_id as u16,
@@ -947,6 +964,89 @@ fn resolve_predefined_bitmap<'a>(
         .ok_or(Error::UnsupportedBitmapIndicator(table_reference))
 }
 
+fn row_group_lengths_for_representation(
+    grid: &GridDefinition,
+    bitmap_payload: Option<&[u8]>,
+    representation: &DataRepresentation,
+) -> Result<Option<Arc<[usize]>>> {
+    let (expected_groups, expected_values, section) = match representation {
+        DataRepresentation::Grib1SecondOrderPacking(params)
+            if params.layout() == Grib1SecondOrderLayout::RowByRow =>
+        {
+            (params.group_count(), params.packing().encoded_values, 4)
+        }
+        DataRepresentation::ComplexPacking(params) if params.group_splitting_method == 0 => {
+            (params.num_groups, params.encoded_values, 5)
+        }
+        _ => return Ok(None),
+    };
+
+    let num_grid_points = grid.checked_num_points()?;
+    let (points_per_line, number_of_lines) = grid.scan_line_shape()?;
+    let shape_points =
+        points_per_line
+            .checked_mul(number_of_lines)
+            .ok_or(Error::ArithmeticOverflow {
+                operation: "computing scan-line grid point count",
+            })?;
+    if shape_points != num_grid_points {
+        return Err(Error::InvalidSection {
+            section: 3,
+            reason: format!(
+                "scan-line shape {points_per_line}x{number_of_lines} contains {shape_points} points, but the grid declares {num_grid_points}"
+            ),
+        });
+    }
+    if number_of_lines != expected_groups {
+        return Err(Error::InvalidSection {
+            section,
+            reason: format!(
+                "row-wise packing declares {expected_groups} groups, but the grid has {number_of_lines} scan lines"
+            ),
+        });
+    }
+
+    let mut lengths = Vec::new();
+    lengths
+        .try_reserve_exact(number_of_lines)
+        .map_err(|error| Error::allocation("row-wise group lengths", number_of_lines, error))?;
+    match bitmap_payload {
+        Some(bitmap) => {
+            count_bitmap_present_points(bitmap, num_grid_points)?;
+            for line_index in 0..number_of_lines {
+                let line_start =
+                    line_index
+                        .checked_mul(points_per_line)
+                        .ok_or(Error::ArithmeticOverflow {
+                            operation: "computing bitmap scan-line offset",
+                        })?;
+                let mut present = 0usize;
+                for point_index in 0..points_per_line {
+                    if read_bit(bitmap, line_start + point_index)? {
+                        present += 1;
+                    }
+                }
+                lengths.push(present);
+            }
+        }
+        None => lengths.resize(number_of_lines, points_per_line),
+    }
+
+    let actual_values = lengths.iter().try_fold(0usize, |total, length| {
+        total.checked_add(*length).ok_or(Error::ArithmeticOverflow {
+            operation: "summing row-wise group lengths",
+        })
+    })?;
+    if actual_values != expected_values {
+        return Err(Error::DataLengthMismatch {
+            expected: expected_values,
+            actual: actual_values,
+        });
+    }
+
+    Ok(Some(Arc::from(lengths)))
+}
+
 fn validate_grib2_grid_points(grid: &GridDefinition) -> Result<()> {
     let Some(declared) = grid.declared_num_points() else {
         return Ok(());
@@ -985,6 +1085,12 @@ fn index_grib2_message(
             message_bytes,
             field_sections.data_representation,
         ))?;
+        let bitmap_payload = match field_sections.bitmap {
+            Some(section) => grib2_bitmap_payload(section_bytes(message_bytes, section))?,
+            None => None,
+        };
+        let row_group_lengths =
+            row_group_lengths_for_representation(&grid, bitmap_payload, &data_representation)?;
         let parameter = lookup_parameter_with_local_entries(
             indicator.discipline,
             product.parameter_category,
@@ -999,6 +1105,7 @@ fn index_grib2_message(
             offset,
             length: message_bytes.len(),
             decode_plan: DecodePlan::Grib2(field_sections),
+            row_group_lengths,
             metadata: MessageMetadata {
                 edition: indicator.edition,
                 center_id: identification.center_id,
@@ -1285,6 +1392,79 @@ mod tests {
         message
     }
 
+    fn build_grib1_second_order_message(layout: Grib1SecondOrderLayout) -> Vec<u8> {
+        let mut message = build_grib1_message(&[0; 6]);
+        let grid_offset = 8 + 28;
+        message[grid_offset + 6..grid_offset + 8].copy_from_slice(&3u16.to_be_bytes());
+        message[grid_offset + 8..grid_offset + 10].copy_from_slice(&2u16.to_be_bytes());
+
+        let (length, extended_flags, n1, n2, widths, bitmap_offset) = match layout {
+            Grib1SecondOrderLayout::RowByRow => (27usize, 0x10, 24u16, 26u16, &[2, 2][..], None),
+            Grib1SecondOrderLayout::ConstantWidth => (27, 0x20, 24, 26, &[2][..], Some(22usize)),
+            Grib1SecondOrderLayout::VariableWidth => (28, 0x30, 25, 27, &[2, 2][..], Some(23usize)),
+            _ => unreachable!(),
+        };
+        let mut bds = vec![0u8; length];
+        bds[..3].copy_from_slice(&[
+            ((length >> 16) & 0xff) as u8,
+            ((length >> 8) & 0xff) as u8,
+            (length & 0xff) as u8,
+        ]);
+        bds[3] = 0x44;
+        bds[10] = 5;
+        bds[11..13].copy_from_slice(&n1.to_be_bytes());
+        bds[13] = extended_flags;
+        bds[14..16].copy_from_slice(&n2.to_be_bytes());
+        bds[16..18].copy_from_slice(&2u16.to_be_bytes());
+        bds[18..20].copy_from_slice(&6u16.to_be_bytes());
+        bds[21..21 + widths.len()].copy_from_slice(widths);
+        if let Some(offset) = bitmap_offset {
+            bds[offset] = 0b1001_0000;
+        }
+        let first_order_index = usize::from(n1) - 1;
+        bds[first_order_index..first_order_index + 2].copy_from_slice(&[0x55, 0x00]);
+        let second_order_index = usize::from(n2) - 1;
+        bds[second_order_index..second_order_index + 2].copy_from_slice(&[0x18, 0xb0]);
+
+        let data_offset = 8 + 28 + 32;
+        message.truncate(data_offset);
+        message.extend_from_slice(&bds);
+        message.extend_from_slice(b"7777");
+        let total_len = message.len();
+        message[4] = ((total_len >> 16) & 0xff) as u8;
+        message[5] = ((total_len >> 8) & 0xff) as u8;
+        message[6] = (total_len & 0xff) as u8;
+        message
+    }
+
+    fn build_grib1_row_by_row_message_with_primary_bitmap() -> Vec<u8> {
+        let mut message = build_grib1_second_order_message(Grib1SecondOrderLayout::RowByRow);
+        let data_offset = 8 + 28 + 32;
+        let mut bds = vec![0u8; 26];
+        bds[..3].copy_from_slice(&[0, 0, 26]);
+        bds[3] = 0x44;
+        bds[10] = 5;
+        bds[11..13].copy_from_slice(&24u16.to_be_bytes());
+        bds[13] = 0x10;
+        bds[14..16].copy_from_slice(&26u16.to_be_bytes());
+        bds[16..18].copy_from_slice(&2u16.to_be_bytes());
+        bds[18..20].copy_from_slice(&2u16.to_be_bytes());
+        bds[21..23].copy_from_slice(&[2, 0]);
+        bds[23..25].copy_from_slice(&[0x50, 0x00]);
+        bds[25] = 0x20;
+
+        message.truncate(data_offset);
+        message[8 + 7] = 0b1100_0000;
+        message.extend_from_slice(&[0, 0, 7, 2, 0, 0, 0b1010_0000]);
+        message.extend_from_slice(&bds);
+        message.extend_from_slice(b"7777");
+        let total_len = message.len();
+        message[4] = ((total_len >> 16) & 0xff) as u8;
+        message[5] = ((total_len >> 8) & 0xff) as u8;
+        message[6] = (total_len & 0xff) as u8;
+        message
+    }
+
     #[test]
     fn scans_single_grib2_message() {
         let message = assemble_grib2_message(&[
@@ -1515,6 +1695,41 @@ mod tests {
             array.iter().copied().collect::<Vec<_>>(),
             vec![1.0, 2.0, 3.0, 4.0]
         );
+    }
+
+    #[test]
+    fn decodes_standard_grib1_second_order_layouts() {
+        for layout in [
+            Grib1SecondOrderLayout::RowByRow,
+            Grib1SecondOrderLayout::ConstantWidth,
+            Grib1SecondOrderLayout::VariableWidth,
+        ] {
+            let opened = GribFile::from_bytes(build_grib1_second_order_message(layout)).unwrap();
+            let field = opened.message(0).unwrap();
+            assert_eq!(field.grid_shape(), (3, 2));
+            assert_eq!(
+                field.read_flat_data_as_f64().unwrap(),
+                vec![10.0, 11.0, 12.0, 20.0, 22.0, 23.0],
+                "layout {layout:?}"
+            );
+            let DataRepresentation::Grib1SecondOrderPacking(params) =
+                &field.metadata().data_representation
+            else {
+                panic!("expected GRIB1 second-order metadata");
+            };
+            assert_eq!(params.layout(), layout);
+        }
+    }
+
+    #[test]
+    fn decodes_grib1_row_by_row_groups_reduced_by_primary_bitmap() {
+        let opened =
+            GribFile::from_bytes(build_grib1_row_by_row_message_with_primary_bitmap()).unwrap();
+        let values = opened.message(0).unwrap().read_flat_data_as_f64().unwrap();
+        assert_eq!(values[0], 10.0);
+        assert!(values[1].is_nan());
+        assert_eq!(values[2], 12.0);
+        assert!(values[3..].iter().all(|value| value.is_nan()));
     }
 
     #[test]

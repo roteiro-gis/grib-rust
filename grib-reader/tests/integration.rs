@@ -4,6 +4,7 @@ use std::io::{Cursor, Write};
 
 use common::{
     build_grib1_large_message_convention, build_grib1_message, build_grib1_message_with_bitmap,
+    build_grib1_second_order_general_message, build_grib1_second_order_row_by_row_message,
     build_grib2_complex_packing_message, build_grib2_complex_packing_message_with_missing,
     build_grib2_lambert_alternating_message, build_grib2_lambert_message, build_grib2_message,
     build_grib2_message_with_forecast, build_grib2_multifield_message,
@@ -99,6 +100,20 @@ fn open_grib1_from_file_and_decode() {
             .collect::<Vec<_>>(),
         vec![5.0, 6.0, 7.0, 8.0]
     );
+}
+
+#[test]
+fn decodes_grib1_second_order_row_and_secondary_bitmap_groups() {
+    for bytes in [
+        build_grib1_second_order_row_by_row_message(),
+        build_grib1_second_order_general_message(),
+    ] {
+        let opened = GribFile::from_bytes(bytes).unwrap();
+        assert_eq!(
+            opened.message(0).unwrap().read_flat_data_as_f64().unwrap(),
+            vec![10.0, 11.0, 12.0, 20.0, 22.0, 23.0]
+        );
+    }
 }
 
 #[test]

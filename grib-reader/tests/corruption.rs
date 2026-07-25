@@ -145,13 +145,16 @@ fn rejects_internal_end_marker_reached_via_bad_section_length() {
 }
 
 #[test]
-fn rejects_row_by_row_complex_packing() {
+fn rejects_row_by_row_complex_packing_with_general_group_lengths() {
     let mut message = build_grib2_complex_packing_message();
     let section5_offset = 16 + 21 + 72 + 34;
     message[section5_offset + 21] = 0;
 
     let err = expect_err(message);
-    assert!(matches!(err, Error::UnsupportedGroupSplittingMethod(0)));
+    assert!(matches!(err, Error::InvalidSection { section: 5, .. }));
+    assert!(err
+        .to_string()
+        .contains("requires all group-length fields to be zero"));
 }
 
 #[test]

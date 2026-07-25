@@ -16,8 +16,9 @@ pub mod product;
 pub use allocation::{ensure_limit, filled_vec};
 pub use data::{
     CcsdsBlockSize, CcsdsFlags, CcsdsPackingParams, ComplexPackingParams, DataRepresentation,
-    IeeePackingParams, IeeePrecision, Jpeg2000PackingParams, PngPackingParams,
-    RunLengthPackingParams, ScaledPackingParams, SpatialDifferencingParams,
+    Grib1SecondOrderLayout, Grib1SecondOrderPackingParams, IeeePackingParams, IeeePrecision,
+    Jpeg2000PackingParams, PngPackingParams, RunLengthPackingParams, ScaledPackingParams,
+    SpatialDifferencingParams,
 };
 pub use error::{Error, Result};
 pub use grid::{

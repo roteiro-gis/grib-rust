@@ -3,7 +3,8 @@ mod common;
 use std::path::Path;
 
 use common::{
-    build_grib1_bitmap_message, build_grib1_message, build_grib2_complex_packing_message,
+    build_grib1_bitmap_message, build_grib1_message, build_grib1_second_order_general_message,
+    build_grib1_second_order_row_by_row_message, build_grib2_complex_packing_message,
     build_grib2_complex_packing_message_with_missing, build_grib2_lambert_message,
     build_grib2_message, build_grib2_multifield_message, build_grib2_polar_stereographic_message,
     build_grib2_regular_gaussian_message, build_grib2_rotated_latlon_message,
@@ -27,6 +28,16 @@ fn generated_fixtures_match_eccodes_when_configured() {
             &build_grib1_message(&[5, 6, 7, 8]),
         ),
         write_fixture(dir.path(), "bitmap.grib1", &build_grib1_bitmap_message()),
+        write_fixture(
+            dir.path(),
+            "second-order-row.grib1",
+            &build_grib1_second_order_row_by_row_message(),
+        ),
+        write_fixture(
+            dir.path(),
+            "second-order-general.grib1",
+            &build_grib1_second_order_general_message(),
+        ),
         write_fixture(
             dir.path(),
             "sample.grib2",

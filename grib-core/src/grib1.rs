@@ -1,7 +1,10 @@
 //! GRIB Edition 1 shared metadata and section models.
 
 use crate::binary::{decode_ibm_f32, decode_wmo_i16, decode_wmo_i24};
-use crate::data::{DataRepresentation, ScaledPackingParams};
+use crate::bit::read_bit;
+use crate::data::{
+    DataRepresentation, Grib1SecondOrderLayout, Grib1SecondOrderPackingParams, ScaledPackingParams,
+};
 use crate::error::{Error, Result};
 use crate::grid::{GridDefinition, LatLonGrid};
 use crate::metadata::{Parameter, ReferenceTime};
@@ -143,29 +146,28 @@ impl BinaryDataSection {
         if flags & 0b1000 != 0 {
             return Err(Error::UnsupportedDataTemplate(1004));
         }
-        if flags & 0b0100 != 0 {
-            return Err(Error::UnsupportedDataTemplate(1005));
-        }
-        if flags & 0b0010 != 0 {
-            return Err(Error::UnsupportedDataTemplate(1006));
-        }
-        if flags & 0b0001 != 0 {
-            return Err(Error::UnsupportedDataTemplate(1007));
-        }
 
         let binary_scale = decode_wmo_i16(&section_bytes[4..6]).unwrap();
         let reference_value = decode_ibm_f32(section_bytes[6..10].try_into().unwrap());
         let bits_per_value = section_bytes[10];
-        let simple = ScaledPackingParams {
+        if bits_per_value > 64 {
+            return Err(Error::UnsupportedPackingWidth(bits_per_value));
+        }
+        let packing = ScaledPackingParams {
             encoded_values,
             reference_value,
             binary_scale,
             decimal_scale,
             bits_per_value,
-            // The integer-field flag (0b0010 after shifting the flag nibble)
-            // is rejected above, so every field reaching this point is
-            // represented as floating point.
-            original_field_type: 0,
+            original_field_type: u8::from(flags & 0b0010 != 0),
+        };
+        let representation = if flags & 0b0100 != 0 {
+            parse_second_order_packing(section_bytes, packing, data_flag & 0x0f)?
+        } else {
+            if flags & 0b0001 != 0 {
+                return Err(Error::UnsupportedDataTemplate(1007));
+            }
+            DataRepresentation::SimplePacking(packing)
         };
 
         Ok((
@@ -176,8 +178,262 @@ impl BinaryDataSection {
                 reference_value,
                 bits_per_value,
             },
-            DataRepresentation::SimplePacking(simple),
+            representation,
         ))
+    }
+}
+
+fn parse_second_order_packing(
+    section: &[u8],
+    packing: ScaledPackingParams,
+    unused_bits: u8,
+) -> Result<DataRepresentation> {
+    if section.len() < 22 {
+        return Err(invalid_second_order(format!(
+            "requires at least 22 bytes, got {}",
+            section.len()
+        )));
+    }
+
+    let n1 = usize::from(u16::from_be_bytes(section[11..13].try_into().unwrap()));
+    let extended_flags = section[13];
+    let n2 = usize::from(u16::from_be_bytes(section[14..16].try_into().unwrap()));
+    let coded_group_count = usize::from(u16::from_be_bytes(section[16..18].try_into().unwrap()));
+    let encoded_values = usize::from(u16::from_be_bytes(section[18..20].try_into().unwrap()));
+    if section[20] != 0 {
+        return Err(invalid_second_order(format!(
+            "reserved octet 21 must be zero, got {}",
+            section[20]
+        )));
+    }
+    let group_count = coded_group_count;
+
+    if encoded_values != packing.encoded_values {
+        return Err(Error::DataLengthMismatch {
+            expected: packing.encoded_values,
+            actual: encoded_values,
+        });
+    }
+    if extended_flags & 0x80 != 0 {
+        return Err(invalid_second_order("reserved extended flag bit 1 is set"));
+    }
+    if extended_flags & 0x40 != 0 {
+        return Err(invalid_second_order(
+            "matrix-valued grid points are not supported",
+        ));
+    }
+    if extended_flags & 0x0f != 0 {
+        return Err(invalid_second_order(format!(
+            "non-WMO extended ordering or spatial differencing flags are set: 0x{:02x}",
+            extended_flags & 0x0f
+        )));
+    }
+
+    let has_secondary_bitmap = extended_flags & 0x20 != 0;
+    let has_variable_widths = extended_flags & 0x10 != 0;
+    let layout = match (has_secondary_bitmap, has_variable_widths) {
+        (false, true) => Grib1SecondOrderLayout::RowByRow,
+        (true, false) => Grib1SecondOrderLayout::ConstantWidth,
+        (true, true) => Grib1SecondOrderLayout::VariableWidth,
+        (false, false) => {
+            return Err(invalid_second_order(
+                "constant-width groups require a secondary bitmap",
+            ));
+        }
+    };
+
+    if encoded_values > 0 && group_count == 0 {
+        return Err(invalid_second_order(
+            "non-empty fields require at least one group",
+        ));
+    }
+
+    let width_count = match layout {
+        Grib1SecondOrderLayout::ConstantWidth => 1,
+        Grib1SecondOrderLayout::RowByRow | Grib1SecondOrderLayout::VariableWidth => group_count,
+    };
+    let descriptors_end = 21_usize
+        .checked_add(width_count)
+        .ok_or(Error::ArithmeticOverflow {
+            operation: "computing GRIB1 second-order width descriptor boundary",
+        })?;
+    let secondary_bitmap_bytes = if has_secondary_bitmap {
+        encoded_values.div_ceil(8)
+    } else {
+        0
+    };
+    let expected_first_order_index =
+        descriptors_end
+            .checked_add(secondary_bitmap_bytes)
+            .ok_or(Error::ArithmeticOverflow {
+                operation: "computing GRIB1 first-order value offset",
+            })?;
+    let first_order_index = n1
+        .checked_sub(1)
+        .ok_or_else(|| invalid_second_order("N1 must be a one-based octet position"))?;
+    if first_order_index != expected_first_order_index {
+        return Err(invalid_second_order(format!(
+            "N1 points to octet {n1}, expected {}",
+            expected_first_order_index + 1
+        )));
+    }
+    if expected_first_order_index > section.len() {
+        return Err(invalid_second_order(format!(
+            "width descriptors and secondary bitmap require {expected_first_order_index} bytes, got {}",
+            section.len()
+        )));
+    }
+
+    let width_bytes = &section[21..descriptors_end];
+    if width_bytes.iter().any(|width| *width > 64) {
+        let width = width_bytes
+            .iter()
+            .copied()
+            .find(|width| *width > 64)
+            .expect("out-of-range width exists");
+        return Err(Error::UnsupportedPackingWidth(width));
+    }
+    let mut group_widths = Vec::new();
+    group_widths
+        .try_reserve_exact(width_count)
+        .map_err(|error| Error::allocation("GRIB1 group widths", width_count, error))?;
+    group_widths.extend_from_slice(width_bytes);
+
+    let group_lengths = if has_secondary_bitmap {
+        parse_secondary_group_lengths(
+            &section[descriptors_end..expected_first_order_index],
+            encoded_values,
+            group_count,
+        )?
+    } else {
+        Vec::new()
+    };
+
+    let first_order_bits = group_count
+        .checked_mul(usize::from(packing.bits_per_value))
+        .ok_or(Error::BitOffsetOverflow)?;
+    let expected_second_order_index = expected_first_order_index
+        .checked_add(first_order_bits.div_ceil(8))
+        .ok_or(Error::ArithmeticOverflow {
+            operation: "computing GRIB1 second-order value offset",
+        })?;
+    let second_order_index = n2
+        .checked_sub(1)
+        .ok_or_else(|| invalid_second_order("N2 must be a one-based octet position"))?;
+    if second_order_index != expected_second_order_index {
+        return Err(invalid_second_order(format!(
+            "N2 points to octet {n2}, expected {}",
+            expected_second_order_index + 1
+        )));
+    }
+    if second_order_index > section.len() {
+        return Err(invalid_second_order(format!(
+            "first-order values require {second_order_index} bytes, got {}",
+            section.len()
+        )));
+    }
+
+    let first_order_values_offset = first_order_index - 11;
+    let second_order_values_offset = second_order_index - 11;
+    let payload_bits = section[11..]
+        .len()
+        .checked_mul(8)
+        .ok_or(Error::BitOffsetOverflow)?;
+    let usable_bits = payload_bits
+        .checked_sub(usize::from(unused_bits))
+        .ok_or_else(|| invalid_second_order("unused-bit count exceeds the BDS payload"))?;
+    let second_order_start = second_order_values_offset
+        .checked_mul(8)
+        .ok_or(Error::BitOffsetOverflow)?;
+
+    if layout != Grib1SecondOrderLayout::RowByRow {
+        let second_order_bits =
+            group_lengths
+                .iter()
+                .enumerate()
+                .try_fold(0usize, |total, (group_index, length)| {
+                    let width = match layout {
+                        Grib1SecondOrderLayout::ConstantWidth => group_widths[0],
+                        Grib1SecondOrderLayout::VariableWidth => group_widths[group_index],
+                        Grib1SecondOrderLayout::RowByRow => unreachable!(),
+                    };
+                    length
+                        .checked_mul(usize::from(width))
+                        .and_then(|bits| total.checked_add(bits))
+                        .ok_or(Error::BitOffsetOverflow)
+                })?;
+        let expected_end = second_order_start
+            .checked_add(second_order_bits)
+            .ok_or(Error::BitOffsetOverflow)?;
+        if expected_end != usable_bits {
+            return Err(invalid_second_order(format!(
+                "packed values end at bit {expected_end}, but the usable BDS payload ends at bit {usable_bits}"
+            )));
+        }
+    } else if second_order_start > usable_bits {
+        return Err(invalid_second_order(
+            "N2 points beyond the usable BDS payload",
+        ));
+    }
+
+    Ok(DataRepresentation::Grib1SecondOrderPacking(
+        Grib1SecondOrderPackingParams {
+            packing,
+            layout,
+            group_count,
+            group_widths,
+            group_lengths,
+            first_order_values_offset,
+            second_order_values_offset,
+            unused_bits,
+        },
+    ))
+}
+
+fn parse_secondary_group_lengths(
+    bitmap: &[u8],
+    encoded_values: usize,
+    group_count: usize,
+) -> Result<Vec<usize>> {
+    if encoded_values == 0 {
+        if group_count == 0 {
+            return Ok(Vec::new());
+        }
+        return Err(invalid_second_order(format!(
+            "empty secondary bitmap cannot describe {group_count} groups"
+        )));
+    }
+    if !read_bit(bitmap, 0)? {
+        return Err(invalid_second_order(
+            "secondary bitmap must start with a group boundary",
+        ));
+    }
+
+    let mut lengths = Vec::new();
+    lengths
+        .try_reserve_exact(group_count)
+        .map_err(|error| Error::allocation("GRIB1 group lengths", group_count, error))?;
+    let mut group_start = 0usize;
+    for bit_index in 1..encoded_values {
+        if read_bit(bitmap, bit_index)? {
+            lengths.push(bit_index - group_start);
+            group_start = bit_index;
+        }
+    }
+    lengths.push(encoded_values - group_start);
+    if lengths.len() != group_count {
+        return Err(invalid_second_order(format!(
+            "secondary bitmap defines {} groups, but P1 declares {group_count}",
+            lengths.len()
+        )));
+    }
+    Ok(lengths)
+}
+
+fn invalid_second_order(reason: impl Into<String>) -> Error {
+    Error::InvalidSection {
+        section: 4,
+        reason: format!("invalid GRIB1 second-order packing: {}", reason.into()),
     }
 }
 
@@ -252,7 +508,8 @@ fn parse_coordinate(bytes: &[u8], absolute_limit: i64, name: &str) -> Result<i32
 
 #[cfg(test)]
 mod tests {
-    use super::{GridDescription, ProductDefinition};
+    use super::{BinaryDataSection, GridDescription, ProductDefinition};
+    use crate::data::{DataRepresentation, Grib1SecondOrderLayout};
     use crate::error::Error;
     use crate::metadata::ReferenceTime;
 
@@ -327,6 +584,87 @@ mod tests {
         assert!(err.to_string().contains("first longitude"));
     }
 
+    #[test]
+    fn parses_row_by_row_second_order_packing() {
+        let section = second_order_section(Grib1SecondOrderLayout::RowByRow);
+        let (_, representation) = BinaryDataSection::parse(&section, 0, 6).unwrap();
+        let DataRepresentation::Grib1SecondOrderPacking(params) = representation else {
+            panic!("expected GRIB1 second-order packing");
+        };
+
+        assert_eq!(params.layout(), Grib1SecondOrderLayout::RowByRow);
+        assert_eq!(params.group_count(), 2);
+        assert_eq!(params.group_widths(), &[2, 2]);
+        assert!(params.group_lengths().is_empty());
+        assert_eq!(params.first_order_values_offset(), 12);
+        assert_eq!(params.second_order_values_offset(), 14);
+    }
+
+    #[test]
+    fn parses_secondary_bitmap_second_order_layouts() {
+        for layout in [
+            Grib1SecondOrderLayout::ConstantWidth,
+            Grib1SecondOrderLayout::VariableWidth,
+        ] {
+            let section = second_order_section(layout);
+            let (_, representation) = BinaryDataSection::parse(&section, 0, 6).unwrap();
+            let DataRepresentation::Grib1SecondOrderPacking(params) = representation else {
+                panic!("expected GRIB1 second-order packing");
+            };
+
+            assert_eq!(params.layout(), layout);
+            assert_eq!(params.group_count(), 2);
+            assert_eq!(params.group_lengths(), &[3, 3]);
+            if layout == Grib1SecondOrderLayout::ConstantWidth {
+                assert_eq!(params.group_widths(), &[2]);
+            } else {
+                assert_eq!(params.group_widths(), &[2, 2]);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_second_order_secondary_bitmap_without_initial_boundary() {
+        let mut section = second_order_section(Grib1SecondOrderLayout::VariableWidth);
+        section[23] = 0b0001_0000;
+        let error = BinaryDataSection::parse(&section, 0, 6).unwrap_err();
+        assert!(matches!(error, Error::InvalidSection { section: 4, .. }));
+        assert!(error
+            .to_string()
+            .contains("must start with a group boundary"));
+    }
+
+    #[test]
+    fn rejects_nonstandard_second_order_extensions_and_inconsistent_offsets() {
+        let mut section = second_order_section(Grib1SecondOrderLayout::RowByRow);
+        section[20] = 1;
+        let error = BinaryDataSection::parse(&section, 0, 6).unwrap_err();
+        assert!(error.to_string().contains("reserved octet 21"));
+
+        let mut section = second_order_section(Grib1SecondOrderLayout::RowByRow);
+        section[13] |= 0x04;
+        let error = BinaryDataSection::parse(&section, 0, 6).unwrap_err();
+        assert!(error.to_string().contains("non-WMO extended ordering"));
+
+        let mut section = second_order_section(Grib1SecondOrderLayout::VariableWidth);
+        section[14..16].copy_from_slice(&28u16.to_be_bytes());
+        let error = BinaryDataSection::parse(&section, 0, 6).unwrap_err();
+        assert!(error.to_string().contains("N2 points to octet 28"));
+    }
+
+    #[test]
+    fn preserves_simple_integer_field_type() {
+        let mut section = vec![0u8; 12];
+        section[..3].copy_from_slice(&[0, 0, 12]);
+        section[3] = 0x20;
+        section[10] = 8;
+        let (_, representation) = BinaryDataSection::parse(&section, 0, 1).unwrap();
+        let DataRepresentation::SimplePacking(params) = representation else {
+            panic!("expected simple packing");
+        };
+        assert_eq!(params.original_field_type, 1);
+    }
+
     fn valid_product_definition_section() -> Vec<u8> {
         let mut section = vec![0u8; 28];
         section[..3].copy_from_slice(&[0, 0, 28]);
@@ -364,6 +702,36 @@ mod tests {
         section[20..23].copy_from_slice(&[0, 3, 0xe8]);
         section[23..25].copy_from_slice(&1_000u16.to_be_bytes());
         section[25..27].copy_from_slice(&1_000u16.to_be_bytes());
+        section
+    }
+
+    fn second_order_section(layout: Grib1SecondOrderLayout) -> Vec<u8> {
+        let (length, extended_flags, n1, n2, widths, bitmap_offset) = match layout {
+            Grib1SecondOrderLayout::RowByRow => (27usize, 0x10, 24u16, 26u16, &[2, 2][..], None),
+            Grib1SecondOrderLayout::ConstantWidth => (27, 0x20, 24, 26, &[2][..], Some(22usize)),
+            Grib1SecondOrderLayout::VariableWidth => (28, 0x30, 25, 27, &[2, 2][..], Some(23usize)),
+        };
+        let mut section = vec![0u8; length];
+        section[..3].copy_from_slice(&[
+            ((length >> 16) & 0xff) as u8,
+            ((length >> 8) & 0xff) as u8,
+            (length & 0xff) as u8,
+        ]);
+        section[3] = 0x44;
+        section[10] = 5;
+        section[11..13].copy_from_slice(&n1.to_be_bytes());
+        section[13] = extended_flags;
+        section[14..16].copy_from_slice(&n2.to_be_bytes());
+        section[16..18].copy_from_slice(&2u16.to_be_bytes());
+        section[18..20].copy_from_slice(&6u16.to_be_bytes());
+        section[21..21 + widths.len()].copy_from_slice(widths);
+        if let Some(offset) = bitmap_offset {
+            section[offset] = 0b1001_0000;
+        }
+        let first_order_index = usize::from(n1) - 1;
+        section[first_order_index..first_order_index + 2].copy_from_slice(&[0x55, 0x00]);
+        let second_order_index = usize::from(n2) - 1;
+        section[second_order_index..second_order_index + 2].copy_from_slice(&[0x18, 0xb0]);
         section
     }
 }

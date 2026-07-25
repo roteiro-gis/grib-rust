@@ -3,12 +3,17 @@
 use crate::binary::{decode_wmo_i16, decode_wmo_i8};
 use crate::error::{Error, Result};
 
-/// Data representation template number and parameters.
+/// GRIB data representation and validated packing parameters.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum DataRepresentation {
     /// Template 5.0: Simple packing.
     SimplePacking(ScaledPackingParams),
+    /// GRIB1 grid-point second-order packing.
+    ///
+    /// GRIB1 stores this layout in Binary Data Section flags rather than a
+    /// GRIB2 data representation template.
+    Grib1SecondOrderPacking(Grib1SecondOrderPackingParams),
     /// Template 5.2/5.3: Complex packing with optional spatial differencing.
     ComplexPacking(ComplexPackingParams),
     /// Template 5.4: IEEE floating-point values.
@@ -25,7 +30,7 @@ pub enum DataRepresentation {
     Unsupported(u16),
 }
 
-/// Scaling parameters shared by GRIB2 grid-point packing templates.
+/// Scaling parameters shared by GRIB1 and GRIB2 grid-point packing.
 ///
 /// Decoded values use `(reference + packed * 2^binary_scale) *
 /// 10^-decimal_scale`.
@@ -37,6 +42,82 @@ pub struct ScaledPackingParams {
     pub decimal_scale: i16,
     pub bits_per_value: u8,
     pub original_field_type: u8,
+}
+
+/// Standard GRIB1 second-order group layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Grib1SecondOrderLayout {
+    /// One variable-width group for each scan line; group lengths come from
+    /// the grid and optional primary bitmap.
+    RowByRow,
+    /// Groups are located by a secondary bitmap and share one value width.
+    ConstantWidth,
+    /// Groups are located by a secondary bitmap and have individual widths.
+    VariableWidth,
+}
+
+/// Validated parameters for standard GRIB1 grid-point second-order packing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Grib1SecondOrderPackingParams {
+    pub(crate) packing: ScaledPackingParams,
+    pub(crate) layout: Grib1SecondOrderLayout,
+    pub(crate) group_count: usize,
+    pub(crate) group_widths: Vec<u8>,
+    pub(crate) group_lengths: Vec<usize>,
+    pub(crate) first_order_values_offset: usize,
+    pub(crate) second_order_values_offset: usize,
+    pub(crate) unused_bits: u8,
+}
+
+impl Grib1SecondOrderPackingParams {
+    pub const fn packing(&self) -> &ScaledPackingParams {
+        &self.packing
+    }
+
+    pub const fn layout(&self) -> Grib1SecondOrderLayout {
+        self.layout
+    }
+
+    pub const fn group_count(&self) -> usize {
+        self.group_count
+    }
+
+    /// Returns one width for constant-width packing or one width per group for
+    /// row-by-row and variable-width packing.
+    pub fn group_widths(&self) -> &[u8] {
+        &self.group_widths
+    }
+
+    /// Returns secondary-bitmap group lengths. Row-by-row lengths are supplied
+    /// from the grid and primary bitmap when the field is indexed.
+    pub fn group_lengths(&self) -> &[usize] {
+        &self.group_lengths
+    }
+
+    /// Byte offset of first-order values relative to GRIB1 BDS octet 12.
+    pub const fn first_order_values_offset(&self) -> usize {
+        self.first_order_values_offset
+    }
+
+    /// Byte offset of second-order values relative to GRIB1 BDS octet 12.
+    pub const fn second_order_values_offset(&self) -> usize {
+        self.second_order_values_offset
+    }
+
+    pub const fn unused_bits(&self) -> u8 {
+        self.unused_bits
+    }
+
+    /// Returns the second-order width for one group.
+    pub fn group_width(&self, group_index: usize) -> Option<u8> {
+        match self.layout {
+            Grib1SecondOrderLayout::ConstantWidth => self.group_widths.first().copied(),
+            Grib1SecondOrderLayout::RowByRow | Grib1SecondOrderLayout::VariableWidth => {
+                self.group_widths.get(group_index).copied()
+            }
+        }
+    }
 }
 
 /// IEEE floating-point precision from Code Table 5.7.
@@ -359,10 +440,14 @@ pub struct SpatialDifferencingParams {
 }
 
 impl DataRepresentation {
-    /// Returns the GRIB2 data representation template number.
+    /// Returns the GRIB2 template number or a diagnostic identifier for a
+    /// GRIB1 representation.
     pub const fn template_number(&self) -> u16 {
         match self {
             Self::SimplePacking(_) => 0,
+            // GRIB1 has no template number. Keep this identifier disjoint from
+            // WMO GRIB2 template numbers for diagnostics and writer rejection.
+            Self::Grib1SecondOrderPacking(_) => 1005,
             Self::ComplexPacking(params) => {
                 if params.spatial_differencing.is_some() {
                     3
@@ -410,6 +495,7 @@ impl DataRepresentation {
     pub fn encoded_values(&self) -> Option<usize> {
         match self {
             Self::SimplePacking(params) => Some(params.encoded_values),
+            Self::Grib1SecondOrderPacking(params) => Some(params.packing.encoded_values),
             Self::ComplexPacking(params) => Some(params.encoded_values),
             Self::IeeePacking(params) => Some(params.encoded_values),
             Self::Jpeg2000Packing(params) => Some(params.packing.encoded_values),
@@ -676,7 +762,7 @@ fn parse_complex_packing(
     }
 
     let group_splitting_method = data[21];
-    if group_splitting_method != 1 {
+    if !matches!(group_splitting_method, 0 | 1) {
         return Err(Error::UnsupportedGroupSplittingMethod(
             group_splitting_method,
         ));
@@ -701,6 +787,22 @@ fn parse_complex_packing(
     } else {
         None
     };
+    let group_length_reference = u32::from_be_bytes(data[37..41].try_into().unwrap());
+    let group_length_increment = data[41];
+    let true_length_last_group = u32::from_be_bytes(data[42..46].try_into().unwrap());
+    let scaled_group_length_bits = data[46];
+    if group_splitting_method == 0
+        && (group_length_reference != 0
+            || group_length_increment != 0
+            || true_length_last_group != 0
+            || scaled_group_length_bits != 0)
+    {
+        return Err(Error::InvalidSection {
+            section: 5,
+            reason: "complex packing group splitting method 0 requires all group-length fields to be zero"
+                .into(),
+        });
+    }
 
     Ok(DataRepresentation::ComplexPacking(ComplexPackingParams {
         encoded_values: u32::from_be_bytes(data[5..9].try_into().unwrap()) as usize,
@@ -716,10 +818,10 @@ fn parse_complex_packing(
         num_groups: u32::from_be_bytes(data[31..35].try_into().unwrap()) as usize,
         group_width_reference: data[35],
         group_width_bits: data[36],
-        group_length_reference: u32::from_be_bytes(data[37..41].try_into().unwrap()),
-        group_length_increment: data[41],
-        true_length_last_group: u32::from_be_bytes(data[42..46].try_into().unwrap()),
-        scaled_group_length_bits: data[46],
+        group_length_reference,
+        group_length_increment,
+        true_length_last_group,
+        scaled_group_length_bits,
         spatial_differencing,
     }))
 }

@@ -5,8 +5,9 @@ use grib_core::binary::decode_ieee_binary128;
 use grib_core::bit::BitReader;
 pub use grib_core::data::{
     CcsdsBlockSize, CcsdsFlags, CcsdsPackingParams, ComplexPackingParams, DataRepresentation,
-    IeeePackingParams, IeeePrecision, Jpeg2000PackingParams, PngPackingParams,
-    RunLengthPackingParams, ScaledPackingParams, SpatialDifferencingParams,
+    Grib1SecondOrderLayout, Grib1SecondOrderPackingParams, IeeePackingParams, IeeePrecision,
+    Jpeg2000PackingParams, PngPackingParams, RunLengthPackingParams, ScaledPackingParams,
+    SpatialDifferencingParams,
 };
 use grib_core::filled_vec;
 
@@ -77,12 +78,38 @@ pub fn decode_field_into<T: DecodeSample>(
         });
     }
 
-    decode_payload_into(
+    decode_payload_into_with_group_lengths(
         &data_section[5..],
         representation,
         bitmap_section,
         num_grid_points,
         out,
+        None,
+    )
+}
+
+pub(crate) fn decode_field_into_with_group_lengths<T: DecodeSample>(
+    data_section: &[u8],
+    representation: &DataRepresentation,
+    bitmap_section: Option<&[u8]>,
+    num_grid_points: usize,
+    out: &mut [T],
+    row_group_lengths: Option<&[usize]>,
+) -> Result<()> {
+    if data_section.len() < 5 || data_section[4] != 7 {
+        return Err(Error::InvalidSection {
+            section: data_section.get(4).copied().unwrap_or(7),
+            reason: "not a data section".into(),
+        });
+    }
+
+    decode_payload_into_with_group_lengths(
+        &data_section[5..],
+        representation,
+        bitmap_section,
+        num_grid_points,
+        out,
+        row_group_lengths,
     )
 }
 
@@ -93,22 +120,24 @@ pub(crate) fn decode_payload(
     num_grid_points: usize,
 ) -> Result<Vec<f64>> {
     let mut values = filled_vec(num_grid_points, 0.0, "decoded field")?;
-    decode_payload_into(
+    decode_payload_into_with_group_lengths(
         payload,
         representation,
         bitmap_section,
         num_grid_points,
         &mut values,
+        None,
     )?;
     Ok(values)
 }
 
-pub(crate) fn decode_payload_into<T: DecodeSample>(
+pub(crate) fn decode_payload_into_with_group_lengths<T: DecodeSample>(
     payload: &[u8],
     representation: &DataRepresentation,
     bitmap_section: Option<&[u8]>,
     num_grid_points: usize,
     out: &mut [T],
+    row_group_lengths: Option<&[usize]>,
 ) -> Result<()> {
     if out.len() != num_grid_points {
         return Err(Error::DataLengthMismatch {
@@ -119,6 +148,7 @@ pub(crate) fn decode_payload_into<T: DecodeSample>(
 
     let expected_values = match representation {
         DataRepresentation::SimplePacking(params) => params.encoded_values,
+        DataRepresentation::Grib1SecondOrderPacking(params) => params.packing().encoded_values,
         DataRepresentation::ComplexPacking(params) => params.encoded_values,
         DataRepresentation::IeeePacking(params) => params.encoded_values,
         DataRepresentation::Jpeg2000Packing(params) => params.packing.encoded_values,
@@ -158,8 +188,11 @@ pub(crate) fn decode_payload_into<T: DecodeSample>(
         DataRepresentation::SimplePacking(params) => {
             unpack_simple_into(payload, params, expected_values, &mut output)?
         }
+        DataRepresentation::Grib1SecondOrderPacking(params) => {
+            unpack_grib1_second_order_into(payload, params, row_group_lengths, &mut output)?
+        }
         DataRepresentation::ComplexPacking(params) => {
-            unpack_complex_into(payload, params, &mut output)?
+            unpack_complex_into(payload, params, row_group_lengths, &mut output)?
         }
         DataRepresentation::IeeePacking(params) => {
             unpack_ieee_into(payload, params, expected_values, &mut output)?
@@ -1270,14 +1303,115 @@ fn scale_image_value<T: DecodeSample>(params: &ScaledPackingParams, raw: u64) ->
 fn unpack_complex(data_bytes: &[u8], params: &ComplexPackingParams) -> Result<Vec<f64>> {
     let mut values = filled_vec(params.encoded_values, 0.0, "complex-packed field")?;
     let mut output = OutputCursor::new(&mut values, None);
-    unpack_complex_into(data_bytes, params, &mut output)?;
+    unpack_complex_into(data_bytes, params, None, &mut output)?;
     output.finish()?;
     Ok(values)
+}
+
+fn unpack_grib1_second_order_into<T: DecodeSample>(
+    data_bytes: &[u8],
+    params: &Grib1SecondOrderPackingParams,
+    row_group_lengths: Option<&[usize]>,
+    output: &mut OutputCursor<'_, T>,
+) -> Result<()> {
+    let group_lengths = match params.layout() {
+        Grib1SecondOrderLayout::RowByRow => {
+            row_group_lengths.ok_or_else(|| Error::InvalidSection {
+                section: 4,
+                reason: "GRIB1 row-by-row second-order packing requires grid-derived group lengths"
+                    .into(),
+            })?
+        }
+        Grib1SecondOrderLayout::ConstantWidth | Grib1SecondOrderLayout::VariableWidth => {
+            params.group_lengths()
+        }
+        _ => {
+            return Err(Error::InvalidSection {
+                section: 4,
+                reason: "unsupported GRIB1 second-order group layout".into(),
+            });
+        }
+    };
+    validate_external_group_lengths(
+        group_lengths,
+        params.group_count(),
+        params.packing().encoded_values,
+        "GRIB1 second-order",
+        4,
+    )?;
+
+    let first_order_offset = params
+        .first_order_values_offset()
+        .checked_mul(8)
+        .ok_or(Error::BitOffsetOverflow)?;
+    let second_order_offset = params
+        .second_order_values_offset()
+        .checked_mul(8)
+        .ok_or(Error::BitOffsetOverflow)?;
+    let mut first_order_reader = BitReader::with_offset(data_bytes, first_order_offset);
+    let mut second_order_reader = BitReader::with_offset(data_bytes, second_order_offset);
+    let packing = params.packing();
+    let binary_factor = 2.0_f64.powi(i32::from(packing.binary_scale));
+    let decimal_factor = 10.0_f64.powi(-i32::from(packing.decimal_scale));
+    let reference = f64::from(packing.reference_value);
+
+    for (group_index, group_length) in group_lengths.iter().copied().enumerate() {
+        let first_order = first_order_reader.read(usize::from(packing.bits_per_value))?;
+        let group_width = params
+            .group_width(group_index)
+            .ok_or_else(|| Error::InvalidSection {
+                section: 4,
+                reason: format!("missing width for GRIB1 second-order group {group_index}"),
+            })?;
+        for _ in 0..group_length {
+            let second_order = second_order_reader.read(usize::from(group_width))?;
+            let packed =
+                first_order
+                    .checked_add(second_order)
+                    .ok_or(Error::ArithmeticOverflow {
+                        operation: "reconstructing a GRIB1 second-order value",
+                    })?;
+            output.push_present(T::from_f64(scale_decoded_value(
+                reference,
+                packed as f64,
+                binary_factor,
+                decimal_factor,
+            )))?;
+        }
+    }
+
+    let payload_bits = data_bytes
+        .len()
+        .checked_mul(8)
+        .ok_or(Error::BitOffsetOverflow)?;
+    let usable_bits = payload_bits
+        .checked_sub(usize::from(params.unused_bits()))
+        .ok_or_else(|| Error::InvalidSection {
+            section: 4,
+            reason: "GRIB1 BDS unused-bit count exceeds its payload".into(),
+        })?;
+    if second_order_reader.bit_offset() != usable_bits {
+        return Err(Error::InvalidSection {
+            section: 4,
+            reason: format!(
+                "GRIB1 second-order values end at bit {}, expected {usable_bits}",
+                second_order_reader.bit_offset()
+            ),
+        });
+    }
+    if output.values_written() != packing.encoded_values {
+        return Err(Error::DataLengthMismatch {
+            expected: packing.encoded_values,
+            actual: output.values_written(),
+        });
+    }
+    Ok(())
 }
 
 fn unpack_complex_into<T: DecodeSample>(
     data_bytes: &[u8],
     params: &ComplexPackingParams,
+    row_group_lengths: Option<&[usize]>,
     output: &mut OutputCursor<'_, T>,
 ) -> Result<()> {
     if params.num_groups == 0 {
@@ -1303,6 +1437,26 @@ fn unpack_complex_into<T: DecodeSample>(
     let decimal_factor = 10.0_f64.powi(-(params.decimal_scale as i32));
     let reference = params.reference_value as f64;
     let mut actual_total = 0usize;
+    let row_group_lengths = match params.group_splitting_method {
+        0 => {
+            let lengths = row_group_lengths.ok_or_else(|| Error::InvalidSection {
+                section: 5,
+                reason:
+                    "complex packing group splitting method 0 requires grid-derived group lengths"
+                        .into(),
+            })?;
+            validate_external_group_lengths(
+                lengths,
+                params.num_groups,
+                params.encoded_values,
+                "complex-packing row",
+                5,
+            )?;
+            Some(lengths)
+        }
+        1 => None,
+        method => return Err(Error::UnsupportedGroupSplittingMethod(method)),
+    };
 
     for group_index in 0..params.num_groups {
         let group_reference = reference_reader.read(params.group_reference_bits as usize)?;
@@ -1312,7 +1466,10 @@ fn unpack_complex_into<T: DecodeSample>(
             .ok_or(Error::ArithmeticOverflow {
                 operation: "computing complex-packing group width",
             })?;
-        let group_length = read_group_length(&mut length_reader, params, group_index)?;
+        let group_length = match row_group_lengths {
+            Some(lengths) => lengths[group_index],
+            None => read_group_length(&mut length_reader, params, group_index)?,
+        };
 
         actual_total = actual_total
             .checked_add(group_length)
@@ -1384,6 +1541,36 @@ fn unpack_complex_into<T: DecodeSample>(
         spatial.finish()?;
     }
 
+    Ok(())
+}
+
+fn validate_external_group_lengths(
+    lengths: &[usize],
+    expected_groups: usize,
+    expected_values: usize,
+    packing_name: &str,
+    section: u8,
+) -> Result<()> {
+    if lengths.len() != expected_groups {
+        return Err(Error::InvalidSection {
+            section,
+            reason: format!(
+                "{packing_name} packing declares {expected_groups} groups, but the grid defines {} scan lines",
+                lengths.len()
+            ),
+        });
+    }
+    let actual_values = lengths.iter().try_fold(0usize, |total, length| {
+        total.checked_add(*length).ok_or(Error::ArithmeticOverflow {
+            operation: "summing row-wise packing group lengths",
+        })
+    })?;
+    if actual_values != expected_values {
+        return Err(Error::DataLengthMismatch {
+            expected: expected_values,
+            actual: actual_values,
+        });
+    }
     Ok(())
 }
 
