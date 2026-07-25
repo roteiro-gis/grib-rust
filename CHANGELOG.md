@@ -50,6 +50,10 @@
   values, bounded run expansion, and ecCodes parity
 - resolve the ECMWF GRIB1 large-message convention from its 120-octet block
   count and Section 4 padding length
+- decode standard GRIB1 row-by-row, constant-width, and variable-width
+  second-order grid-point packing, including primary and secondary bitmaps
+- write and decode GRIB2 complex packing with one group per scan line,
+  including bitmap-reduced and empty rows
 - replace duplicate simple- and image-packing parameter structs with one
   `ScaledPackingParams` model shared by every scaled representation
 - decode CCSDS/AEC data representation template 5.42 behind the `ccsds`

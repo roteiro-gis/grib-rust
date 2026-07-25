@@ -1985,6 +1985,81 @@ fn writes_complex_grib2_field_readable_by_reader() {
 }
 
 #[test]
+fn writes_row_by_row_complex_groups_from_grid_scan_lines() {
+    let values = [10.0, 11.0, 12.0, 20.0, 22.0, 23.0];
+    let field = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(grid_with_shape_and_scanning_mode(3, 2, 0))
+        .product(product(0, 0))
+        .packing(PackingStrategy::ComplexRowByRow {
+            decimal_scale: 0,
+            spatial_differencing: None,
+        })
+        .values(&values)
+        .build()
+        .unwrap();
+
+    let file = GribFile::from_bytes(write_message([field])).unwrap();
+    let message = file.message(0).unwrap();
+    match &message.metadata().data_representation {
+        DataRepresentation::ComplexPacking(params) => {
+            assert_eq!(params.group_splitting_method, 0);
+            assert_eq!(params.num_groups, 2);
+            assert_eq!(params.group_length_reference, 0);
+            assert_eq!(params.group_length_increment, 0);
+            assert_eq!(params.true_length_last_group, 0);
+            assert_eq!(params.scaled_group_length_bits, 0);
+        }
+        other => panic!("expected complex packing, got {other:?}"),
+    }
+    assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+}
+
+#[test]
+fn writes_row_by_row_complex_bitmap_with_an_empty_scan_line() {
+    let values = [1.0, 2.0, 3.0, f64::NAN, f64::NAN, f64::NAN];
+    let field = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(grid_with_shape_and_scanning_mode(3, 2, 0))
+        .product(product(0, 0))
+        .packing(PackingStrategy::ComplexRowByRow {
+            decimal_scale: 0,
+            spatial_differencing: Some(SpatialDifferencingOrder::First),
+        })
+        .values(&values)
+        .build()
+        .unwrap();
+
+    let file = GribFile::from_bytes(write_message([field])).unwrap();
+    let message = file.message(0).unwrap();
+    let decoded = message.read_flat_data_as_f64().unwrap();
+    assert_eq!(&decoded[..3], &[1.0, 2.0, 3.0]);
+    assert!(decoded[3..].iter().all(|value| value.is_nan()));
+}
+
+#[test]
+fn roundtrips_row_by_row_complex_values_in_alternating_scan_order() {
+    let values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let field = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(grid_with_shape_and_scanning_mode(3, 2, 0b0001_0000))
+        .product(product(0, 0))
+        .packing(PackingStrategy::ComplexRowByRow {
+            decimal_scale: 0,
+            spatial_differencing: Some(SpatialDifferencingOrder::Second),
+        })
+        .values(&values)
+        .build()
+        .unwrap();
+
+    let file = GribFile::from_bytes(write_message([field])).unwrap();
+    assert_eq!(
+        file.message(0).unwrap().read_flat_data_as_f64().unwrap(),
+        values
+    );
+}
+
+#[test]
 fn writes_complex_grib2_decimal_scaled_values() {
     let values = [1.24, 2.34, -3.46, 4.56];
     let field = Grib2FieldBuilder::new()

@@ -5,7 +5,7 @@ mod image;
 mod simple;
 
 pub(crate) use ccsds::pack_ccsds_auto;
-pub(crate) use complex::pack_complex_auto;
+pub(crate) use complex::{pack_complex_auto, pack_complex_row_by_row};
 pub(crate) use ieee::pack_ieee;
 pub(crate) use image::{pack_jpeg2000_auto, pack_png_auto};
 pub(crate) use simple::pack_simple_auto;
@@ -22,6 +22,15 @@ pub enum PackingStrategy {
     SimpleAuto { decimal_scale: i16 },
     /// GRIB2 complex packing with fixed-size general groups.
     ComplexAuto {
+        decimal_scale: i16,
+        spatial_differencing: Option<SpatialDifferencingOrder>,
+    },
+    /// GRIB2 complex packing with one group per grid scan line.
+    ///
+    /// This emits Code Table 5.4 group splitting method 0. Bitmap omissions
+    /// reduce each line's group length, and an entirely missing line remains a
+    /// zero-length group.
+    ComplexRowByRow {
         decimal_scale: i16,
         spatial_differencing: Option<SpatialDifferencingOrder>,
     },

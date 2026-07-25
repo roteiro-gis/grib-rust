@@ -87,7 +87,7 @@ fn generated_grib2_field(
     values: Vec<f64>,
 ) -> grib_writer::Result<Grib2Field> {
     let decimal_scale = decimal_scale(input);
-    let packing = match input.u8() % 4 {
+    let packing = match input.u8() % 5 {
         0 => {
             let spatial_differencing = match input.u8() % 4 {
                 0 => Some(SpatialDifferencingOrder::First),
@@ -100,6 +100,17 @@ fn generated_grib2_field(
             }
         }
         1 => {
+            let spatial_differencing = match input.u8() % 4 {
+                0 => Some(SpatialDifferencingOrder::First),
+                1 => Some(SpatialDifferencingOrder::Second),
+                _ => None,
+            };
+            PackingStrategy::ComplexRowByRow {
+                decimal_scale,
+                spatial_differencing,
+            }
+        }
+        2 => {
             let (flags, block_size) = match input.u8() % 3 {
                 0 => (CcsdsFlags::DEFAULT, CcsdsBlockSize::THIRTY_TWO),
                 1 => (
@@ -118,7 +129,7 @@ fn generated_grib2_field(
                 reference_sample_interval: u16::from(input.u8()) + 1,
             }
         }
-        2 => PackingStrategy::Ieee {
+        3 => PackingStrategy::Ieee {
             precision: match input.u8() % 3 {
                 0 => IeeePrecision::Single,
                 1 => IeeePrecision::Double,
