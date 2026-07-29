@@ -2,12 +2,13 @@
 
 use grib_core::metadata::ReferenceTime;
 use grib_core::{
-    AnalysisOrForecastTemplate, CcsdsBlockSize, CcsdsFlags, DerivedForecastTemplate,
-    DerivedStatisticalProcessTemplate, FixedSurface, GridDefinition, Identification, LatLonGrid,
-    IeeePrecision, PercentileForecastTemplate, PercentileStatisticalProcessTemplate,
+    AlbersEqualAreaGrid, AnalysisOrForecastTemplate, CcsdsBlockSize, CcsdsFlags,
+    DerivedForecastTemplate, DerivedStatisticalProcessTemplate, FixedSurface, GridDefinition,
+    Identification, IeeePrecision, LambertConformalGrid, LatLonGrid, MercatorGrid,
+    PercentileForecastTemplate, PercentileStatisticalProcessTemplate, PolarStereographicGrid,
     ProbabilityForecastTemplate, ProbabilityLimit, ProbabilityStatisticalProcessTemplate,
-    ProbabilityType, ProductDefinition, ProductDefinitionTemplate, SpatialProcessTemplate,
-    StatisticalInterval, StatisticalTimeRange,
+    ProbabilityType, ProductDefinition, ProductDefinitionTemplate, ProjectedGridCore,
+    SpatialProcessTemplate, StatisticalInterval, StatisticalTimeRange,
 };
 use grib_reader::GribFile;
 use grib_writer::{
@@ -162,6 +163,7 @@ fn assert_readable_grib(bytes: Vec<u8>) {
 }
 
 fn generated_grid(input: &mut Input<'_>) -> GridDefinition {
+    let grid_kind = input.u8() % 5;
     let ni = u32::from(input.u8() % 16) + 1;
     let nj = u32::from(input.u8() % 16) + 1;
     let scanning_mode = match input.u8() % 8 {
@@ -190,17 +192,73 @@ fn generated_grid(input: &mut Input<'_>) -> GridDefinition {
         -(dj as i32)
     };
 
-    GridDefinition::LatLon(LatLonGrid {
-        ni,
-        nj,
+    if grid_kind == 0 {
+        return GridDefinition::LatLon(LatLonGrid {
+            ni,
+            nj,
+            lat_first,
+            lon_first,
+            lat_last: lat_first + (nj.saturating_sub(1) as i32) * j_step,
+            lon_last: lon_first + (ni.saturating_sub(1) as i32) * i_step,
+            di,
+            dj,
+            scanning_mode,
+        });
+    }
+
+    let core = ProjectedGridCore {
+        number_of_points: ni * nj,
+        shape_of_earth: 6,
+        scale_factor_radius: 0,
+        scaled_value_radius: 0,
+        scale_factor_major_axis: 0,
+        scaled_value_major_axis: 0,
+        scale_factor_minor_axis: 0,
+        scaled_value_minor_axis: 0,
+        nx: ni,
+        ny: nj,
         lat_first,
         lon_first,
-        lat_last: lat_first + (nj.saturating_sub(1) as i32) * j_step,
-        lon_last: lon_first + (ni.saturating_sub(1) as i32) * i_step,
-        di,
-        dj,
+        resolution_and_component_flags: 0x08,
+        dx: di,
+        dy: dj,
         scanning_mode,
-    })
+    };
+    match grid_kind {
+        1 => GridDefinition::Mercator(MercatorGrid {
+            core,
+            lat_d: 0,
+            lat_last: lat_first,
+            lon_last: lon_first,
+            orientation_of_grid: 0,
+        }),
+        2 => GridDefinition::PolarStereographic(PolarStereographicGrid {
+            core,
+            lat_d: 60_000_000,
+            lon_v: 0,
+            projection_center_flag: input.u8() & 0x80,
+        }),
+        3 => GridDefinition::LambertConformal(LambertConformalGrid {
+            core,
+            lat_d: 25_000_000,
+            lon_v: 0,
+            projection_center_flag: input.u8() & 0x80,
+            latin1: 25_000_000,
+            latin2: 25_000_000,
+            lat_southern_pole: -90_000_000,
+            lon_southern_pole: 0,
+        }),
+        _ => GridDefinition::AlbersEqualArea(AlbersEqualAreaGrid {
+            core,
+            lat_d: 25_000_000,
+            lon_v: 0,
+            projection_center_flag: input.u8() & 0x80,
+            latin1: 29_500_000,
+            latin2: 45_500_000,
+            lat_southern_pole: -90_000_000,
+            lon_southern_pole: 0,
+        }),
+    }
 }
 
 fn generated_values(input: &mut Input<'_>, grid: &GridDefinition) -> Vec<f64> {

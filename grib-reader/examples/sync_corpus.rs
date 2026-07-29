@@ -30,6 +30,9 @@ fn main() -> io::Result<()> {
     let complex_missing_grib2 = fixtures::build_grib2_complex_packing_message_with_missing();
     let spatial_grib2 = fixtures::build_grib2_spatial_differencing_message();
     let run_length_grib2 = fixtures::build_grib2_run_length_message();
+    let second_order_row_grib1 = fixtures::build_grib1_second_order_row_by_row_message();
+    let second_order_general_grib1 = fixtures::build_grib1_second_order_general_message();
+    let large_message_grib1 = fixtures::build_grib1_large_message_convention();
     let tolerant_mixed = fixtures::build_bitmap_prefixed_stream();
     let truncated_grib2 = fixtures::build_truncated_grib2_message();
 
@@ -54,6 +57,15 @@ fn main() -> io::Result<()> {
     )?;
     write_if_changed(&open_dir.join("spatial-differencing.grib2"), &spatial_grib2)?;
     write_if_changed(&open_dir.join("run-length.grib2"), &run_length_grib2)?;
+    write_if_changed(
+        &open_dir.join("second-order-row.grib1"),
+        &second_order_row_grib1,
+    )?;
+    write_if_changed(
+        &open_dir.join("second-order-general.grib1"),
+        &second_order_general_grib1,
+    )?;
+    write_if_changed(&open_dir.join("large-message.grib1"), &large_message_grib1)?;
 
     write_if_changed(&tolerant_dir.join("minimal.grib2"), &minimal_grib2)?;
     write_if_changed(&tolerant_dir.join("forecast.grib2"), &forecast_grib2)?;
@@ -67,6 +79,18 @@ fn main() -> io::Result<()> {
         &spatial_grib2,
     )?;
     write_if_changed(&tolerant_dir.join("run-length.grib2"), &run_length_grib2)?;
+    write_if_changed(
+        &tolerant_dir.join("second-order-row.grib1"),
+        &second_order_row_grib1,
+    )?;
+    write_if_changed(
+        &tolerant_dir.join("second-order-general.grib1"),
+        &second_order_general_grib1,
+    )?;
+    write_if_changed(
+        &tolerant_dir.join("large-message.grib1"),
+        &large_message_grib1,
+    )?;
     write_if_changed(&tolerant_dir.join("mixed-prefix.bin"), &tolerant_mixed)?;
     write_if_changed(&tolerant_dir.join("truncated.grib2"), &truncated_grib2)?;
 
@@ -85,6 +109,18 @@ fn main() -> io::Result<()> {
         &spatial_grib2,
     )?;
     write_if_changed(&sections_dir.join("run-length.grib2"), &run_length_grib2)?;
+    write_if_changed(
+        &sections_dir.join("second-order-row.grib1"),
+        &second_order_row_grib1,
+    )?;
+    write_if_changed(
+        &sections_dir.join("second-order-general.grib1"),
+        &second_order_general_grib1,
+    )?;
+    write_if_changed(
+        &sections_dir.join("large-message.grib1"),
+        &large_message_grib1,
+    )?;
 
     let interop_samples = collect_grib_samples(&interop_dir);
     for sample in interop_samples {

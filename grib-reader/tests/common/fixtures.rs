@@ -148,6 +148,30 @@ pub fn build_grib2_lambert_alternating_message() -> Vec<u8> {
     build_grib2_lambert_message_with_scanning_mode(0b0001_0000, &[1, 2, 3, 6, 5, 4])
 }
 
+pub fn build_grib2_mercator_message() -> Vec<u8> {
+    let values = [1, 2, 3, 4, 5, 6];
+    let sections = [
+        build_identification_section(),
+        build_mercator_grid_section(),
+        build_product_section(),
+        build_simple_representation_section(values.len(), 8),
+        build_data_section(&values),
+    ];
+    assemble_grib2_message(&sections)
+}
+
+pub fn build_grib2_albers_equal_area_message() -> Vec<u8> {
+    let values = [1, 2, 3, 4, 5, 6];
+    let sections = [
+        build_identification_section(),
+        build_albers_equal_area_grid_section(),
+        build_product_section(),
+        build_simple_representation_section(values.len(), 8),
+        build_data_section(&values),
+    ];
+    assemble_grib2_message(&sections)
+}
+
 pub fn build_grib2_polar_stereographic_message() -> Vec<u8> {
     build_grib2_polar_stereographic_message_with_scanning_mode(0, &[1, 2, 3, 4, 5, 6])
 }
@@ -256,6 +280,50 @@ fn build_lambert_grid_section(scanning_mode: u8) -> Vec<u8> {
     section[65..69].copy_from_slice(&encode_wmo_i32(25_000_000).unwrap());
     section[69..73].copy_from_slice(&encode_wmo_i32(25_000_000).unwrap());
     section[73..77].copy_from_slice(&encode_wmo_i32(-90_000_000).unwrap());
+    section
+}
+
+fn build_mercator_grid_section() -> Vec<u8> {
+    let mut section = vec![0u8; 72];
+    section[..4].copy_from_slice(&72u32.to_be_bytes());
+    section[4] = 3;
+    section[6..10].copy_from_slice(&6u32.to_be_bytes());
+    section[12..14].copy_from_slice(&10u16.to_be_bytes());
+    section[14] = 6;
+    section[30..34].copy_from_slice(&3u32.to_be_bytes());
+    section[34..38].copy_from_slice(&2u32.to_be_bytes());
+    section[38..42].copy_from_slice(&encode_wmo_i32(-20_000_000).unwrap());
+    section[42..46].copy_from_slice(&encode_wmo_i32(-100_000_000).unwrap());
+    section[46] = 0x08;
+    section[47..51].copy_from_slice(&encode_wmo_i32(0).unwrap());
+    section[51..55].copy_from_slice(&encode_wmo_i32(20_000_000).unwrap());
+    section[55..59].copy_from_slice(&encode_wmo_i32(-98_000_000).unwrap());
+    section[60..64].copy_from_slice(&encode_wmo_i32(0).unwrap());
+    section[64..68].copy_from_slice(&1_000_000u32.to_be_bytes());
+    section[68..72].copy_from_slice(&2_000_000u32.to_be_bytes());
+    section
+}
+
+fn build_albers_equal_area_grid_section() -> Vec<u8> {
+    let mut section = vec![0u8; 81];
+    section[..4].copy_from_slice(&81u32.to_be_bytes());
+    section[4] = 3;
+    section[6..10].copy_from_slice(&6u32.to_be_bytes());
+    section[12..14].copy_from_slice(&31u16.to_be_bytes());
+    section[14] = 6;
+    section[30..34].copy_from_slice(&3u32.to_be_bytes());
+    section[34..38].copy_from_slice(&2u32.to_be_bytes());
+    section[38..42].copy_from_slice(&encode_wmo_i32(23_000_000).unwrap());
+    section[42..46].copy_from_slice(&encode_wmo_i32(240_000_000).unwrap());
+    section[46] = 0x08;
+    section[47..51].copy_from_slice(&encode_wmo_i32(25_000_000).unwrap());
+    section[51..55].copy_from_slice(&encode_wmo_i32(265_000_000).unwrap());
+    section[55..59].copy_from_slice(&4_000_000u32.to_be_bytes());
+    section[59..63].copy_from_slice(&5_000_000u32.to_be_bytes());
+    section[65..69].copy_from_slice(&encode_wmo_i32(29_500_000).unwrap());
+    section[69..73].copy_from_slice(&encode_wmo_i32(45_500_000).unwrap());
+    section[73..77].copy_from_slice(&encode_wmo_i32(-90_000_000).unwrap());
+    section[77..81].copy_from_slice(&encode_wmo_i32(0).unwrap());
     section
 }
 
