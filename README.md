@@ -9,6 +9,10 @@
 
 Rust GRIB reader, writer, and shared core primitives for weather and climate data. Default `grib-core`, `grib-reader`, and `grib-writer` builds have no C libraries or build scripts and no unsafe crate code beyond `memmap2`; optional GRIB2 image and CCSDS packing codecs are behind feature flags. The `jpeg2000` feature compiles OpenJPEG behind isolated safe reader/writer interfaces, and the `ccsds` feature compiles the pinned libaec source through the isolated safe `grib-aec` interface.
 
+The workspace minimum supported Rust version is 1.87. CI compiles every target
+with that exact toolchain and tests the supported feature combinations on
+Linux, macOS, and Windows.
+
 ## Crates
 
 | Crate | Description |
@@ -253,11 +257,21 @@ cargo run -p grib-reader --example sync_corpus --locked
 git diff --exit-code
 cargo test --all-features --locked
 cargo test --no-default-features --locked
+cargo +1.87.0 check --workspace --all-targets --all-features --locked
+cargo doc --workspace --all-features --no-deps --locked
+cargo deny --locked check
+cargo deny --manifest-path grib-reader/fuzz/Cargo.toml --locked check -A unmatched-skip
+cargo +1.91.0 llvm-cov --workspace --all-features --locked --fail-under-lines 85
 ./scripts/run-reference-parity.sh
 cargo check --manifest-path grib-reader/fuzz/Cargo.toml --bins --locked
 cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins --locked -- -D warnings
+./scripts/run-fuzz-smoke.sh 60
 ./scripts/verify-packages.sh
 ```
+
+The coverage command requires `cargo-llvm-cov` 0.8.6 and the dependency-policy
+commands require `cargo-deny` 0.19.4. Fuzzing requires a nightly toolchain and
+`cargo-fuzz` 0.13.1. CI pins the fuzzer toolchain to `nightly-2026-07-11`.
 
 `verify-packages.sh` assembles each normalized crate archive and compiles all
 of those archives together through local registry patches. This verifies

@@ -74,6 +74,14 @@
 - compare numeric GRIB2 parameter identities in parity tests so ecCodes label
   wording changes do not masquerade as format incompatibilities
 - raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
+- test the MSRV, macOS, Windows, all four fuzz targets, and an 85% line-coverage
+  floor in CI
+- reject known advisories, unapproved licenses and sources, wildcard
+  dependencies, and duplicate major versions through committed dependency
+  policy
+- add projected-grid reader fixtures, assert coordinates and decoded values on
+  real interoperability samples, and seed the fuzzers with GRIB1 second-order
+  and large-message fields
 
 ## 0.6.0 - 2026-06-25
 
