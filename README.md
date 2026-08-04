@@ -289,11 +289,12 @@ through:
 ./scripts/run-reference-parity.sh
 ```
 
-The parity container defaults to two CPUs and two Cargo build jobs. Set
-`ECCODES_DOCKER_CPUS` or `CARGO_BUILD_JOBS` to adjust those limits explicitly.
-On non-Linux hosts, container artifacts use container-local storage so native
-Linux objects cannot collide with the host's `target/`; set
-`ECCODES_CARGO_TARGET_DIR` to override that location.
+The parity and benchmark containers are uniquely named, removed after each
+run, and default to two CPUs, four GiB of memory, and two Cargo build jobs. Set
+`ECCODES_DOCKER_CPUS`, `ECCODES_DOCKER_MEMORY`, or `CARGO_BUILD_JOBS` to adjust
+those limits explicitly. On non-Linux hosts, container artifacts use
+container-local storage so native Linux objects cannot collide with the host's
+`target/`; set `ECCODES_CARGO_TARGET_DIR` to override that location.
 
 ## Release Checklist
 
