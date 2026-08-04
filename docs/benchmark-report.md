@@ -1,118 +1,110 @@
 # Benchmark Report
 
-Date: 2026-03-21
+Date: 2026-07-23
 
-This report summarizes a Dockerized parity and comparison benchmark run for
-`grib-rust` against ecCodes. It captures one historical parity run and the
-aggregate decode performance of the corpus that existed for that run.
+This report records the current checksum-guarded comparison between
+`grib-rust` 0.7.0 and ecCodes, plus the focused measurements used to retain the
+Phase 3 reader and writer optimizations.
 
 ## System Under Test
 
-- Machine: Apple M1
-- CPU topology: 8 logical CPUs
-- Memory: 16 GiB
-- OS: macOS 13.0
-- Architecture: `arm64`
-- Rust toolchain: `rustc 1.92.0`
-- Reference environment: Docker image with Rust and `libeccodes-dev`
+- Host: Apple M1, 8 logical CPUs, 16 GiB memory
+- Host OS: macOS 26.5.1 (`arm64`)
+- Container target: `aarch64-unknown-linux-gnu`
+- Rust toolchain: Rust 1.91.0
+- Reference libraries: ecCodes 2.47.0 and libaec 1.1.7
+- Container limits: 2 CPUs, 4 GiB memory, 2 Cargo build jobs
 
-These measurements reflect this machine. ecCodes ran in Docker, but the
-timings still reflect the same host CPU and storage stack.
+The reference image builds SHA-256-verified source archives. The uniquely
+named benchmark container is removed after the run, and its Linux-native build
+artifacts remain container-local on this host.
 
-## Scope
+## Method
 
-- Dockerized parity tests against ecCodes for:
-  - generated GRIB1/GRIB2 fixtures
-  - the checked-in GRIB parity sample corpus
-- Criterion comparison bench over the full parity sample set collected by
-  `collect_parity_samples()`
-
-## Methodology
-
-Commands used for this report:
+The current measurements were generated with:
 
 ```sh
 ./scripts/run-reference-parity.sh
 ./scripts/run-reference-benchmarks.sh
 ```
 
-Notes:
+The aggregate decode comparison covers the eight checked-in parity files:
+five generated bootstrap fixtures and three real interoperability samples.
+Before Criterion records a timing, the harness requires the Rust and ecCodes
+implementations to agree on iteration count, logical-message count,
+decoded-value count, and finite-value checksum.
+The corresponding parity run passed both reader tests and the writer test.
 
-- The parity run passed both ecCodes integration tests.
-- The recorded timing below was taken before the bootstrap corpus expansion and
-  reflects a 4-file checked-in GRIB sample set.
-- The current checked-in bootstrap corpus now contains 8 generated samples and
-  should be re-benchmarked before treating any throughput number here as
-  current or representative.
-- The comparison bench validates message counts, decoded value counts, and
-  checksum parity before timing.
-- Criterion measures aggregate elapsed time for repeated decode of the full
-  sample set used in the run.
+Criterion used its default 3-second warm-up, 100 samples, and 5-second target
+measurement time. Slow aggregate operations automatically received a longer
+measurement window so Criterion could collect all samples.
 
-## Historical Results
+## Current Results
 
-### Dense simple-packing decode (2026-07-12)
-
-The focused benchmark decodes 262,144 8-bit packed values, including allocation
-of the returned `Vec<f64>`:
-
-```sh
-cargo bench -p grib-reader --all-features --bench compare_eccodes -- \
-  'decode/simple-packed-u8' --sample-size 50 --warm-up-time 1 \
-  --measurement-time 3 --noplot
-```
+### Aggregate parity-corpus decode
 
 | implementation | Criterion interval |
 | --- | ---: |
-| buffered bit extraction through the bitmap-aware cursor | 1.752–1.758 ms |
+| `grib-rust` | 113.29–113.64 ms |
+| ecCodes 2.47.0 | 196.81–197.24 ms |
+
+Using the reported means, `grib-rust` was 1.74x faster on this exact corpus and
+host. This is a corpus-specific result, not a claim about every GRIB packing
+template or machine.
+
+### Dense simple-packing decode
+
+This focused benchmark decodes 262,144 byte-aligned 8-bit packed values and
+allocates the returned `Vec<f64>`.
+
+| workload | Criterion interval |
+| --- | ---: |
+| `decode/simple-packed-u8` | 122.50–122.78 µs |
+
+### Writer workloads
+
+The writer benchmarks use a 144 by 73 regular latitude/longitude grid.
+
+| workload | Criterion interval |
+| --- | ---: |
+| simple GRIB2 field | 193.96–194.65 µs |
+| bitmap GRIB2 field | 217.85–218.27 µs |
+| three-field GRIB2 message | 579.97–580.76 µs |
+| simple encode/decode round trip | 303.30–304.36 µs |
+
+## Phase 3 Before/After Evidence
+
+These focused before/after measurements were recorded on the same Apple M1
+host on 2026-07-12. They establish that the hot-path changes materially
+improved throughput; their absolute times should not be compared directly with
+the capped Docker run above.
+
+### Byte-aligned simple decode
+
+| implementation | Criterion interval |
+| --- | ---: |
+| buffered extraction through the bitmap-aware cursor | 1.752–1.758 ms |
 | byte-aligned dense decode directly into the output slice | 117.3–118.0 µs |
 
-Criterion reported a 93.3% improvement (`p < 0.05`). On the complete checked-in
+Criterion reported a 93.3% improvement (`p < 0.05`). On the then-current full
 corpus, the same change reduced aggregate decode from 92.75–94.05 ms to
-90.87–91.24 ms, a 2.4% mean improvement (`p < 0.05`). The aggregate run includes
-image-packed fields whose codec time is unaffected by this optimization.
+90.87–91.24 ms, a 2.4% mean improvement (`p < 0.05`). Image codec time
+dominated much of that aggregate workload and was unaffected by the change.
 
-### Packed-bit writer hot loop (2026-07-12)
-
-The following measurements use the same optimized Criterion command before and
-after replacing bit-at-a-time writes with byte-chunked writes:
-
-```sh
-cargo bench -p grib-writer --bench encode -- simple_grib2 \
-  --sample-size 50 --warm-up-time 1 --measurement-time 2 --noplot
-```
+### Packed-bit writer loop
 
 | implementation | mean | Criterion interval |
 | --- | ---: | ---: |
-| byte-by-byte reader and bit-at-a-time writer | 197.99 µs | 187.24–220.20 µs |
-| 64-bit buffered reader and byte-chunked writer | 159.84 µs | 151.61–172.37 µs |
+| bit-at-a-time writer | 197.99 µs | 187.24–220.20 µs |
+| byte-chunked writer | 159.84 µs | 151.61–172.37 µs |
 
-Criterion reported a 19.1% mean improvement (`p < 0.05`). This isolates the
-simple GRIB2 encode path on this host; it is not a claim about every packing
-template or machine.
-
-### Parity
-
-- `generated_fixtures_match_eccodes_when_configured`: passed
-- `corpus_samples_match_eccodes_when_configured`: passed
-
-### Historical Summary
-
-| workload | grib-rust | ecCodes | result |
-| --- | ---: | ---: | --- |
-| aggregate corpus decode | 1.62 ms | 4.24 ms | `grib-rust` 2.61x faster |
-
-## Interpretation
-
-- On the 4-file corpus used in this run, `grib-rust` was ahead of ecCodes in
-  aggregate decode time on this host.
-- The benchmark is checksum-guarded and corpus-driven, so it is a stronger
-  signal than a pure microbenchmark with no correctness check.
-- Because that corpus was still small, this result is best read as a statement
-  about that sample set and control path, not every GRIB workload.
+Criterion reported a 19.1% mean improvement (`p < 0.05`) for simple GRIB2
+encoding.
 
 ## Limits
 
-- This report reflects one machine.
-- Any current performance claim should be regenerated after corpus changes.
-- Docker improves reproducibility here, but the results remain host-specific.
+- Results reflect one host and the committed sample corpus.
+- Docker constrains resources and reproduces the reference libraries, but host
+  CPU and storage still affect timings.
+- Corpus additions, compiler changes, or codec updates require a new run before
+  these numbers are treated as current.
