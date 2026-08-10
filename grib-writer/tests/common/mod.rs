@@ -396,11 +396,7 @@ pub fn product(parameter_category: u8, parameter_number: u8) -> ProductDefinitio
             generating_process: 2,
             forecast_time_unit: 1,
             forecast_time: 6,
-            first_surface: Some(FixedSurface {
-                surface_type: 103,
-                scale_factor: 0,
-                scaled_value: 850,
-            }),
+            first_surface: Some(FixedSurface::with_value(103, 0, 850)),
             second_surface: None,
         }),
     }

@@ -220,11 +220,7 @@ fn product(input: &mut Input<'_>) -> ProductDefinition {
             generating_process: 2,
             forecast_time_unit: 1,
             forecast_time: u32::from(input.u8()),
-            first_surface: Some(FixedSurface {
-                surface_type: 103,
-                scale_factor: 0,
-                scaled_value: 850,
-            }),
+            first_surface: Some(FixedSurface::with_value(103, 0, 850)),
             second_surface: None,
         }),
     }

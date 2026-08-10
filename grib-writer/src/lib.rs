@@ -2051,6 +2051,10 @@ fn write_product_section(out: &mut Vec<u8>, product: &ProductDefinition) -> Resu
             write_u32_be(out, template.number_of_missing_in_statistical_process)?;
             write_statistical_time_ranges(out, &template.time_ranges)
         }
+        ProductDefinitionTemplate::Unsupported { number, .. } => {
+            Err(Error::UnsupportedProductTemplate(*number))
+        }
+        template => Err(Error::UnsupportedProductTemplate(template.number())),
     }
 }
 
@@ -2148,15 +2152,26 @@ fn write_surface(out: &mut Vec<u8>, surface: Option<&FixedSurface>) -> Result<()
     match surface {
         Some(surface) => {
             write_u8_be(out, surface.surface_type)?;
-            write_u8_be(
-                out,
-                encode_wmo_i8(surface.scale_factor).ok_or_else(|| {
-                    Error::Other("fixed-surface scale factor does not fit GRIB signed i8".into())
-                })?,
-            )?;
-            out.extend_from_slice(&encode_wmo_i32(surface.scaled_value).ok_or_else(|| {
-                Error::Other("fixed-surface scaled value does not fit GRIB signed i32".into())
-            })?);
+            match surface.value {
+                Some(value) => {
+                    write_u8_be(
+                        out,
+                        encode_wmo_i8(value.scale_factor).ok_or_else(|| {
+                            Error::Other(
+                                "fixed-surface scale factor does not fit GRIB signed i8".into(),
+                            )
+                        })?,
+                    )?;
+                    out.extend_from_slice(&encode_wmo_i32(value.scaled_value).ok_or_else(
+                        || {
+                            Error::Other(
+                                "fixed-surface scaled value does not fit GRIB signed i32".into(),
+                            )
+                        },
+                    )?);
+                }
+                None => out.extend_from_slice(&[0xff; 5]),
+            }
             Ok(())
         }
         None => {
@@ -2420,6 +2435,10 @@ fn validate_supported_product(product: &ProductDefinition) -> Result<()> {
             checked_time_range_count(template.time_ranges.len())?;
             validate_reference_time(template.end_of_overall_time_interval)
         }
+        ProductDefinitionTemplate::Unsupported { number, .. } => {
+            Err(Error::UnsupportedProductTemplate(*number))
+        }
+        template => Err(Error::UnsupportedProductTemplate(template.number())),
     }
 }
 
@@ -2648,11 +2667,7 @@ mod tests {
             generating_process: 2,
             forecast_time_unit: 1,
             forecast_time: 6,
-            first_surface: Some(FixedSurface {
-                surface_type: 103,
-                scale_factor: 0,
-                scaled_value: 850,
-            }),
+            first_surface: Some(FixedSurface::with_value(103, 0, 850)),
             second_surface: None,
         }
     }

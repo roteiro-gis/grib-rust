@@ -29,6 +29,6 @@ pub use parameter::{
 };
 pub use product::{
     AnalysisOrForecastTemplate, EnsembleStatisticalProcessTemplate, FixedSurface, Identification,
-    IndividualEnsembleForecastTemplate, ProductDefinition, ProductDefinitionTemplate,
+    IndividualEnsembleForecastTemplate, ProductDefinition, ProductDefinitionTemplate, ScaledValue,
     StatisticalProcessTemplate, StatisticalTimeRange,
 };

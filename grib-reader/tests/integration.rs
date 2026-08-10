@@ -138,15 +138,15 @@ fn open_grib2_lambert_conformal_field_and_decode_flat_data() {
 }
 
 #[test]
-fn open_rejects_grid_above_configured_decoded_point_limit() {
-    let err = match GribFile::from_bytes_with_options(
+fn over_limit_grid_opens_but_decode_enforces_configured_point_limit() {
+    let opened = GribFile::from_bytes_with_options(
         build_grib2_message(&[1, 2, 3, 4]),
         OpenOptions::default().with_max_decoded_points(3),
-    ) {
-        Ok(_) => panic!("expected decoded point limit error"),
-        Err(err) => err,
-    };
+    )
+    .unwrap();
+    assert_eq!(opened.message_count(), 1);
 
+    let err = opened.message(0).unwrap().read_data_as_f64().unwrap_err();
     assert!(matches!(
         err,
         Error::LimitExceeded {
@@ -570,24 +570,33 @@ fn tolerant_open_skips_malformed_candidates() {
 }
 
 #[test]
-fn tolerant_open_still_reports_unsupported_messages() {
+fn unsupported_product_template_does_not_poison_file_open() {
     let mut bytes = build_grib2_message(&[1, 2, 3, 4]);
     let product_offset = 16 + 21 + 72;
     bytes[product_offset + 7..product_offset + 9].copy_from_slice(&99u16.to_be_bytes());
     bytes.extend_from_slice(&build_grib2_message(&[9, 8, 7, 6]));
 
-    let err = match GribFile::from_bytes_with_options(
+    let opened = GribFile::from_bytes_with_options(
         bytes,
         OpenOptions {
             strict: false,
             ..OpenOptions::default()
         },
-    ) {
-        Ok(_) => panic!("expected unsupported product template error"),
-        Err(err) => err,
-    };
+    )
+    .unwrap();
 
-    assert!(matches!(err, Error::UnsupportedProductTemplate(99)));
+    assert_eq!(opened.message_count(), 2);
+    let first = opened.message(0).unwrap();
+    assert_eq!(first.product_definition().unwrap().template_number(), 99);
+    assert_eq!(first.forecast_time(), None);
+    assert!(matches!(
+        &first.product_definition().unwrap().template,
+        ProductDefinitionTemplate::Unsupported { number: 99, .. }
+    ));
+    assert_eq!(
+        opened.message(1).unwrap().read_flat_data_as_f64().unwrap(),
+        vec![9.0, 8.0, 7.0, 6.0]
+    );
 }
 
 #[test]

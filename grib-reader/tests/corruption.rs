@@ -98,21 +98,20 @@ fn strict_open_reports_validly_framed_unsupported_edition() {
 }
 
 #[test]
-fn tolerant_open_reports_validly_framed_unsupported_edition() {
+fn tolerant_open_skips_validly_framed_unsupported_edition() {
     let mut bytes = build_valid_unsupported_edition_message(3);
     bytes.extend_from_slice(&build_grib2_message(&[1, 2, 3, 4]));
 
-    let err = match GribFile::from_bytes_with_options(
+    let opened = GribFile::from_bytes_with_options(
         bytes,
         OpenOptions {
             strict: false,
             ..OpenOptions::default()
         },
-    ) {
-        Ok(_) => panic!("expected unsupported edition error"),
-        Err(err) => err,
-    };
-    assert!(matches!(err, Error::UnsupportedEdition(3)));
+    )
+    .unwrap();
+    assert_eq!(opened.message_count(), 1);
+    assert_eq!(opened.message(0).unwrap().edition(), 2);
 }
 
 #[test]
