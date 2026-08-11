@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod allocation;
 pub mod binary;
 pub mod bit;
 pub mod data;
@@ -11,8 +12,8 @@ pub mod grid;
 pub mod metadata;
 pub mod parameter;
 pub mod product;
-pub mod util;
 
+pub use allocation::{ensure_limit, filled_vec};
 pub use data::{
     ComplexPackingParams, DataRepresentation, ImagePackingParams, Jpeg2000PackingParams,
     PngPackingParams, SimplePackingParams, SpatialDifferencingParams,
@@ -20,7 +21,7 @@ pub use data::{
 pub use error::{Error, Result};
 pub use grid::{
     AlbersEqualAreaGrid, GridDefinition, LambertConformalGrid, LatLonGrid, MercatorGrid,
-    PolarStereographicGrid,
+    PolarStereographicGrid, ProjectedGridCore,
 };
 pub use metadata::{ForecastTimeUnit, Parameter, ParameterTableSource, ReferenceTime};
 pub use parameter::{

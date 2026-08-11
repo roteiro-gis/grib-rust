@@ -61,19 +61,18 @@ field.decode_into(&mut reused)?;
 let data = field.read_data_as_f64()?;
 println!("ndarray shape: {:?}", data.shape());
 
-let tolerant = GribFile::from_bytes_with_options(
-    std::fs::read("mixed.bin")?,
-    grib_reader::OpenOptions {
-        strict: false,
-        ..grib_reader::OpenOptions::default()
-    },
-)?;
+let north_up = field.read_data_north_up_as_f64()?;
+println!("north-up shape: {:?}", north_up.shape());
+
+let tolerant = GribFile::builder()
+    .strict(false)
+    .from_bytes(std::fs::read("mixed.bin")?)?;
 println!("recoverable messages: {}", tolerant.message_count());
 ```
 
-`OpenOptions` also bounds decoded-field and coordinate-axis allocations by
-default. Tune `max_decoded_points` and `max_axis_points`, or use the
-`without_*_limit` helpers, when intentionally reading unusually large grids.
+The builder bounds decoded-field and coordinate-axis allocations by default.
+Tune `max_decoded_points` and `max_axis_points`, or use the
+`without_*_limit` methods, when intentionally reading unusually large grids.
 
 Custom GRIB2 local parameter tables can be authored as CSV and supplied as an
 overlay. The reader checks WMO Code Table 4.2 first for standard parameters,
@@ -81,7 +80,7 @@ then checks caller entries and the built-in local registry for local-use
 category or parameter numbers.
 
 ```rust
-use grib_reader::{GribFile, LocalParameterTable, OpenOptions};
+use grib_reader::{GribFile, LocalParameterTable};
 
 let table = LocalParameterTable::from_csv_str(
     "center_id,subcenter_id,local_table_version,discipline,category,number,short_name,description\n\
@@ -89,11 +88,9 @@ let table = LocalParameterTable::from_csv_str(
 )?;
 let local_parameters = table.entries();
 
-let file = GribFile::from_bytes_with_local_parameters(
-    std::fs::read("local-product.grib2")?,
-    OpenOptions::default(),
-    &local_parameters,
-)?;
+let file = GribFile::builder()
+    .local_parameters(&local_parameters)
+    .from_bytes(std::fs::read("local-product.grib2")?)?;
 ```
 
 ## Writer Usage
@@ -164,6 +161,7 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 
 - GRIB1 and GRIB2 message scanning with `"GRIB"`/`"7777"` boundary detection
 - Logical field indexing for multi-field GRIB2 messages
+- GRIB2 Section 2 access and same-message bitmap reuse through indicator 254
 - Regular latitude/longitude grids for GRIB1 and GRIB2
 - Reader GRIB2 Mercator grid template 3.10, polar stereographic grid template
   3.20, Lambert conformal grid template 3.30, and Albers equal-area grid
@@ -174,13 +172,15 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Feature-gated reader GRIB2 JPEG2000 template 5.40 and PNG template 5.41 packed data decode
 - WMO parameter table lookups (Code Table 4.2) plus center/subcenter/local-table-aware GRIB2 local parameter entries and CSV authoring helpers
 - Typed metadata access for reference time, parameter identity, product metadata, grid geometry, and lat/lon coordinates
+- Explicit north-up decode methods in addition to reader order that preserves
+  the encoded i/j scan directions
 - Reader and writer GRIB2 product definition templates 4.0, 4.1, 4.8, and 4.11
 - Forecast valid-time helpers for supported fixed-width GRIB1/GRIB2 time units
-- `OpenOptions` for strict or tolerant scanning
+- `GribFile::builder()` for strict or tolerant scanning and allocation limits
 - Bitmap application with missing values surfaced as `NaN`
 - Parallel field decoding via Rayon
 - Output: caller-owned `&mut [f32]`/`&mut [f64]`, flat `Vec<f32>`/`Vec<f64>`, or `ndarray::ArrayD<f32>`/`ArrayD<f64>`
-- Memory-mapped I/O or owned byte buffers
+- Memory-mapped files, owned byte buffers, or arbitrary `Read` streams
 - Writer GRIB2 regular lat/lon fields with simple packing template 5.0,
   complex packing template 5.2, and spatial differencing template 5.3
 - Writer GRIB2 Mercator grid template 3.10, polar stereographic grid template
@@ -231,8 +231,13 @@ cargo test -p grib-reader --no-default-features
 ./scripts/run-reference-parity.sh
 cargo check --manifest-path grib-reader/fuzz/Cargo.toml --bins
 cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins -- -D warnings
-cargo package --workspace --locked
+./scripts/verify-packages.sh
 ```
+
+`verify-packages.sh` assembles each normalized crate archive and compiles all
+of those archives together through local registry patches. This verifies
+unpublished workspace dependencies without relying on stable Cargo's broken
+temporary-registry workspace verifier.
 
 The `Reference Compat` workflow runs the Dockerized ecCodes parity suite for
 pull requests, `main`/`master` pushes, release tags, and a weekly scheduled
@@ -250,7 +255,7 @@ git switch main
 git pull --ff-only
 git merge <release-branch>
 
-cargo package --workspace --locked
+./scripts/verify-packages.sh
 cargo publish -p grib-core --dry-run --locked
 cargo publish -p grib-core --locked
 cargo publish -p grib-reader --dry-run --locked

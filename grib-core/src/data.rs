@@ -1,7 +1,7 @@
 //! Data Representation Section (Section 5) shared model.
 
+use crate::binary::decode_wmo_i16;
 use crate::error::{Error, Result};
-use crate::util::grib_i16;
 
 /// Data representation template number and parameters.
 #[derive(Debug, Clone, PartialEq)]
@@ -131,8 +131,8 @@ fn parse_simple_packing(data: &[u8]) -> Result<DataRepresentation> {
 
     let encoded_values = u32::from_be_bytes(data[5..9].try_into().unwrap()) as usize;
     let reference_value = f32::from_be_bytes(data[11..15].try_into().unwrap());
-    let binary_scale = grib_i16(&data[15..17]).unwrap();
-    let decimal_scale = grib_i16(&data[17..19]).unwrap();
+    let binary_scale = decode_wmo_i16(&data[15..17]).unwrap();
+    let decimal_scale = decode_wmo_i16(&data[17..19]).unwrap();
     let bits_per_value = data[19];
     let original_field_type = data[20];
 
@@ -164,8 +164,8 @@ fn parse_image_packing_base(
     Ok(ImagePackingParams {
         encoded_values: u32::from_be_bytes(data[5..9].try_into().unwrap()) as usize,
         reference_value: f32::from_be_bytes(data[11..15].try_into().unwrap()),
-        binary_scale: grib_i16(&data[15..17]).unwrap(),
-        decimal_scale: grib_i16(&data[17..19]).unwrap(),
+        binary_scale: decode_wmo_i16(&data[15..17]).unwrap(),
+        decimal_scale: decode_wmo_i16(&data[17..19]).unwrap(),
         bits_per_value: data[19],
         original_field_type: data[20],
     })
@@ -231,8 +231,8 @@ fn parse_complex_packing(
     Ok(DataRepresentation::ComplexPacking(ComplexPackingParams {
         encoded_values: u32::from_be_bytes(data[5..9].try_into().unwrap()) as usize,
         reference_value: f32::from_be_bytes(data[11..15].try_into().unwrap()),
-        binary_scale: grib_i16(&data[15..17]).unwrap(),
-        decimal_scale: grib_i16(&data[17..19]).unwrap(),
+        binary_scale: decode_wmo_i16(&data[15..17]).unwrap(),
+        decimal_scale: decode_wmo_i16(&data[17..19]).unwrap(),
         group_reference_bits: data[19],
         original_field_type: data[20],
         group_splitting_method,
@@ -256,7 +256,7 @@ mod tests {
         DataRepresentation, ImagePackingParams, Jpeg2000PackingParams, PngPackingParams,
         SimplePackingParams,
     };
-    use crate::util::encode_grib_i16;
+    use crate::binary::encode_wmo_i16;
 
     #[test]
     fn parses_simple_packing_template() {
@@ -292,7 +292,7 @@ mod tests {
         section[5..9].copy_from_slice(&4u32.to_be_bytes());
         section[9..11].copy_from_slice(&40u16.to_be_bytes());
         section[11..15].copy_from_slice(&3.5f32.to_be_bytes());
-        section[15..17].copy_from_slice(&encode_grib_i16(-1).unwrap());
+        section[15..17].copy_from_slice(&encode_wmo_i16(-1).unwrap());
         section[17..19].copy_from_slice(&2i16.to_be_bytes());
         section[19] = 12;
         section[20] = 0;
@@ -325,7 +325,7 @@ mod tests {
         section[9..11].copy_from_slice(&41u16.to_be_bytes());
         section[11..15].copy_from_slice(&1.25f32.to_be_bytes());
         section[15..17].copy_from_slice(&1i16.to_be_bytes());
-        section[17..19].copy_from_slice(&encode_grib_i16(-2).unwrap());
+        section[17..19].copy_from_slice(&encode_wmo_i16(-2).unwrap());
         section[19] = 16;
         section[20] = 1;
 

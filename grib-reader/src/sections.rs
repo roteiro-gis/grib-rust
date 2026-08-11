@@ -14,6 +14,7 @@ pub struct SectionRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FieldSections {
     pub identification: SectionRef,
+    pub local_use: Option<SectionRef>,
     pub grid: SectionRef,
     pub product: SectionRef,
     pub data_representation: SectionRef,
@@ -86,14 +87,24 @@ pub fn index_fields(msg_bytes: &[u8]) -> Result<Vec<FieldSections>> {
         .ok_or_else(|| Error::InvalidSectionOrder("missing identification section".into()))?;
 
     let mut fields = Vec::new();
+    let mut current_local_use = None;
     let mut current_grid = None;
     let mut current_product = None;
     let mut current_representation = None;
     let mut current_bitmap = None;
+    let mut last_defined_bitmap = None;
 
     for section in sections {
         match section.number {
-            1 | 2 => {}
+            1 => {}
+            2 => {
+                if current_product.is_some() || current_representation.is_some() {
+                    return Err(Error::InvalidSectionOrder(
+                        "local use section encountered inside a field definition".into(),
+                    ));
+                }
+                current_local_use = Some(section);
+            }
             3 => {
                 current_grid = Some(section);
                 current_product = None;
@@ -125,7 +136,26 @@ pub fn index_fields(msg_bytes: &[u8]) -> Result<Vec<FieldSections>> {
                         "bitmap encountered before data representation".into(),
                     ));
                 }
-                current_bitmap = Some(section);
+                let bitmap_indicator =
+                    *msg_bytes
+                        .get(section.offset + 5)
+                        .ok_or(Error::InvalidSection {
+                            section: 6,
+                            reason: "bitmap section is missing its indicator".into(),
+                        })?;
+                match bitmap_indicator {
+                    0 => {
+                        current_bitmap = Some(section);
+                        last_defined_bitmap = Some(section);
+                    }
+                    254 => {
+                        current_bitmap = Some(last_defined_bitmap.ok_or(Error::MissingBitmap)?);
+                    }
+                    255 => current_bitmap = None,
+                    indicator => {
+                        return Err(Error::UnsupportedBitmapIndicator(u16::from(indicator)));
+                    }
+                }
             }
             7 => {
                 let grid = current_grid.ok_or_else(|| {
@@ -145,6 +175,7 @@ pub fn index_fields(msg_bytes: &[u8]) -> Result<Vec<FieldSections>> {
                 })?;
                 fields.push(FieldSections {
                     identification,
+                    local_use: current_local_use,
                     grid,
                     product,
                     data_representation,
@@ -188,6 +219,15 @@ mod tests {
         bytes
     }
 
+    fn bitmap_section(indicator: u8, bitmap: &[u8]) -> Vec<u8> {
+        let length = 6 + bitmap.len();
+        let mut bytes = (length as u32).to_be_bytes().to_vec();
+        bytes.push(6);
+        bytes.push(indicator);
+        bytes.extend_from_slice(bitmap);
+        bytes
+    }
+
     #[test]
     fn scan_minimal_sections() {
         let mut data = vec![0u8; 16];
@@ -221,7 +261,67 @@ mod tests {
         let fields = index_fields(&data).unwrap();
         assert_eq!(fields.len(), 2);
         assert_eq!(fields[0].grid.number, 3);
+        assert_eq!(fields[0].local_use, None);
         assert_eq!(fields[1].product.number, 4);
+    }
+
+    #[test]
+    fn associates_local_use_section_with_each_following_field() {
+        let mut data = vec![0u8; 16];
+        data.extend_from_slice(&section(1, 16));
+        data.extend_from_slice(&section(2, 3));
+        data.extend_from_slice(&section(3, 20));
+        data.extend_from_slice(&section(4, 29));
+        data.extend_from_slice(&section(5, 16));
+        data.extend_from_slice(&section(7, 3));
+        data.extend_from_slice(&section(4, 29));
+        data.extend_from_slice(&section(5, 16));
+        data.extend_from_slice(&section(7, 3));
+        data.extend_from_slice(b"7777");
+
+        let fields = index_fields(&data).unwrap();
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].local_use.unwrap().number, 2);
+        assert_eq!(fields[1].local_use, fields[0].local_use);
+    }
+
+    #[test]
+    fn resolves_previously_defined_bitmap_indicator() {
+        let mut data = vec![0u8; 16];
+        data.extend_from_slice(&section(1, 16));
+        data.extend_from_slice(&section(3, 20));
+        data.extend_from_slice(&section(4, 29));
+        data.extend_from_slice(&section(5, 16));
+        data.extend_from_slice(&bitmap_section(0, &[0b1010_0000]));
+        data.extend_from_slice(&section(7, 3));
+        data.extend_from_slice(&section(4, 29));
+        data.extend_from_slice(&section(5, 16));
+        data.extend_from_slice(&bitmap_section(254, &[]));
+        data.extend_from_slice(&section(7, 3));
+        data.extend_from_slice(b"7777");
+
+        let fields = index_fields(&data).unwrap();
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[1].bitmap, fields[0].bitmap);
+        assert_eq!(
+            data[fields[1].bitmap.unwrap().offset + 5],
+            0,
+            "resolved field must point to the defining bitmap"
+        );
+    }
+
+    #[test]
+    fn rejects_previous_bitmap_indicator_without_definition() {
+        let mut data = vec![0u8; 16];
+        data.extend_from_slice(&section(1, 16));
+        data.extend_from_slice(&section(3, 20));
+        data.extend_from_slice(&section(4, 29));
+        data.extend_from_slice(&section(5, 16));
+        data.extend_from_slice(&bitmap_section(254, &[]));
+        data.extend_from_slice(&section(7, 3));
+        data.extend_from_slice(b"7777");
+
+        assert!(matches!(index_fields(&data), Err(Error::MissingBitmap)));
     }
 
     #[test]

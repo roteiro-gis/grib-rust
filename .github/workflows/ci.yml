@@ -59,7 +59,9 @@ jobs:
         run: cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins --locked -- -D warnings
 
       - name: Verify crate packaging
-        run: cargo package --workspace --locked
+        run: ./scripts/verify-packages.sh
 
-      - name: Verify publish dry run
-        run: cargo publish --workspace --dry-run --locked
+      - name: Verify publish metadata
+        # The preceding step compiles the normalized tarballs. Stable Cargo's
+        # workspace verifier cannot resolve unpublished workspace dependencies.
+        run: cargo publish --workspace --dry-run --no-verify --locked

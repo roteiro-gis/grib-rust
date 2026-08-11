@@ -1,12 +1,11 @@
 //! GRIB Edition 1 shared metadata and section models.
 
-use crate::binary::decode_ibm_f32;
+use crate::binary::{decode_ibm_f32, decode_wmo_i16, decode_wmo_i24};
 use crate::data::{DataRepresentation, SimplePackingParams};
 use crate::error::{Error, Result};
 use crate::grid::{GridDefinition, LatLonGrid};
 use crate::metadata::{Parameter, ReferenceTime};
 use crate::parameter;
-use crate::util::{grib_i16, grib_i24};
 
 /// GRIB1 product definition metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +59,7 @@ impl ProductDefinition {
             missing_count: section_bytes[23],
             century: section_bytes[24],
             subcenter_id: section_bytes[25],
-            decimal_scale: grib_i16(&section_bytes[26..28]).unwrap(),
+            decimal_scale: decode_wmo_i16(&section_bytes[26..28]).unwrap(),
         })
     }
 
@@ -154,7 +153,7 @@ impl BinaryDataSection {
             return Err(Error::UnsupportedDataTemplate(1007));
         }
 
-        let binary_scale = grib_i16(&section_bytes[4..6]).unwrap();
+        let binary_scale = decode_wmo_i16(&section_bytes[4..6]).unwrap();
         let reference_value = decode_ibm_f32(section_bytes[6..10].try_into().unwrap());
         let bits_per_value = section_bytes[10];
         let simple = SimplePackingParams {
@@ -231,7 +230,7 @@ fn parse_latlon_grid(section_bytes: &[u8]) -> Result<GridDefinition> {
 }
 
 fn parse_coordinate(bytes: &[u8], absolute_limit: i64, name: &str) -> Result<i32> {
-    let millidegrees = grib_i24(bytes).ok_or_else(|| Error::InvalidSection {
+    let millidegrees = decode_wmo_i24(bytes).ok_or_else(|| Error::InvalidSection {
         section: 2,
         reason: format!("truncated {name}"),
     })?;

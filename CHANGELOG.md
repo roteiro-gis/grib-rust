@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.0 - Unreleased
+
+- replace the reader's constructor matrix with `GribFile::builder()`, including
+  memory-mapped file, owned-byte, and arbitrary `Read` inputs
+- remove the ambiguous file-level edition accessor; editions are reported per
+  logical field
+- add explicit north-up decode methods while preserving encoded scan directions
+  in the existing reader-order methods
+- expose GRIB2 local-use sections and resolve bitmap indicator 254 within
+  multi-field messages
+- centralize allocation failures and resource-limit checks in `grib-core`,
+  mark the public error enum non-exhaustive, and remove duplicate signed-integer
+  aliases
+- remove the unused reader `flate2` dependency
+- replace byte-at-a-time bit reads and bit-at-a-time writes with buffered
+  64-bit reads and byte-chunked writes
+- decode byte-aligned simple packing directly into dense output slices and
+  expand bitmap gaps a byte at a time
+- locate GRIB messages with substring search instead of testing every byte
+  offset
+- raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
+
 ## 0.6.0 - 2026-06-25
 
 - prepare the workspace crates for the 0.6.0 release line so package

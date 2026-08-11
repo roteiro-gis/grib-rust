@@ -3,6 +3,7 @@ use thiserror::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("I/O error reading {1}: {0}")]
     Io(#[source] std::io::Error, String),
@@ -68,6 +69,32 @@ pub enum Error {
     #[error("bitmap indicates missing values but no bitmap section present")]
     MissingBitmap,
 
+    #[error("bit offset overflow")]
+    BitOffsetOverflow,
+
+    #[error("arithmetic overflow while {operation}")]
+    ArithmeticOverflow { operation: &'static str },
+
+    #[error("value out of range: {0}")]
+    ValueOutOfRange(String),
+
+    #[error("failed to allocate {requested} {what}: {reason}")]
+    AllocationFailed {
+        what: String,
+        requested: usize,
+        reason: String,
+    },
+
     #[error("{0}")]
     Other(String),
+}
+
+impl Error {
+    pub fn allocation(what: impl Into<String>, requested: usize, reason: impl ToString) -> Self {
+        Self::AllocationFailed {
+            what: what.into(),
+            requested,
+            reason: reason.to_string(),
+        }
+    }
 }

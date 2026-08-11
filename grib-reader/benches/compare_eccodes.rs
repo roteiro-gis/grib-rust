@@ -1,13 +1,14 @@
 #[path = "../tests/common/mod.rs"]
 mod common;
 
-use std::time::Duration;
+use std::{hint::black_box, time::Duration};
 
 use common::{
     benchmark_reference, benchmark_rust, collect_parity_samples, helper_path, ReferenceBenchmark,
     RustBenchmark,
 };
 use criterion::{criterion_group, criterion_main, Criterion};
+use grib_reader::{data::unpack_simple, SimplePackingParams};
 
 fn compare_against_eccodes(c: &mut Criterion) {
     let files = collect_parity_samples();
@@ -37,6 +38,31 @@ fn compare_against_eccodes(c: &mut Criterion) {
     group.finish();
 }
 
+fn benchmark_simple_packing(c: &mut Criterion) {
+    let packed = vec![0x5a; 262_144];
+    let params = SimplePackingParams {
+        encoded_values: packed.len(),
+        reference_value: 1.0,
+        binary_scale: 1,
+        decimal_scale: 1,
+        bits_per_value: 8,
+        original_field_type: 0,
+    };
+
+    c.bench_function("decode/simple-packed-u8", |b| {
+        b.iter(|| {
+            black_box(
+                unpack_simple(
+                    black_box(&packed),
+                    black_box(&params),
+                    black_box(packed.len()),
+                )
+                .expect("benchmark data must decode"),
+            )
+        });
+    });
+}
+
 fn assert_benchmark_coverage(rust: &RustBenchmark, reference: &ReferenceBenchmark) {
     assert_eq!(rust.iterations, reference.iterations, "iteration mismatch");
     assert_eq!(rust.messages, reference.messages, "message count mismatch");
@@ -61,5 +87,5 @@ fn duration_from_nanos(nanos: u64) -> Duration {
     Duration::from_nanos(nanos)
 }
 
-criterion_group!(benches, compare_against_eccodes);
+criterion_group!(benches, compare_against_eccodes, benchmark_simple_packing);
 criterion_main!(benches);

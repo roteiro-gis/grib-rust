@@ -51,6 +51,46 @@ Notes:
 
 ## Historical Results
 
+### Dense simple-packing decode (2026-07-12)
+
+The focused benchmark decodes 262,144 8-bit packed values, including allocation
+of the returned `Vec<f64>`:
+
+```sh
+cargo bench -p grib-reader --all-features --bench compare_eccodes -- \
+  'decode/simple-packed-u8' --sample-size 50 --warm-up-time 1 \
+  --measurement-time 3 --noplot
+```
+
+| implementation | Criterion interval |
+| --- | ---: |
+| buffered bit extraction through the bitmap-aware cursor | 1.752–1.758 ms |
+| byte-aligned dense decode directly into the output slice | 117.3–118.0 µs |
+
+Criterion reported a 93.3% improvement (`p < 0.05`). On the complete checked-in
+corpus, the same change reduced aggregate decode from 92.75–94.05 ms to
+90.87–91.24 ms, a 2.4% mean improvement (`p < 0.05`). The aggregate run includes
+image-packed fields whose codec time is unaffected by this optimization.
+
+### Packed-bit writer hot loop (2026-07-12)
+
+The following measurements use the same optimized Criterion command before and
+after replacing bit-at-a-time writes with byte-chunked writes:
+
+```sh
+cargo bench -p grib-writer --bench encode -- simple_grib2 \
+  --sample-size 50 --warm-up-time 1 --measurement-time 2 --noplot
+```
+
+| implementation | mean | Criterion interval |
+| --- | ---: | ---: |
+| byte-by-byte reader and bit-at-a-time writer | 197.99 µs | 187.24–220.20 µs |
+| 64-bit buffered reader and byte-chunked writer | 159.84 µs | 151.61–172.37 µs |
+
+Criterion reported a 19.1% mean improvement (`p < 0.05`). This isolates the
+simple GRIB2 encode path on this host; it is not a claim about every packing
+template or machine.
+
 ### Parity
 
 - `generated_fixtures_match_eccodes_when_configured`: passed

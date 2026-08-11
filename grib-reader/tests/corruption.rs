@@ -4,7 +4,7 @@ use common::{
     build_grib1_message, build_grib2_complex_packing_message, build_grib2_message,
     build_grib2_spatial_differencing_message,
 };
-use grib_reader::{Error, GribFile, OpenOptions};
+use grib_reader::{Error, GribFile};
 
 fn expect_err(bytes: Vec<u8>) -> Error {
     match GribFile::from_bytes(bytes) {
@@ -102,14 +102,7 @@ fn tolerant_open_skips_validly_framed_unsupported_edition() {
     let mut bytes = build_valid_unsupported_edition_message(3);
     bytes.extend_from_slice(&build_grib2_message(&[1, 2, 3, 4]));
 
-    let opened = GribFile::from_bytes_with_options(
-        bytes,
-        OpenOptions {
-            strict: false,
-            ..OpenOptions::default()
-        },
-    )
-    .unwrap();
+    let opened = GribFile::builder().strict(false).from_bytes(bytes).unwrap();
     assert_eq!(opened.message_count(), 1);
     assert_eq!(opened.message(0).unwrap().edition(), 2);
 }

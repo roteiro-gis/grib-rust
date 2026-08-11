@@ -1,11 +1,12 @@
 //! Data Section (Section 7) decoding.
 
 use crate::error::{Error, Result};
-use grib_core::bit::{read_bit, BitReader};
+use grib_core::bit::BitReader;
 pub use grib_core::data::{
     ComplexPackingParams, DataRepresentation, ImagePackingParams, Jpeg2000PackingParams,
     PngPackingParams, SimplePackingParams, SpatialDifferencingParams,
 };
+use grib_core::filled_vec;
 
 /// Numeric target type for decoded field values.
 pub trait DecodeSample: Copy + Sized {
@@ -31,15 +32,6 @@ impl DecodeSample for f64 {
     fn nan() -> Self {
         f64::NAN
     }
-}
-
-fn filled_vec<T: Copy>(len: usize, value: T, what: &'static str) -> Result<Vec<T>> {
-    let mut values = Vec::new();
-    values
-        .try_reserve(len)
-        .map_err(|e| Error::Other(format!("failed to reserve {len} {what} values: {e}")))?;
-    values.resize(len, value);
-    Ok(values)
 }
 
 /// Decode Section 7 payload into field values, applying Section 6 bitmap when present.
@@ -245,6 +237,10 @@ fn unpack_simple_into<T: DecodeSample>(
             binary_factor,
             decimal_factor,
         ));
+        if let Some(dense) = output.take_dense(num_values)? {
+            dense.fill(constant);
+            return Ok(());
+        }
         for _ in 0..num_values {
             output.push_present(constant)?;
         }
@@ -256,7 +252,9 @@ fn unpack_simple_into<T: DecodeSample>(
 
     let required_bits = bits
         .checked_mul(num_values)
-        .ok_or_else(|| Error::Other("bit count overflow during unpacking".into()))?;
+        .ok_or(Error::ArithmeticOverflow {
+            operation: "computing packed bit count",
+        })?;
     let required_bytes = required_bits.div_ceil(8);
     if data_bytes.len() < required_bytes {
         return Err(Error::Truncated {
@@ -264,8 +262,18 @@ fn unpack_simple_into<T: DecodeSample>(
         });
     }
 
-    let mut reader = BitReader::new(data_bytes);
+    if let Some(dense) = output.take_dense(num_values)? {
+        return unpack_simple_dense(
+            data_bytes,
+            bits,
+            reference,
+            binary_factor,
+            decimal_factor,
+            dense,
+        );
+    }
 
+    let mut reader = BitReader::new(data_bytes);
     for _ in 0..num_values {
         let packed = reader.read(bits)?;
         output.push_present(T::from_f64(scale_decoded_value(
@@ -276,6 +284,60 @@ fn unpack_simple_into<T: DecodeSample>(
         )))?;
     }
 
+    Ok(())
+}
+
+fn unpack_simple_dense<T: DecodeSample>(
+    data_bytes: &[u8],
+    bits: usize,
+    reference: f64,
+    binary_factor: f64,
+    decimal_factor: f64,
+    output: &mut [T],
+) -> Result<()> {
+    let scale = |packed: u64| {
+        T::from_f64(scale_decoded_value(
+            reference,
+            packed as f64,
+            binary_factor,
+            decimal_factor,
+        ))
+    };
+
+    match bits {
+        8 => {
+            for (target, &packed) in output.iter_mut().zip(data_bytes) {
+                *target = scale(u64::from(packed));
+            }
+        }
+        16 => {
+            for (target, bytes) in output.iter_mut().zip(data_bytes.chunks_exact(2)) {
+                *target = scale(u64::from(u16::from_be_bytes(
+                    bytes.try_into().expect("two-byte chunk"),
+                )));
+            }
+        }
+        32 => {
+            for (target, bytes) in output.iter_mut().zip(data_bytes.chunks_exact(4)) {
+                *target = scale(u64::from(u32::from_be_bytes(
+                    bytes.try_into().expect("four-byte chunk"),
+                )));
+            }
+        }
+        64 => {
+            for (target, bytes) in output.iter_mut().zip(data_bytes.chunks_exact(8)) {
+                *target = scale(u64::from_be_bytes(
+                    bytes.try_into().expect("eight-byte chunk"),
+                ));
+            }
+        }
+        _ => {
+            let mut reader = BitReader::new(data_bytes);
+            for target in output {
+                *target = scale(reader.read(bits)?);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -488,7 +550,7 @@ fn jpeg2000_codestream(data: &[u8]) -> Result<&[u8]> {
 
 #[cfg(feature = "jpeg2000")]
 const fn ceil_div_u32(value: u32, divisor: u32) -> u32 {
-    value / divisor + (value % divisor != 0) as u32
+    value / divisor + (!value.is_multiple_of(divisor)) as u32
 }
 
 #[cfg(feature = "jpeg2000")]
@@ -1057,13 +1119,6 @@ fn scale_decoded_value(
     (reference + packed_delta * binary_factor) * decimal_factor
 }
 
-fn bitmap_bit(bitmap_payload: &[u8], index: usize) -> Result<bool> {
-    read_bit(bitmap_payload, index).map_err(|_| Error::DataLengthMismatch {
-        expected: index / 8 + 1,
-        actual: bitmap_payload.len(),
-    })
-}
-
 struct GroupReaderLayout {
     reference_offset: usize,
     width_offset: usize,
@@ -1115,7 +1170,7 @@ fn add_group_bits(start_bit_offset: usize, count: usize, bits_per_group: usize) 
     count
         .checked_mul(bits_per_group)
         .and_then(|total_bits| start_bit_offset.checked_add(total_bits))
-        .ok_or_else(|| Error::Other("bit offset overflow".into()))
+        .ok_or(Error::BitOffsetOverflow)
 }
 
 fn align_bit_offset(bit_offset: usize) -> Result<usize> {
@@ -1125,7 +1180,7 @@ fn align_bit_offset(bit_offset: usize) -> Result<usize> {
     } else {
         bit_offset
             .checked_add(8 - remainder)
-            .ok_or_else(|| Error::Other("bit offset overflow".into()))
+            .ok_or(Error::BitOffsetOverflow)
     }
 }
 
@@ -1149,16 +1204,11 @@ impl<'a, T: DecodeSample> OutputCursor<'a, T> {
     fn push_present(&mut self, value: T) -> Result<()> {
         match self.bitmap {
             Some(bitmap) => {
-                while self.next_index < self.output.len() {
-                    if bitmap_bit(bitmap, self.next_index)? {
-                        self.output[self.next_index] = value;
-                        self.next_index += 1;
-                        self.values_written += 1;
-                        return Ok(());
-                    }
-
-                    self.output[self.next_index] = T::nan();
+                if self.advance_to_present(bitmap)? {
+                    self.output[self.next_index] = value;
                     self.next_index += 1;
+                    self.values_written += 1;
+                    return Ok(());
                 }
 
                 let expected = count_bitmap_present_points(bitmap, self.output.len())?;
@@ -1183,17 +1233,69 @@ impl<'a, T: DecodeSample> OutputCursor<'a, T> {
         }
     }
 
+    fn take_dense(&mut self, count: usize) -> Result<Option<&mut [T]>> {
+        if self.bitmap.is_some() {
+            return Ok(None);
+        }
+        let start = self.next_index;
+        let end = start.checked_add(count).ok_or(Error::ArithmeticOverflow {
+            operation: "advancing dense decoded output",
+        })?;
+        if end > self.output.len() {
+            return Err(Error::DataLengthMismatch {
+                expected: self.output.len(),
+                actual: end,
+            });
+        }
+        self.next_index = end;
+        self.values_written =
+            self.values_written
+                .checked_add(count)
+                .ok_or(Error::ArithmeticOverflow {
+                    operation: "counting dense decoded values",
+                })?;
+        Ok(Some(&mut self.output[start..end]))
+    }
+
+    fn advance_to_present(&mut self, bitmap: &[u8]) -> Result<bool> {
+        while self.next_index < self.output.len() {
+            let byte_index = self.next_index / 8;
+            let bit_index = self.next_index % 8;
+            let byte = *bitmap.get(byte_index).ok_or(Error::DataLengthMismatch {
+                expected: byte_index + 1,
+                actual: bitmap.len(),
+            })?;
+            let remaining = byte & (u8::MAX >> bit_index);
+            if remaining != 0 {
+                let present_index = byte_index
+                    .checked_mul(8)
+                    .and_then(|base| base.checked_add(remaining.leading_zeros() as usize))
+                    .ok_or(Error::BitOffsetOverflow)?;
+                if present_index < self.output.len() {
+                    self.output[self.next_index..present_index].fill(T::nan());
+                    self.next_index = present_index;
+                    return Ok(true);
+                }
+            }
+
+            let next_byte = byte_index
+                .checked_add(1)
+                .and_then(|index| index.checked_mul(8))
+                .ok_or(Error::BitOffsetOverflow)?
+                .min(self.output.len());
+            self.output[self.next_index..next_byte].fill(T::nan());
+            self.next_index = next_byte;
+        }
+        Ok(false)
+    }
+
     fn finish(mut self) -> Result<()> {
         if let Some(bitmap) = self.bitmap {
-            while self.next_index < self.output.len() {
-                if bitmap_bit(bitmap, self.next_index)? {
-                    return Err(Error::DataLengthMismatch {
-                        expected: count_bitmap_present_points(bitmap, self.output.len())?,
-                        actual: self.values_written,
-                    });
-                }
-                self.output[self.next_index] = T::nan();
-                self.next_index += 1;
+            if self.advance_to_present(bitmap)? {
+                return Err(Error::DataLengthMismatch {
+                    expected: count_bitmap_present_points(bitmap, self.output.len())?,
+                    actual: self.values_written,
+                });
             }
         }
 
@@ -1329,6 +1431,7 @@ mod tests {
         PngPackingParams, SimplePackingParams, SpatialDifferencingParams,
     };
     use crate::error::Error;
+    use grib_core::bit::BitWriter;
 
     #[test]
     fn unpack_simple_constant() {
@@ -1356,6 +1459,36 @@ mod tests {
         };
         let values = unpack_simple(&[0, 1, 2, 3, 4], &params, 5).unwrap();
         assert_eq!(values, vec![0.0, 1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn unpack_simple_dense_matches_byte_aligned_and_bit_packed_values() {
+        let cases: &[(usize, &[u64])] = &[
+            (7, &[1, 2, 3, 127]),
+            (8, &[1, 17, 255]),
+            (16, &[1, 0x1234, u16::MAX as u64]),
+            (32, &[1, 0x1234_5678, u32::MAX as u64]),
+            (64, &[1, 1 << 40, u32::MAX as u64 + 1]),
+        ];
+
+        for &(bits, packed_values) in cases {
+            let mut packed = BitWriter::new();
+            for &value in packed_values {
+                packed.write(value, bits).unwrap();
+            }
+            let params = SimplePackingParams {
+                encoded_values: packed_values.len(),
+                reference_value: 0.0,
+                binary_scale: 0,
+                decimal_scale: 0,
+                bits_per_value: bits as u8,
+                original_field_type: 0,
+            };
+
+            let decoded = unpack_simple(packed.as_bytes(), &params, packed_values.len()).unwrap();
+            let expected: Vec<_> = packed_values.iter().map(|&value| value as f64).collect();
+            assert_eq!(decoded, expected, "bits_per_value={bits}");
+        }
     }
 
     #[test]
@@ -1393,6 +1526,28 @@ mod tests {
         assert!(decoded[1].is_nan());
         assert_eq!(decoded[2], 20.0);
         assert_eq!(decoded[3], 30.0);
+    }
+
+    #[test]
+    fn decodes_bitmap_across_empty_bytes_and_a_partial_final_byte() {
+        let data_section = [0, 0, 0, 7, 7, 11, 22];
+        let bitmap_section = [0, 0, 0, 9, 6, 0, 0b0000_0000, 0b0010_0000, 0b1000_0000];
+        let representation = DataRepresentation::SimplePacking(SimplePackingParams {
+            encoded_values: 2,
+            reference_value: 0.0,
+            binary_scale: 0,
+            decimal_scale: 0,
+            bits_per_value: 8,
+            original_field_type: 0,
+        });
+
+        let bitmap = bitmap_payload(&bitmap_section).unwrap();
+        let decoded = decode_field(&data_section, &representation, bitmap, 19).unwrap();
+        assert!(decoded[..10].iter().all(|value| value.is_nan()));
+        assert_eq!(decoded[10], 11.0);
+        assert!(decoded[11..16].iter().all(|value| value.is_nan()));
+        assert_eq!(decoded[16], 22.0);
+        assert!(decoded[17..].iter().all(|value| value.is_nan()));
     }
 
     #[cfg(feature = "png")]

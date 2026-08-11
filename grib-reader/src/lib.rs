@@ -49,7 +49,9 @@ pub use data::{
 };
 pub use error::{Error, Result};
 pub use grib1::{BinaryDataSection, GridDescription, ProductDefinition as Grib1ProductDefinition};
-pub use grid::{GridDefinition, LambertConformalGrid, LatLonGrid, PolarStereographicGrid};
+pub use grid::{
+    GridDefinition, LambertConformalGrid, LatLonGrid, PolarStereographicGrid, ProjectedGridCore,
+};
 pub use metadata::{ForecastTimeUnit, Parameter, ParameterTableSource, ReferenceTime};
 pub use parameter::{
     LocalParameterEntry, LocalParameterTable, OwnedLocalParameterEntry, BUILTIN_LOCAL_PARAMETERS,
@@ -61,9 +63,12 @@ pub use product::{
     StatisticalProcessTemplate, StatisticalTimeRange,
 };
 
+use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
+use grib_core::{ensure_limit, filled_vec};
+use memchr::memmem::Finder;
 use memmap2::Mmap;
 use ndarray::{ArrayD, IxDyn};
 
@@ -82,29 +87,14 @@ const GRIB_MAGIC: &[u8; 4] = b"GRIB";
 pub const DEFAULT_MAX_DECODED_POINTS: usize = 25_000_000;
 pub const DEFAULT_MAX_AXIS_POINTS: usize = 1_000_000;
 
-/// Configuration for opening GRIB data.
 #[derive(Debug, Clone, Copy)]
-pub struct OpenOptions {
-    /// When `true`, the first malformed GRIB candidate aborts opening.
-    ///
-    /// When `false`, candidate offsets with invalid framing are skipped and
-    /// scanning continues. Once a candidate has a valid indicator, message
-    /// length, and end marker, any indexing or decoding error is returned.
-    pub strict: bool,
-    /// Maximum grid points a decoded field may contain.
-    ///
-    /// This is checked while indexing and before convenience decode methods
-    /// allocate their output buffer. `None` disables the decoded-point limit.
-    pub max_decoded_points: Option<usize>,
-    /// Maximum points a coordinate-axis helper may allocate.
-    ///
-    /// This applies to latitude, longitude, projected x, and projected y axis
-    /// vectors produced through [`Message`] helpers. `None` disables the axis
-    /// limit.
-    pub max_axis_points: Option<usize>,
+struct ReaderOptions {
+    strict: bool,
+    max_decoded_points: Option<usize>,
+    max_axis_points: Option<usize>,
 }
 
-impl Default for OpenOptions {
+impl Default for ReaderOptions {
     fn default() -> Self {
         Self {
             strict: true,
@@ -114,31 +104,109 @@ impl Default for OpenOptions {
     }
 }
 
-impl OpenOptions {
-    pub fn with_max_decoded_points(mut self, max: usize) -> Self {
-        self.max_decoded_points = Some(max);
+/// Builder for opening GRIB data with explicit scanning, allocation, and
+/// center-defined metadata policies.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GribFileBuilder<'a> {
+    options: ReaderOptions,
+    local_parameters: &'a [LocalParameterEntry<'a>],
+    predefined_bitmaps: &'a [PredefinedBitmap<'a>],
+}
+
+impl<'a> GribFileBuilder<'a> {
+    /// Controls whether malformed `GRIB` candidates abort scanning.
+    ///
+    /// Strict mode is enabled by default. Tolerant mode skips candidates with
+    /// invalid framing or unsupported edition numbers, while still reporting
+    /// semantic errors in well-framed GRIB1/GRIB2 messages.
+    pub fn strict(mut self, strict: bool) -> Self {
+        self.options.strict = strict;
         self
     }
 
-    pub fn with_max_axis_points(mut self, max: usize) -> Self {
-        self.max_axis_points = Some(max);
+    /// Sets the maximum number of points decoded into a field buffer.
+    pub fn max_decoded_points(mut self, max: usize) -> Self {
+        self.options.max_decoded_points = Some(max);
         self
     }
 
+    /// Disables the decoded-field point limit.
     pub fn without_decoded_point_limit(mut self) -> Self {
-        self.max_decoded_points = None;
+        self.options.max_decoded_points = None;
         self
     }
 
+    /// Sets the maximum number of coordinates allocated by an axis helper.
+    pub fn max_axis_points(mut self, max: usize) -> Self {
+        self.options.max_axis_points = Some(max);
+        self
+    }
+
+    /// Disables the coordinate-axis point limit.
     pub fn without_axis_point_limit(mut self) -> Self {
-        self.max_axis_points = None;
+        self.options.max_axis_points = None;
         self
     }
 
+    /// Disables both decoded-field and coordinate-axis limits.
     pub fn without_limits(mut self) -> Self {
-        self.max_decoded_points = None;
-        self.max_axis_points = None;
+        self.options.max_decoded_points = None;
+        self.options.max_axis_points = None;
         self
+    }
+
+    /// Supplies GRIB2 local parameter definitions used during indexing.
+    pub fn local_parameters(mut self, entries: &'a [LocalParameterEntry<'a>]) -> Self {
+        self.local_parameters = entries;
+        self
+    }
+
+    /// Supplies center-defined GRIB1 predefined bitmaps.
+    pub fn grib1_predefined_bitmaps(mut self, bitmaps: &'a [PredefinedBitmap<'a>]) -> Self {
+        self.predefined_bitmaps = bitmaps;
+        self
+    }
+
+    /// Opens a file through a read-only memory mapping.
+    pub fn open<P: AsRef<Path>>(self, path: P) -> Result<GribFile> {
+        let file = std::fs::File::open(path.as_ref())
+            .map_err(|err| Error::Io(err, path.as_ref().display().to_string()))?;
+        let mmap = unsafe { Mmap::map(&file) }
+            .map_err(|err| Error::Io(err, path.as_ref().display().to_string()))?;
+        GribFile::from_data(
+            GribData::Mmap(mmap),
+            self.options,
+            self.local_parameters,
+            self.predefined_bitmaps,
+        )
+    }
+
+    /// Opens an owned in-memory GRIB buffer without copying it.
+    pub fn from_bytes(self, data: Vec<u8>) -> Result<GribFile> {
+        GribFile::from_data(
+            GribData::Bytes(data),
+            self.options,
+            self.local_parameters,
+            self.predefined_bitmaps,
+        )
+    }
+
+    /// Reads GRIB data from an arbitrary byte stream.
+    pub fn from_reader<R: Read>(self, mut reader: R) -> Result<GribFile> {
+        let mut data = Vec::new();
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            let read = reader
+                .read(&mut chunk)
+                .map_err(|err| Error::Io(err, "GRIB input stream".into()))?;
+            if read == 0 {
+                break;
+            }
+            data.try_reserve(read)
+                .map_err(|error| Error::allocation("GRIB input bytes", read, error))?;
+            data.extend_from_slice(&chunk[..read]);
+        }
+        self.from_bytes(data)
     }
 }
 
@@ -180,7 +248,7 @@ pub struct MessageMetadata {
 pub struct GribFile {
     data: GribData,
     messages: Vec<MessageIndex>,
-    options: OpenOptions,
+    options: ReaderOptions,
 }
 
 #[derive(Clone)]
@@ -221,119 +289,24 @@ impl GribData {
 }
 
 impl GribFile {
+    /// Starts a configurable GRIB open operation.
+    pub fn builder<'a>() -> GribFileBuilder<'a> {
+        GribFileBuilder::default()
+    }
+
     /// Open a GRIB file from disk using memory-mapped I/O.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        Self::open_with_options(path, OpenOptions::default())
-    }
-
-    /// Open a GRIB file from disk using explicit decoder options.
-    pub fn open_with_options<P: AsRef<Path>>(path: P, options: OpenOptions) -> Result<Self> {
-        Self::open_with_local_parameters(path, options, &[])
-    }
-
-    /// Open a GRIB file from disk using explicit decoder options and local table entries.
-    pub fn open_with_local_parameters<P: AsRef<Path>>(
-        path: P,
-        options: OpenOptions,
-        local_parameters: &[LocalParameterEntry<'_>],
-    ) -> Result<Self> {
-        Self::open_with_local_parameters_and_grib1_predefined_bitmaps(
-            path,
-            options,
-            local_parameters,
-            &[],
-        )
-    }
-
-    /// Open a GRIB file from disk using caller-supplied GRIB1 predefined bitmaps.
-    pub fn open_with_grib1_predefined_bitmaps<P: AsRef<Path>>(
-        path: P,
-        options: OpenOptions,
-        predefined_bitmaps: &[PredefinedBitmap<'_>],
-    ) -> Result<Self> {
-        Self::open_with_local_parameters_and_grib1_predefined_bitmaps(
-            path,
-            options,
-            &[],
-            predefined_bitmaps,
-        )
-    }
-
-    /// Open a GRIB file from disk using GRIB2 local parameters and GRIB1 predefined bitmaps.
-    pub fn open_with_local_parameters_and_grib1_predefined_bitmaps<P: AsRef<Path>>(
-        path: P,
-        options: OpenOptions,
-        local_parameters: &[LocalParameterEntry<'_>],
-        predefined_bitmaps: &[PredefinedBitmap<'_>],
-    ) -> Result<Self> {
-        let file = std::fs::File::open(path.as_ref())
-            .map_err(|e| Error::Io(e, path.as_ref().display().to_string()))?;
-        let mmap = unsafe { Mmap::map(&file) }
-            .map_err(|e| Error::Io(e, path.as_ref().display().to_string()))?;
-        Self::from_data(
-            GribData::Mmap(mmap),
-            options,
-            local_parameters,
-            predefined_bitmaps,
-        )
+        Self::builder().open(path)
     }
 
     /// Open a GRIB file from an owned byte buffer.
     pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
-        Self::from_bytes_with_options(data, OpenOptions::default())
-    }
-
-    /// Open a GRIB file from an owned byte buffer using explicit decoder options.
-    pub fn from_bytes_with_options(data: Vec<u8>, options: OpenOptions) -> Result<Self> {
-        Self::from_bytes_with_local_parameters(data, options, &[])
-    }
-
-    /// Open a GRIB file from bytes using explicit decoder options and local table entries.
-    pub fn from_bytes_with_local_parameters(
-        data: Vec<u8>,
-        options: OpenOptions,
-        local_parameters: &[LocalParameterEntry<'_>],
-    ) -> Result<Self> {
-        Self::from_bytes_with_local_parameters_and_grib1_predefined_bitmaps(
-            data,
-            options,
-            local_parameters,
-            &[],
-        )
-    }
-
-    /// Open a GRIB file from bytes using caller-supplied GRIB1 predefined bitmaps.
-    pub fn from_bytes_with_grib1_predefined_bitmaps(
-        data: Vec<u8>,
-        options: OpenOptions,
-        predefined_bitmaps: &[PredefinedBitmap<'_>],
-    ) -> Result<Self> {
-        Self::from_bytes_with_local_parameters_and_grib1_predefined_bitmaps(
-            data,
-            options,
-            &[],
-            predefined_bitmaps,
-        )
-    }
-
-    /// Open a GRIB file from bytes using GRIB2 local parameters and GRIB1 predefined bitmaps.
-    pub fn from_bytes_with_local_parameters_and_grib1_predefined_bitmaps(
-        data: Vec<u8>,
-        options: OpenOptions,
-        local_parameters: &[LocalParameterEntry<'_>],
-        predefined_bitmaps: &[PredefinedBitmap<'_>],
-    ) -> Result<Self> {
-        Self::from_data(
-            GribData::Bytes(data),
-            options,
-            local_parameters,
-            predefined_bitmaps,
-        )
+        Self::builder().from_bytes(data)
     }
 
     fn from_data(
         data: GribData,
-        options: OpenOptions,
+        options: ReaderOptions,
         local_parameters: &[LocalParameterEntry<'_>],
         predefined_bitmaps: &[PredefinedBitmap<'_>],
     ) -> Result<Self> {
@@ -353,14 +326,6 @@ impl GribFile {
         })
     }
 
-    /// Returns the GRIB edition of the first field.
-    pub fn edition(&self) -> u8 {
-        self.messages
-            .first()
-            .map(|message| message.metadata.edition)
-            .unwrap_or(0)
-    }
-
     /// Returns the number of logical fields in the file.
     pub fn message_count(&self) -> usize {
         self.messages.len()
@@ -368,18 +333,22 @@ impl GribFile {
 
     /// Access a field by index.
     pub fn message(&self, index: usize) -> Result<Message<'_>> {
-        let record = self
-            .messages
-            .get(index)
-            .ok_or(Error::MessageNotFound(index))?;
+        if index >= self.messages.len() {
+            return Err(Error::MessageNotFound(index));
+        }
+        Ok(self.message_at(index))
+    }
+
+    fn message_at(&self, index: usize) -> Message<'_> {
+        let record = &self.messages[index];
         let bytes = &self.data.as_bytes()[record.offset..record.offset + record.length];
-        Ok(Message {
+        Message {
             index,
             bytes,
             metadata: &record.metadata,
-            decode_plan: record.decode_plan.clone(),
+            decode_plan: &record.decode_plan,
             options: self.options,
-        })
+        }
     }
 
     /// Iterate over all fields.
@@ -396,13 +365,13 @@ impl GribFile {
         {
             (0..self.message_count())
                 .into_par_iter()
-                .map(|index| self.message(index)?.read_data_as_f64())
+                .map(|index| self.message_at(index).read_data_as_f64())
                 .collect()
         }
         #[cfg(not(feature = "rayon"))]
         {
             (0..self.message_count())
-                .map(|index| self.message(index)?.read_data_as_f64())
+                .map(|index| self.message_at(index).read_data_as_f64())
                 .collect()
         }
     }
@@ -413,13 +382,13 @@ impl GribFile {
         {
             (0..self.message_count())
                 .into_par_iter()
-                .map(|index| self.message(index)?.read_data_as_f32())
+                .map(|index| self.message_at(index).read_data_as_f32())
                 .collect()
         }
         #[cfg(not(feature = "rayon"))]
         {
             (0..self.message_count())
-                .map(|index| self.message(index)?.read_data_as_f32())
+                .map(|index| self.message_at(index).read_data_as_f32())
                 .collect()
         }
     }
@@ -429,8 +398,8 @@ impl GribFile {
 pub struct Message<'a> {
     bytes: &'a [u8],
     metadata: &'a MessageMetadata,
-    decode_plan: DecodePlan,
-    options: OpenOptions,
+    decode_plan: &'a DecodePlan,
+    options: ReaderOptions,
     index: usize,
 }
 
@@ -473,6 +442,17 @@ impl<'a> Message<'a> {
 
     pub fn grib1_product_definition(&self) -> Option<&grib1::ProductDefinition> {
         self.metadata.grib1_product.as_ref()
+    }
+
+    /// Returns the complete encoded GRIB2 Section 2, including its five-byte
+    /// length and section-number header, when present for this field.
+    pub fn local_use_section(&self) -> Option<&'a [u8]> {
+        match self.decode_plan {
+            DecodePlan::Grib2(field) => field
+                .local_use
+                .map(|section| section_bytes(self.bytes, section)),
+            DecodePlan::Grib1 { .. } => None,
+        }
     }
 
     pub fn grid_definition(&self) -> &GridDefinition {
@@ -549,7 +529,24 @@ impl<'a> Message<'a> {
             .projected_y_coordinates_with_limit(self.options.max_axis_points)
     }
 
+    /// Decodes into row-major reader order.
+    ///
+    /// Alternating scan rows are normalized, but the GRIB i/j scan directions
+    /// are preserved. Use [`Message::decode_into_north_up`] when deterministic
+    /// +i columns and -j rows are required.
     pub fn decode_into<T: DecodeSample>(&self, out: &mut [T]) -> Result<()> {
+        self.decode_scan_order_into(out)?;
+        self.metadata.grid.reorder_for_ndarray_in_place(out)
+    }
+
+    /// Decodes into deterministic row-major orientation: +i columns and -j
+    /// rows (north-to-south for conventional geographic grids).
+    pub fn decode_into_north_up<T: DecodeSample>(&self, out: &mut [T]) -> Result<()> {
+        self.decode_scan_order_into(out)?;
+        self.metadata.grid.normalize_north_up_in_place(out)
+    }
+
+    fn decode_scan_order_into<T: DecodeSample>(&self, out: &mut [T]) -> Result<()> {
         self.metadata.grid.validate_supported_scan_order()?;
         let num_grid_points = self.checked_num_points()?;
         if out.len() != num_grid_points {
@@ -599,31 +596,81 @@ impl<'a> Message<'a> {
             }
         }
 
-        self.metadata.grid.reorder_for_ndarray_in_place(out)
+        Ok(())
     }
 
+    /// Returns a flat `f64` field in row-major reader order.
+    ///
+    /// Alternating rows are normalized, while encoded i/j directions are
+    /// preserved. Use [`Message::read_flat_data_north_up_as_f64`] for +i
+    /// columns and -j rows.
     pub fn read_flat_data_as_f64(&self) -> Result<Vec<f64>> {
         let num_grid_points = self.checked_num_points()?;
-        let mut decoded = zeroed_vec(num_grid_points, 0.0_f64, "decoded f64 field")?;
+        let mut decoded = filled_vec(num_grid_points, 0.0_f64, "decoded f64 field")?;
         self.decode_into(&mut decoded)?;
         Ok(decoded)
     }
 
+    /// Returns a flat `f32` field in row-major reader order.
+    ///
+    /// Alternating rows are normalized, while encoded i/j directions are
+    /// preserved. Use [`Message::read_flat_data_north_up_as_f32`] for +i
+    /// columns and -j rows.
     pub fn read_flat_data_as_f32(&self) -> Result<Vec<f32>> {
         let num_grid_points = self.checked_num_points()?;
-        let mut decoded = zeroed_vec(num_grid_points, 0.0_f32, "decoded f32 field")?;
+        let mut decoded = filled_vec(num_grid_points, 0.0_f32, "decoded f32 field")?;
         self.decode_into(&mut decoded)?;
         Ok(decoded)
     }
 
+    /// Returns a flat `f64` field with +i columns and -j rows.
+    pub fn read_flat_data_north_up_as_f64(&self) -> Result<Vec<f64>> {
+        let num_grid_points = self.checked_num_points()?;
+        let mut decoded = filled_vec(num_grid_points, 0.0_f64, "decoded f64 field")?;
+        self.decode_into_north_up(&mut decoded)?;
+        Ok(decoded)
+    }
+
+    /// Returns a flat `f32` field with +i columns and -j rows.
+    pub fn read_flat_data_north_up_as_f32(&self) -> Result<Vec<f32>> {
+        let num_grid_points = self.checked_num_points()?;
+        let mut decoded = filled_vec(num_grid_points, 0.0_f32, "decoded f32 field")?;
+        self.decode_into_north_up(&mut decoded)?;
+        Ok(decoded)
+    }
+
+    /// Returns an `f64` ndarray in row-major reader order.
+    ///
+    /// Alternating rows are normalized, while encoded i/j directions are
+    /// preserved. Use [`Message::read_data_north_up_as_f64`] for deterministic
+    /// +i columns and -j rows.
     pub fn read_data_as_f64(&self) -> Result<ArrayD<f64>> {
         let ordered = self.read_flat_data_as_f64()?;
         ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
             .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
     }
 
+    /// Returns an `f32` ndarray in row-major reader order.
+    ///
+    /// Alternating rows are normalized, while encoded i/j directions are
+    /// preserved. Use [`Message::read_data_north_up_as_f32`] for deterministic
+    /// +i columns and -j rows.
     pub fn read_data_as_f32(&self) -> Result<ArrayD<f32>> {
         let ordered = self.read_flat_data_as_f32()?;
+        ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
+            .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
+    }
+
+    /// Returns an `f64` ndarray with +i columns and -j rows.
+    pub fn read_data_north_up_as_f64(&self) -> Result<ArrayD<f64>> {
+        let ordered = self.read_flat_data_north_up_as_f64()?;
+        ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
+            .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
+    }
+
+    /// Returns an `f32` ndarray with +i columns and -j rows.
+    pub fn read_data_north_up_as_f32(&self) -> Result<ArrayD<f32>> {
+        let ordered = self.read_flat_data_north_up_as_f32()?;
         ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
             .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
     }
@@ -656,7 +703,7 @@ impl<'a> Iterator for MessageIter<'a> {
         if self.index >= self.file.message_count() {
             return None;
         }
-        let message = self.file.message(self.index).ok()?;
+        let message = self.file.message_at(self.index);
         self.index += 1;
         Some(message)
     }
@@ -666,46 +713,37 @@ fn section_bytes(msg_bytes: &[u8], section: SectionRef) -> &[u8] {
     &msg_bytes[section.offset..section.offset + section.length]
 }
 
-fn zeroed_vec<T: Copy>(len: usize, value: T, what: &'static str) -> Result<Vec<T>> {
-    let mut out = Vec::new();
-    out.try_reserve(len)
-        .map_err(|e| Error::Other(format!("failed to reserve {len} {what} values: {e}")))?;
-    out.resize(len, value);
-    Ok(out)
-}
-
-fn ensure_limit(what: &'static str, requested: usize, limit: Option<usize>) -> Result<()> {
-    if let Some(limit) = limit {
-        if requested > limit {
-            return Err(Error::LimitExceeded {
-                what,
-                requested,
-                limit,
-            });
-        }
-    }
-    Ok(())
-}
-
 fn scan_messages(
     data: &[u8],
-    options: OpenOptions,
+    options: ReaderOptions,
     local_parameters: &[LocalParameterEntry<'_>],
     predefined_bitmaps: &[PredefinedBitmap<'_>],
 ) -> Result<Vec<MessageIndex>> {
     let mut messages = Vec::new();
     let mut pos = 0usize;
+    let finder = Finder::new(GRIB_MAGIC);
 
-    while pos + 8 <= data.len() {
-        if &data[pos..pos + 4] != GRIB_MAGIC {
-            pos += 1;
-            continue;
+    while data.len().saturating_sub(pos) >= 8 {
+        let Some(relative_pos) = finder.find(&data[pos..]) else {
+            break;
+        };
+        pos = pos
+            .checked_add(relative_pos)
+            .ok_or(Error::ArithmeticOverflow {
+                operation: "locating a GRIB signature",
+            })?;
+        if data.len().saturating_sub(pos) < 8 {
+            break;
         }
 
         let (indicator, next_pos) = match locate_message(data, pos) {
             Ok(located) => located,
             Err(err) if !options.strict && is_recoverable_candidate_error(&err) => {
-                pos += 4;
+                pos = pos
+                    .checked_add(GRIB_MAGIC.len())
+                    .ok_or(Error::ArithmeticOverflow {
+                        operation: "advancing past a rejected GRIB signature",
+                    })?;
                 continue;
             }
             Err(err) => return Err(err),
@@ -998,6 +1036,14 @@ mod tests {
         section
     }
 
+    fn build_local_use(payload: &[u8]) -> Vec<u8> {
+        let mut section = vec![0u8; payload.len() + 5];
+        section[..4].copy_from_slice(&((payload.len() + 5) as u32).to_be_bytes());
+        section[4] = 2;
+        section[5..].copy_from_slice(payload);
+        section
+    }
+
     fn build_grid(ni: u32, nj: u32, scanning_mode: u8) -> Vec<u8> {
         let mut section = vec![0u8; 72];
         section[..4].copy_from_slice(&(72u32).to_be_bytes());
@@ -1060,6 +1106,14 @@ mod tests {
                 section[6 + index / 8] |= 1 << (7 - (index % 8));
             }
         }
+        section
+    }
+
+    fn build_reused_bitmap() -> Vec<u8> {
+        let mut section = vec![0u8; 6];
+        section[..4].copy_from_slice(&6u32.to_be_bytes());
+        section[4] = 6;
+        section[5] = 254;
         section
     }
 
@@ -1166,9 +1220,26 @@ mod tests {
             build_simple_representation(4, 8),
             build_data(&pack_u8_values(&[1, 2, 3, 4])),
         ]);
-        let messages = scan_messages(&message, OpenOptions::default(), &[], &[]).unwrap();
+        let messages = scan_messages(&message, ReaderOptions::default(), &[], &[]).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].metadata.parameter.short_name, "TMP");
+    }
+
+    #[test]
+    fn scans_across_large_non_grib_prefix() {
+        let message = assemble_grib2_message(&[
+            build_identification(),
+            build_grid(2, 2, 0),
+            build_product(0, 0),
+            build_simple_representation(4, 8),
+            build_data(&pack_u8_values(&[1, 2, 3, 4])),
+        ]);
+        let mut input = vec![0xa5; 1024 * 1024];
+        input.extend_from_slice(&message);
+
+        let messages = scan_messages(&input, ReaderOptions::default(), &[], &[]).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].offset, 1024 * 1024);
     }
 
     #[test]
@@ -1227,11 +1298,83 @@ mod tests {
     }
 
     #[test]
+    fn exposes_local_use_section_for_each_following_field() {
+        let local_use = build_local_use(&[0xde, 0xad, 0xbe, 0xef]);
+        let message = assemble_grib2_message(&[
+            build_identification(),
+            local_use.clone(),
+            build_grid(2, 2, 0),
+            build_product(0, 0),
+            build_simple_representation(4, 8),
+            build_data(&[1, 2, 3, 4]),
+            build_product(0, 2),
+            build_simple_representation(4, 8),
+            build_data(&[5, 6, 7, 8]),
+        ]);
+
+        let file = GribFile::from_bytes(message).unwrap();
+        assert_eq!(
+            file.message(0).unwrap().local_use_section(),
+            Some(local_use.as_slice())
+        );
+        assert_eq!(
+            file.message(1).unwrap().local_use_section(),
+            Some(local_use.as_slice())
+        );
+    }
+
+    #[test]
+    fn decodes_fields_that_reuse_a_previous_bitmap() {
+        let message = assemble_grib2_message(&[
+            build_identification(),
+            build_grid(2, 2, 0),
+            build_product(0, 0),
+            build_simple_representation(2, 8),
+            build_bitmap(&[true, false, true, false]),
+            build_data(&[1, 2]),
+            build_product(0, 2),
+            build_simple_representation(2, 8),
+            build_reused_bitmap(),
+            build_data(&[3, 4]),
+        ]);
+
+        let file = GribFile::from_bytes(message).unwrap();
+        let first = file.message(0).unwrap().read_flat_data_as_f64().unwrap();
+        let second = file.message(1).unwrap().read_flat_data_as_f64().unwrap();
+        assert_eq!([first[0], first[2]], [1.0, 2.0]);
+        assert!(first[1].is_nan() && first[3].is_nan());
+        assert_eq!([second[0], second[2]], [3.0, 4.0]);
+        assert!(second[1].is_nan() && second[3].is_nan());
+    }
+
+    #[test]
+    fn decodes_north_up_without_changing_default_reader_order() {
+        let message = assemble_grib2_message(&[
+            build_identification(),
+            build_grid(2, 2, 0b1100_0000),
+            build_product(0, 0),
+            build_simple_representation(4, 8),
+            build_data(&[1, 2, 3, 4]),
+        ]);
+        let file = GribFile::from_bytes(message).unwrap();
+        let field = file.message(0).unwrap();
+
+        assert_eq!(
+            field.read_flat_data_as_f64().unwrap(),
+            vec![1.0, 2.0, 3.0, 4.0]
+        );
+        assert_eq!(
+            field.read_flat_data_north_up_as_f64().unwrap(),
+            vec![4.0, 3.0, 2.0, 1.0]
+        );
+    }
+
+    #[test]
     fn decodes_simple_grib1_message_to_ndarray() {
         let message = build_grib1_message(&[1, 2, 3, 4]);
         let file = GribFile::from_bytes(message).unwrap();
-        assert_eq!(file.edition(), 1);
         let field = file.message(0).unwrap();
+        assert_eq!(field.edition(), 1);
         assert_eq!(field.parameter_name(), "TMP");
         assert!(field.identification().is_none());
         assert!(field.grib1_product_definition().is_some());
@@ -1254,12 +1397,10 @@ mod tests {
             bitmap: &bitmap,
         }];
 
-        let file = GribFile::from_bytes_with_grib1_predefined_bitmaps(
-            message,
-            OpenOptions::default(),
-            &predefined,
-        )
-        .unwrap();
+        let file = GribFile::builder()
+            .grib1_predefined_bitmaps(&predefined)
+            .from_bytes(message)
+            .unwrap();
         let decoded = file.message(0).unwrap().read_flat_data_as_f64().unwrap();
         assert_eq!(decoded[0], 9.0);
         assert!(decoded[1].is_nan());
