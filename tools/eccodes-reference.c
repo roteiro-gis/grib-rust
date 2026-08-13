@@ -15,6 +15,13 @@ typedef struct {
     double checksum;
 } decode_totals;
 
+typedef struct {
+    const char *eccodes_key;
+    const char *json_key;
+    long value;
+    int present;
+} optional_long_field;
+
 static void die_errno(const char *context, const char *path) {
     fprintf(stderr, "%s %s: %s\n", context, path, strerror(errno));
     exit(1);
@@ -53,6 +60,39 @@ static long get_long_or_default(
         die_codes(err, key, path);
     }
     return value;
+}
+
+static int get_optional_long(
+    codes_handle *handle,
+    const char *key,
+    long *value,
+    const char *path
+) {
+    int err = CODES_SUCCESS;
+    int missing = codes_is_missing(handle, key, &err);
+    if (err == CODES_NOT_FOUND) {
+        return 0;
+    }
+    if (err != CODES_SUCCESS) {
+        die_codes(err, key, path);
+    }
+    if (missing) {
+        return 0;
+    }
+    *value = get_long(handle, key, path);
+    return 1;
+}
+
+static void load_optional_long_fields(
+    codes_handle *handle,
+    optional_long_field *fields,
+    size_t field_count,
+    const char *path
+) {
+    for (size_t i = 0; i < field_count; ++i) {
+        fields[i].present =
+            get_optional_long(handle, fields[i].eccodes_key, &fields[i].value, path);
+    }
 }
 
 static long get_grid_dimension(
@@ -249,6 +289,23 @@ static void print_json_string(const char *value) {
     fputc('"', stdout);
 }
 
+static void print_optional_long(int present, long value) {
+    if (present) {
+        fprintf(stdout, "%ld", value);
+    } else {
+        fputs("null", stdout);
+    }
+}
+
+static void print_optional_long_fields(const optional_long_field *fields, size_t field_count) {
+    for (size_t i = 0; i < field_count; ++i) {
+        fputc(',', stdout);
+        print_json_string(fields[i].json_key);
+        fputc(':', stdout);
+        print_optional_long(fields[i].present, fields[i].value);
+    }
+}
+
 static decode_totals decode_file(const char *path, int emit_json) {
     FILE *fp = fopen(path, "rb");
     if (fp == NULL) {
@@ -280,6 +337,39 @@ static decode_totals decode_file(const char *path, int emit_json) {
         long second = get_long(handle, "second", path);
         long ni = get_grid_dimension(handle, "Ni", "Nx", path);
         long nj = get_grid_dimension(handle, "Nj", "Ny", path);
+        optional_long_field product_metadata[] = {
+            {"productDefinitionTemplateNumber", "product_definition_template_number", 0, 0},
+            {"derivedForecast", "derived_forecast", 0, 0},
+            {"numberOfForecastsInEnsemble", "number_of_forecasts_in_ensemble", 0, 0},
+            {"forecastProbabilityNumber", "forecast_probability_number", 0, 0},
+            {"totalNumberOfForecastProbabilities", "total_number_of_forecast_probabilities", 0, 0},
+            {"probabilityType", "probability_type", 0, 0},
+            {"scaleFactorOfLowerLimit", "scale_factor_of_lower_limit", 0, 0},
+            {"scaledValueOfLowerLimit", "scaled_value_of_lower_limit", 0, 0},
+            {"scaleFactorOfUpperLimit", "scale_factor_of_upper_limit", 0, 0},
+            {"scaledValueOfUpperLimit", "scaled_value_of_upper_limit", 0, 0},
+            {"percentileValue", "percentile_value", 0, 0},
+            {"yearOfEndOfOverallTimeInterval", "interval_end_year", 0, 0},
+            {"monthOfEndOfOverallTimeInterval", "interval_end_month", 0, 0},
+            {"dayOfEndOfOverallTimeInterval", "interval_end_day", 0, 0},
+            {"hourOfEndOfOverallTimeInterval", "interval_end_hour", 0, 0},
+            {"minuteOfEndOfOverallTimeInterval", "interval_end_minute", 0, 0},
+            {"secondOfEndOfOverallTimeInterval", "interval_end_second", 0, 0},
+            {"numberOfTimeRange", "number_of_time_ranges", 0, 0},
+            {"numberOfMissingInStatisticalProcess", "number_missing_in_statistical_process", 0, 0},
+            {"typeOfStatisticalProcessing", "type_of_statistical_processing", 0, 0},
+            {"typeOfTimeIncrement", "type_of_time_increment", 0, 0},
+            {"indicatorOfUnitForTimeRange", "time_range_unit", 0, 0},
+            {"lengthOfTimeRange", "time_range_length", 0, 0},
+            {"indicatorOfUnitForTimeIncrement", "time_increment_unit", 0, 0},
+            {"timeIncrement", "time_increment", 0, 0},
+            {"statisticalProcess", "spatial_statistical_process", 0, 0},
+            {"spatialProcessing", "spatial_processing", 0, 0},
+            {"numberOfPointsUsed", "number_of_points_used", 0, 0},
+        };
+        const size_t product_metadata_count =
+            sizeof(product_metadata) / sizeof(product_metadata[0]);
+        load_optional_long_fields(handle, product_metadata, product_metadata_count, path);
         char name[256];
         get_string(handle, "name", name, sizeof(name), path);
 
@@ -318,6 +408,7 @@ static decode_totals decode_file(const char *path, int emit_json) {
             fprintf(stdout, "%ld", ni);
             fputs(",\"nj\":", stdout);
             fprintf(stdout, "%ld", nj);
+            print_optional_long_fields(product_metadata, product_metadata_count);
             fputs(",\"values\":[", stdout);
             for (size_t i = 0; i < value_len; ++i) {
                 if (i > 0) {

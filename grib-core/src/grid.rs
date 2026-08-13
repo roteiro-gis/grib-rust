@@ -1,8 +1,8 @@
 //! Grid Definition Section (Section 3) parsing.
 
 use crate::binary::decode_wmo_i32;
-use crate::ensure_limit;
 use crate::error::{Error, Result};
+use crate::{ensure_limit, filled_vec};
 
 /// Grid definition extracted from Section 3.
 ///
@@ -15,6 +15,8 @@ use crate::error::{Error, Result};
 pub enum GridDefinition {
     /// Template 3.0: Regular latitude/longitude (equidistant cylindrical).
     LatLon(LatLonGrid),
+    /// Template 3.1: Rotated latitude/longitude.
+    RotatedLatLon(RotatedLatLonGrid),
     /// Template 3.10: Mercator.
     Mercator(MercatorGrid),
     /// Template 3.31: Albers equal-area.
@@ -23,6 +25,8 @@ pub enum GridDefinition {
     LambertConformal(LambertConformalGrid),
     /// Template 3.20: Polar stereographic projection.
     PolarStereographic(PolarStereographicGrid),
+    /// Template 3.40: Regular Gaussian latitude/longitude.
+    RegularGaussian(RegularGaussianGrid),
     /// Unsupported template (stored for diagnostics).
     Unsupported(u16),
 }
@@ -38,6 +42,31 @@ pub struct LatLonGrid {
     pub lon_last: i32,
     pub di: u32,
     pub dj: u32,
+    pub scanning_mode: u8,
+}
+
+/// Template 3.1: rotated latitude/longitude grid.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RotatedLatLonGrid {
+    /// Grid coordinates expressed in the rotated coordinate system.
+    pub grid: LatLonGrid,
+    pub lat_southern_pole: i32,
+    pub lon_southern_pole: u32,
+    pub angle_of_rotation: f32,
+}
+
+/// Template 3.40: regular Gaussian latitude/longitude grid.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegularGaussianGrid {
+    pub ni: u32,
+    pub nj: u32,
+    pub lat_first: i32,
+    pub lon_first: i32,
+    pub lat_last: i32,
+    pub lon_last: i32,
+    pub di: u32,
+    /// Number of Gaussian parallels between a pole and the equator.
+    pub number_of_parallels: u32,
     pub scanning_mode: u8,
 }
 
@@ -119,10 +148,12 @@ impl GridDefinition {
     pub fn template_number(&self) -> u16 {
         match self {
             Self::LatLon(_) => 0,
+            Self::RotatedLatLon(_) => 1,
             Self::Mercator(_) => 10,
             Self::PolarStereographic(_) => 20,
             Self::LambertConformal(_) => 30,
             Self::AlbersEqualArea(_) => 31,
+            Self::RegularGaussian(_) => 40,
             Self::Unsupported(template) => *template,
         }
     }
@@ -130,6 +161,20 @@ impl GridDefinition {
     pub fn as_lat_lon(&self) -> Option<&LatLonGrid> {
         match self {
             Self::LatLon(grid) => Some(grid),
+            _ => None,
+        }
+    }
+
+    pub fn as_rotated_lat_lon(&self) -> Option<&RotatedLatLonGrid> {
+        match self {
+            Self::RotatedLatLon(grid) => Some(grid),
+            _ => None,
+        }
+    }
+
+    pub fn as_regular_gaussian(&self) -> Option<&RegularGaussianGrid> {
+        match self {
+            Self::RegularGaussian(grid) => Some(grid),
             _ => None,
         }
     }
@@ -168,7 +213,10 @@ impl GridDefinition {
             Self::PolarStereographic(grid) => Some(&grid.core),
             Self::LambertConformal(grid) => Some(&grid.core),
             Self::AlbersEqualArea(grid) => Some(&grid.core),
-            Self::LatLon(_) | Self::Unsupported(_) => None,
+            Self::LatLon(_)
+            | Self::RotatedLatLon(_)
+            | Self::RegularGaussian(_)
+            | Self::Unsupported(_) => None,
         }
     }
 
@@ -182,10 +230,12 @@ impl GridDefinition {
     pub fn shape(&self) -> (usize, usize) {
         match self {
             Self::LatLon(g) => (g.ni as usize, g.nj as usize),
+            Self::RotatedLatLon(g) => (g.grid.ni as usize, g.grid.nj as usize),
             Self::Mercator(g) => (g.core.nx as usize, g.core.ny as usize),
             Self::PolarStereographic(g) => (g.core.nx as usize, g.core.ny as usize),
             Self::LambertConformal(g) => (g.core.nx as usize, g.core.ny as usize),
             Self::AlbersEqualArea(g) => (g.core.nx as usize, g.core.ny as usize),
+            Self::RegularGaussian(g) => (g.ni as usize, g.nj as usize),
             Self::Unsupported(_) => (0, 0),
         }
     }
@@ -193,10 +243,12 @@ impl GridDefinition {
     pub fn shape_num_points(&self) -> Result<usize> {
         match self {
             Self::LatLon(g) => checked_grid_point_count(g.ni, g.nj),
+            Self::RotatedLatLon(g) => checked_grid_point_count(g.grid.ni, g.grid.nj),
             Self::Mercator(g) => checked_grid_point_count(g.core.nx, g.core.ny),
             Self::PolarStereographic(g) => checked_grid_point_count(g.core.nx, g.core.ny),
             Self::LambertConformal(g) => checked_grid_point_count(g.core.nx, g.core.ny),
             Self::AlbersEqualArea(g) => checked_grid_point_count(g.core.nx, g.core.ny),
+            Self::RegularGaussian(g) => checked_grid_point_count(g.ni, g.nj),
             Self::Unsupported(_) => Ok(0),
         }
     }
@@ -205,6 +257,8 @@ impl GridDefinition {
         let (ni, nj) = self.shape();
         match self {
             Self::LatLon(_)
+            | Self::RotatedLatLon(_)
+            | Self::RegularGaussian(_)
             | Self::Mercator(_)
             | Self::PolarStereographic(_)
             | Self::LambertConformal(_)
@@ -224,10 +278,12 @@ impl GridDefinition {
     pub fn checked_num_points(&self) -> Result<usize> {
         match self {
             Self::LatLon(_) => self.shape_num_points(),
+            Self::RotatedLatLon(_) => self.shape_num_points(),
             Self::Mercator(g) => Ok(g.core.number_of_points as usize),
             Self::PolarStereographic(g) => Ok(g.core.number_of_points as usize),
             Self::LambertConformal(g) => Ok(g.core.number_of_points as usize),
             Self::AlbersEqualArea(g) => Ok(g.core.number_of_points as usize),
+            Self::RegularGaussian(_) => self.shape_num_points(),
             Self::Unsupported(_) => Ok(0),
         }
     }
@@ -238,7 +294,39 @@ impl GridDefinition {
             Self::PolarStereographic(g) => Some(g.core.number_of_points as usize),
             Self::LambertConformal(g) => Some(g.core.number_of_points as usize),
             Self::AlbersEqualArea(g) => Some(g.core.number_of_points as usize),
-            Self::LatLon(_) | Self::Unsupported(_) => None,
+            Self::LatLon(_)
+            | Self::RotatedLatLon(_)
+            | Self::RegularGaussian(_)
+            | Self::Unsupported(_) => None,
+        }
+    }
+
+    /// One-dimensional latitude axis for unrotated geographic grids.
+    pub fn latitudes(&self) -> Result<Option<Vec<f64>>> {
+        self.latitudes_with_limit(None)
+    }
+
+    pub fn latitudes_with_limit(&self, max_axis_points: Option<usize>) -> Result<Option<Vec<f64>>> {
+        match self {
+            Self::LatLon(grid) => Ok(Some(grid.latitudes_with_limit(max_axis_points)?)),
+            Self::RegularGaussian(grid) => Ok(Some(grid.latitudes_with_limit(max_axis_points)?)),
+            _ => Ok(None),
+        }
+    }
+
+    /// One-dimensional longitude axis for unrotated geographic grids.
+    pub fn longitudes(&self) -> Result<Option<Vec<f64>>> {
+        self.longitudes_with_limit(None)
+    }
+
+    pub fn longitudes_with_limit(
+        &self,
+        max_axis_points: Option<usize>,
+    ) -> Result<Option<Vec<f64>>> {
+        match self {
+            Self::LatLon(grid) => Ok(Some(grid.longitudes_with_limit(max_axis_points)?)),
+            Self::RegularGaussian(grid) => Ok(Some(grid.longitudes_with_limit(max_axis_points)?)),
+            _ => Ok(None),
         }
     }
 
@@ -299,10 +387,12 @@ impl GridDefinition {
     pub fn validate_supported_scan_order(&self) -> Result<()> {
         match self {
             Self::LatLon(grid) => grid.validate_supported_scan_order(),
+            Self::RotatedLatLon(grid) => grid.grid.validate_supported_scan_order(),
             Self::Mercator(grid) => grid.core.validate_supported_scan_order(),
             Self::PolarStereographic(grid) => grid.core.validate_supported_scan_order(),
             Self::LambertConformal(grid) => grid.core.validate_supported_scan_order(),
             Self::AlbersEqualArea(grid) => grid.core.validate_supported_scan_order(),
+            Self::RegularGaussian(grid) => grid.validate_supported_scan_order(),
             Self::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
         }
     }
@@ -312,10 +402,17 @@ impl GridDefinition {
     pub fn reorder_for_ndarray_in_place<T>(&self, values: &mut [T]) -> Result<()> {
         match self {
             Self::LatLon(grid) => grid.reorder_for_ndarray_in_place(values),
+            Self::RotatedLatLon(grid) => grid.grid.reorder_for_ndarray_in_place(values),
             Self::Mercator(grid) => grid.core.reorder_for_ndarray_in_place(values),
             Self::PolarStereographic(grid) => grid.core.reorder_for_ndarray_in_place(values),
             Self::LambertConformal(grid) => grid.core.reorder_for_ndarray_in_place(values),
             Self::AlbersEqualArea(grid) => grid.core.reorder_for_ndarray_in_place(values),
+            Self::RegularGaussian(grid) => transform_supported_scan_order_in_place(
+                values,
+                grid.ni as usize,
+                grid.nj as usize,
+                grid.scanning_mode,
+            ),
             Self::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
         }
     }
@@ -330,6 +427,12 @@ impl GridDefinition {
                 grid.ni as usize,
                 grid.nj as usize,
                 grid.scanning_mode,
+            ),
+            Self::RotatedLatLon(grid) => normalize_north_up_in_place(
+                values,
+                grid.grid.ni as usize,
+                grid.grid.nj as usize,
+                grid.grid.scanning_mode,
             ),
             Self::Mercator(grid) => normalize_north_up_in_place(
                 values,
@@ -355,6 +458,12 @@ impl GridDefinition {
                 grid.core.ny as usize,
                 grid.core.scanning_mode,
             ),
+            Self::RegularGaussian(grid) => normalize_north_up_in_place(
+                values,
+                grid.ni as usize,
+                grid.nj as usize,
+                grid.scanning_mode,
+            ),
             Self::Unsupported(template) => Err(Error::UnsupportedGridTemplate(*template)),
         }
     }
@@ -376,10 +485,12 @@ impl GridDefinition {
         let template = u16::from_be_bytes(section_bytes[12..14].try_into().unwrap());
         match template {
             0 => parse_latlon(section_bytes),
+            1 => parse_rotated_latlon(section_bytes),
             10 => parse_mercator(section_bytes),
             20 => parse_polar_stereographic(section_bytes),
             30 => parse_lambert_conformal(section_bytes),
             31 => parse_albers_equal_area(section_bytes),
+            40 => parse_regular_gaussian(section_bytes),
             _ => Ok(Self::Unsupported(template)),
         }
     }
@@ -470,6 +581,236 @@ impl LatLonGrid {
     }
 }
 
+impl RotatedLatLonGrid {
+    pub fn rotated_longitudes(&self) -> Result<Vec<f64>> {
+        self.grid.longitudes()
+    }
+
+    pub fn rotated_longitudes_with_limit(
+        &self,
+        max_axis_points: Option<usize>,
+    ) -> Result<Vec<f64>> {
+        self.grid.longitudes_with_limit(max_axis_points)
+    }
+
+    pub fn rotated_latitudes(&self) -> Result<Vec<f64>> {
+        self.grid.latitudes()
+    }
+
+    pub fn rotated_latitudes_with_limit(&self, max_axis_points: Option<usize>) -> Result<Vec<f64>> {
+        self.grid.latitudes_with_limit(max_axis_points)
+    }
+}
+
+impl RegularGaussianGrid {
+    pub fn longitudes(&self) -> Result<Vec<f64>> {
+        self.longitudes_with_limit(None)
+    }
+
+    pub fn longitudes_with_limit(&self, max_axis_points: Option<usize>) -> Result<Vec<f64>> {
+        let step = self.longitude_increment_degrees()?;
+        let signed_step = if i_scans_positive(self.scanning_mode) {
+            step
+        } else {
+            -step
+        };
+        linear_axis(
+            self.ni,
+            f64::from(self.lon_first) / 1_000_000.0,
+            signed_step,
+            max_axis_points,
+            "Gaussian longitude axis",
+        )
+    }
+
+    pub fn latitudes(&self) -> Result<Vec<f64>> {
+        self.latitudes_with_limit(None)
+    }
+
+    pub fn latitudes_with_limit(&self, max_axis_points: Option<usize>) -> Result<Vec<f64>> {
+        let requested = self.nj as usize;
+        ensure_limit("Gaussian latitude axis", requested, max_axis_points)?;
+        let all_latitudes = gaussian_latitudes(self.number_of_parallels, max_axis_points)?;
+        if requested > all_latitudes.len() {
+            return Err(Error::InvalidSection {
+                section: 3,
+                reason: format!(
+                    "Gaussian grid requests {} rows but N={} defines only {} parallels",
+                    self.nj,
+                    self.number_of_parallels,
+                    all_latitudes.len()
+                ),
+            });
+        }
+        if requested == 0 {
+            return Ok(Vec::new());
+        }
+
+        let first = f64::from(self.lat_first) / 1_000_000.0;
+        let first_index = all_latitudes
+            .iter()
+            .enumerate()
+            .min_by(|(_, left), (_, right)| {
+                (*left - first).abs().total_cmp(&(*right - first).abs())
+            })
+            .map(|(index, _)| index)
+            .ok_or_else(|| Error::InvalidSection {
+                section: 3,
+                reason: "Gaussian grid has no latitude parallels".into(),
+            })?;
+        if (all_latitudes[first_index] - first).abs() > 0.001 {
+            return Err(Error::InvalidSection {
+                section: 3,
+                reason: format!(
+                    "first latitude {first} is not a Gaussian parallel for N={}",
+                    self.number_of_parallels
+                ),
+            });
+        }
+
+        let ascending = j_scans_positive(self.scanning_mode);
+        let last_index = if ascending {
+            first_index.checked_sub(requested - 1)
+        } else {
+            first_index.checked_add(requested - 1)
+        }
+        .filter(|index| *index < all_latitudes.len())
+        .ok_or_else(|| Error::InvalidSection {
+            section: 3,
+            reason: "Gaussian latitude scan extends beyond the defined parallels".into(),
+        })?;
+
+        let mut result = Vec::new();
+        result.try_reserve_exact(requested).map_err(|error| {
+            Error::allocation("Gaussian latitude coordinates", requested, error)
+        })?;
+        if ascending {
+            result.extend(
+                (last_index..=first_index)
+                    .rev()
+                    .map(|index| all_latitudes[index]),
+            );
+        } else {
+            result.extend(all_latitudes[first_index..=last_index].iter().copied());
+        }
+
+        let declared_last = f64::from(self.lat_last) / 1_000_000.0;
+        if (result[requested - 1] - declared_last).abs() > 0.001 {
+            return Err(Error::InvalidSection {
+                section: 3,
+                reason: format!(
+                    "last latitude {declared_last} does not match the Gaussian scan endpoint {}",
+                    result[requested - 1]
+                ),
+            });
+        }
+        Ok(result)
+    }
+
+    pub fn validate_supported_scan_order(&self) -> Result<()> {
+        validate_supported_scan_order(self.scanning_mode)
+    }
+
+    fn longitude_increment_degrees(&self) -> Result<f64> {
+        if self.di != u32::MAX {
+            let increment = f64::from(self.di) / 1_000_000.0;
+            self.validate_longitude_endpoint(increment)?;
+            return Ok(increment);
+        }
+        if self.ni == 0 {
+            return Err(Error::InvalidSection {
+                section: 3,
+                reason: "Gaussian grid has missing Di and zero Ni".into(),
+            });
+        }
+        let inferred = 360.0 / f64::from(self.ni);
+        self.validate_longitude_endpoint(inferred)?;
+        Ok(inferred)
+    }
+
+    fn validate_longitude_endpoint(&self, increment: f64) -> Result<()> {
+        if self.ni == 0 {
+            return Err(Error::InvalidSection {
+                section: 3,
+                reason: "Gaussian grid has zero Ni".into(),
+            });
+        }
+        let expected_last = f64::from(self.lon_first) / 1_000_000.0
+            + if i_scans_positive(self.scanning_mode) {
+                increment * f64::from(self.ni - 1)
+            } else {
+                -increment * f64::from(self.ni - 1)
+            };
+        let declared_last = f64::from(self.lon_last) / 1_000_000.0;
+        let wrapped_difference = (expected_last - declared_last + 180.0).rem_euclid(360.0) - 180.0;
+        if wrapped_difference.abs() > 0.001 {
+            return Err(Error::InvalidSection {
+                section: 3,
+                reason: "Gaussian longitude endpoint does not match Ni, Di, and scanning mode"
+                    .into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+fn gaussian_latitudes(
+    number_of_parallels: u32,
+    max_axis_points: Option<usize>,
+) -> Result<Vec<f64>> {
+    if number_of_parallels == 0 {
+        return Err(Error::InvalidSection {
+            section: 3,
+            reason: "Gaussian grid N must be nonzero".into(),
+        });
+    }
+    let order = usize::try_from(u64::from(number_of_parallels) * 2)
+        .map_err(|_| Error::ValueOutOfRange("Gaussian parallel count does not fit usize".into()))?;
+    ensure_limit("Gaussian parallel calculation", order, max_axis_points)?;
+    let mut latitudes = filled_vec(order, 0.0, "Gaussian latitude coordinates")?;
+    let order_f64 = order as f64;
+
+    for index in 0..order / 2 {
+        let mut root = (std::f64::consts::PI * (index as f64 + 0.75) / (order_f64 + 0.5)).cos();
+        let mut converged = false;
+        for _ in 0..32 {
+            let (polynomial, previous) = legendre_pair(order, root);
+            let derivative = order_f64 * (root * polynomial - previous) / (root * root - 1.0);
+            let next = root - polynomial / derivative;
+            if (next - root).abs() <= 4.0 * f64::EPSILON * next.abs().max(1.0) {
+                root = next;
+                converged = true;
+                break;
+            }
+            root = next;
+        }
+        if !converged || !root.is_finite() {
+            return Err(Error::InvalidSection {
+                section: 3,
+                reason: format!(
+                    "failed to compute Gaussian latitude root {index} for N={number_of_parallels}"
+                ),
+            });
+        }
+        let latitude = root.asin().to_degrees();
+        latitudes[index] = latitude;
+        latitudes[order - index - 1] = -latitude;
+    }
+    Ok(latitudes)
+}
+
+fn legendre_pair(order: usize, value: f64) -> (f64, f64) {
+    let mut previous = 0.0;
+    let mut current = 1.0;
+    for degree in 1..=order {
+        let older = previous;
+        previous = current;
+        current = ((2 * degree - 1) as f64 * value * previous - (degree - 1) as f64 * older)
+            / degree as f64;
+    }
+    (current, previous)
+}
+
 impl ProjectedGridCore {
     pub fn x_coordinates(&self) -> Result<Vec<f64>> {
         self.x_coordinates_with_limit(None)
@@ -508,9 +849,9 @@ fn transform_supported_scan_order_in_place<T>(
     scanning_mode: u8,
 ) -> Result<()> {
     validate_supported_scan_order(scanning_mode)?;
-    let expected = ni
-        .checked_mul(nj)
-        .ok_or_else(|| Error::Other("grid point count overflow".into()))?;
+    let expected = ni.checked_mul(nj).ok_or(Error::ArithmeticOverflow {
+        operation: "computing grid point count",
+    })?;
     if values.len() != expected {
         return Err(Error::DataLengthMismatch {
             expected,
@@ -637,8 +978,9 @@ fn linear_axis(
 
 fn checked_grid_point_count(nx: u32, ny: u32) -> Result<usize> {
     let count = u64::from(nx) * u64::from(ny);
-    usize::try_from(count)
-        .map_err(|_| Error::Other(format!("grid point count {count} does not fit in usize")))
+    usize::try_from(count).map_err(|_| {
+        Error::ValueOutOfRange(format!("grid point count {count} does not fit in usize"))
+    })
 }
 
 fn reverse_alternating_rows<T>(values: &mut [T], ni: usize, nj: usize, i_scans_positive: bool) {
@@ -662,27 +1004,171 @@ fn parse_latlon(data: &[u8]) -> Result<GridDefinition> {
         });
     }
 
+    reject_quasi_regular_grid(data, 0)?;
+    require_microdegree_angular_unit(data, 0)?;
+    let grid = parse_latlon_fields(data);
+    validate_geographic_coordinates(
+        grid.lat_first,
+        grid.lon_first,
+        grid.lat_last,
+        grid.lon_last,
+        0,
+    )?;
+    Ok(GridDefinition::LatLon(grid))
+}
+
+fn parse_rotated_latlon(data: &[u8]) -> Result<GridDefinition> {
+    if data.len() < 84 {
+        return Err(Error::InvalidSection {
+            section: 3,
+            reason: format!("template 3.1 requires 84 bytes, got {}", data.len()),
+        });
+    }
+
+    reject_quasi_regular_grid(data, 1)?;
+    require_microdegree_angular_unit(data, 1)?;
+    let grid = parse_latlon_fields(data);
+    validate_geographic_coordinates(
+        grid.lat_first,
+        grid.lon_first,
+        grid.lat_last,
+        grid.lon_last,
+        1,
+    )?;
+
+    let lat_southern_pole = decode_wmo_i32(&data[72..76]).unwrap();
+    let lon_southern_pole = u32::from_be_bytes(data[76..80].try_into().unwrap());
+    if lat_southern_pole.unsigned_abs() > 90_000_000 || lon_southern_pole > 360_000_000 {
+        return Err(Error::InvalidSection {
+            section: 3,
+            reason: "rotated-grid southern pole is outside geographic bounds".into(),
+        });
+    }
+    let angle_of_rotation = f32::from_be_bytes(data[80..84].try_into().unwrap());
+    if !angle_of_rotation.is_finite() {
+        return Err(Error::InvalidSection {
+            section: 3,
+            reason: "rotated-grid angle of rotation must be finite".into(),
+        });
+    }
+
+    Ok(GridDefinition::RotatedLatLon(RotatedLatLonGrid {
+        grid,
+        lat_southern_pole,
+        lon_southern_pole,
+        angle_of_rotation,
+    }))
+}
+
+fn parse_regular_gaussian(data: &[u8]) -> Result<GridDefinition> {
+    if data.len() < 72 {
+        return Err(Error::InvalidSection {
+            section: 3,
+            reason: format!("template 3.40 requires 72 bytes, got {}", data.len()),
+        });
+    }
+
+    reject_quasi_regular_grid(data, 40)?;
+    require_microdegree_angular_unit(data, 40)?;
+    let grid = RegularGaussianGrid {
+        ni: u32::from_be_bytes(data[30..34].try_into().unwrap()),
+        nj: u32::from_be_bytes(data[34..38].try_into().unwrap()),
+        lat_first: decode_wmo_i32(&data[46..50]).unwrap(),
+        lon_first: decode_wmo_i32(&data[50..54]).unwrap(),
+        lat_last: decode_wmo_i32(&data[55..59]).unwrap(),
+        lon_last: decode_wmo_i32(&data[59..63]).unwrap(),
+        di: u32::from_be_bytes(data[63..67].try_into().unwrap()),
+        number_of_parallels: u32::from_be_bytes(data[67..71].try_into().unwrap()),
+        scanning_mode: data[71],
+    };
+    validate_geographic_coordinates(
+        grid.lat_first,
+        grid.lon_first,
+        grid.lat_last,
+        grid.lon_last,
+        40,
+    )?;
+    if grid.number_of_parallels == 0 {
+        return Err(Error::InvalidSection {
+            section: 3,
+            reason: "template 3.40 number of parallels N must be nonzero".into(),
+        });
+    }
+    let available_rows = u64::from(grid.number_of_parallels) * 2;
+    if u64::from(grid.nj) > available_rows {
+        return Err(Error::InvalidSection {
+            section: 3,
+            reason: format!(
+                "template 3.40 Nj={} exceeds the {available_rows} parallels defined by N={}",
+                grid.nj, grid.number_of_parallels
+            ),
+        });
+    }
+    Ok(GridDefinition::RegularGaussian(grid))
+}
+
+fn parse_latlon_fields(data: &[u8]) -> LatLonGrid {
+    LatLonGrid {
+        ni: u32::from_be_bytes(data[30..34].try_into().unwrap()),
+        nj: u32::from_be_bytes(data[34..38].try_into().unwrap()),
+        lat_first: decode_wmo_i32(&data[46..50]).unwrap(),
+        lon_first: decode_wmo_i32(&data[50..54]).unwrap(),
+        lat_last: decode_wmo_i32(&data[55..59]).unwrap(),
+        lon_last: decode_wmo_i32(&data[59..63]).unwrap(),
+        di: u32::from_be_bytes(data[63..67].try_into().unwrap()),
+        dj: u32::from_be_bytes(data[67..71].try_into().unwrap()),
+        scanning_mode: data[71],
+    }
+}
+
+fn reject_quasi_regular_grid(data: &[u8], template: u16) -> Result<()> {
     let ni = u32::from_be_bytes(data[30..34].try_into().unwrap());
     let nj = u32::from_be_bytes(data[34..38].try_into().unwrap());
-    let lat_first = decode_wmo_i32(&data[46..50]).unwrap();
-    let lon_first = decode_wmo_i32(&data[50..54]).unwrap();
-    let lat_last = decode_wmo_i32(&data[55..59]).unwrap();
-    let lon_last = decode_wmo_i32(&data[59..63]).unwrap();
-    let di = u32::from_be_bytes(data[63..67].try_into().unwrap());
-    let dj = u32::from_be_bytes(data[67..71].try_into().unwrap());
-    let scanning_mode = data[71];
+    if ni == u32::MAX || nj == u32::MAX || data[10] != 0 {
+        return Err(Error::UnsupportedQuasiRegularGrid { template });
+    }
+    Ok(())
+}
 
-    Ok(GridDefinition::LatLon(LatLonGrid {
-        ni,
-        nj,
-        lat_first,
-        lon_first,
-        lat_last,
-        lon_last,
-        di,
-        dj,
-        scanning_mode,
-    }))
+fn require_microdegree_angular_unit(data: &[u8], template: u16) -> Result<()> {
+    let encoded_basic_angle = u32::from_be_bytes(data[38..42].try_into().unwrap());
+    let encoded_subdivisions = u32::from_be_bytes(data[42..46].try_into().unwrap());
+    let basic_angle = match encoded_basic_angle {
+        0 | u32::MAX => 1,
+        value => value,
+    };
+    let subdivisions = match encoded_subdivisions {
+        0 | u32::MAX => 1_000_000,
+        value => value,
+    };
+    if u64::from(basic_angle) * 1_000_000 != u64::from(subdivisions) {
+        return Err(Error::UnsupportedGridAngularUnit {
+            template,
+            basic_angle,
+            subdivisions,
+        });
+    }
+    Ok(())
+}
+
+fn validate_geographic_coordinates(
+    lat_first: i32,
+    lon_first: i32,
+    lat_last: i32,
+    lon_last: i32,
+    template: u16,
+) -> Result<()> {
+    if lat_first.unsigned_abs() > 90_000_000
+        || lat_last.unsigned_abs() > 90_000_000
+        || lon_first.unsigned_abs() > 360_000_000
+        || lon_last.unsigned_abs() > 360_000_000
+    {
+        return Err(Error::InvalidSection {
+            section: 3,
+            reason: format!("template 3.{template} coordinates are outside geographic bounds"),
+        });
+    }
+    Ok(())
 }
 
 fn parse_mercator(data: &[u8]) -> Result<GridDefinition> {
@@ -791,7 +1277,7 @@ fn parse_projected_core(
 mod tests {
     use super::{
         AlbersEqualAreaGrid, GridDefinition, LambertConformalGrid, LatLonGrid, MercatorGrid,
-        PolarStereographicGrid, ProjectedGridCore,
+        PolarStereographicGrid, ProjectedGridCore, RegularGaussianGrid,
     };
     use crate::binary::encode_wmo_i32;
 
@@ -880,6 +1366,130 @@ mod tests {
             }
             other => panic!("expected Mercator grid, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_rotated_latlon_template() {
+        let section = build_rotated_latlon_section();
+        let grid = GridDefinition::parse(&section).unwrap();
+
+        assert_eq!(grid.shape(), (3, 2));
+        assert_eq!(grid.ndarray_shape(), vec![2, 3]);
+        assert_eq!(grid.template_number(), 1);
+        assert!(grid.as_lat_lon().is_none());
+        let rotated = grid.as_rotated_lat_lon().unwrap();
+        assert_eq!(rotated.lat_southern_pole, -30_000_000);
+        assert_eq!(rotated.lon_southern_pole, 10_000_000);
+        assert_eq!(rotated.angle_of_rotation, 15.5);
+        assert_eq!(
+            rotated.rotated_longitudes().unwrap(),
+            vec![-20.0, 0.0, 20.0]
+        );
+        assert_eq!(rotated.rotated_latitudes().unwrap(), vec![-10.0, 0.0]);
+        assert_eq!(grid.latitudes().unwrap(), None);
+    }
+
+    #[test]
+    fn rejects_non_finite_rotated_grid_angle() {
+        let mut section = build_rotated_latlon_section();
+        section[80..84].copy_from_slice(&f32::NAN.to_be_bytes());
+        assert!(matches!(
+            GridDefinition::parse(&section),
+            Err(crate::Error::InvalidSection { section: 3, .. })
+        ));
+    }
+
+    #[test]
+    fn parses_regular_gaussian_and_computes_latitudes() {
+        let section = build_regular_gaussian_section(90_000_000);
+        let grid = GridDefinition::parse(&section).unwrap();
+
+        assert_eq!(grid.shape(), (4, 4));
+        assert_eq!(grid.ndarray_shape(), vec![4, 4]);
+        assert_eq!(grid.template_number(), 40);
+        let gaussian = grid.as_regular_gaussian().unwrap();
+        assert_eq!(
+            gaussian,
+            &RegularGaussianGrid {
+                ni: 4,
+                nj: 4,
+                lat_first: 59_444_408,
+                lon_first: 0,
+                lat_last: -59_444_408,
+                lon_last: 270_000_000,
+                di: 90_000_000,
+                number_of_parallels: 2,
+                scanning_mode: 0,
+            }
+        );
+        let latitudes = gaussian.latitudes().unwrap();
+        let expected = [
+            59.444_408_289_166_77,
+            19.875_719_147_440_904,
+            -19.875_719_147_440_904,
+            -59.444_408_289_166_77,
+        ];
+        for (actual, expected) in latitudes.iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-12);
+        }
+        assert_eq!(
+            gaussian.longitudes().unwrap(),
+            vec![0.0, 90.0, 180.0, 270.0]
+        );
+        assert_eq!(grid.latitudes().unwrap().unwrap(), latitudes);
+    }
+
+    #[test]
+    fn infers_missing_gaussian_increment_for_global_grid() {
+        let section = build_regular_gaussian_section(u32::MAX);
+        let GridDefinition::RegularGaussian(grid) = GridDefinition::parse(&section).unwrap() else {
+            panic!("expected regular Gaussian grid");
+        };
+        assert_eq!(grid.longitudes().unwrap(), vec![0.0, 90.0, 180.0, 270.0]);
+    }
+
+    #[test]
+    fn rejects_inconsistent_gaussian_longitude_endpoint() {
+        let mut section = build_regular_gaussian_section(90_000_000);
+        section[59..63].copy_from_slice(&encode_wmo_i32(180_000_000).unwrap());
+        let GridDefinition::RegularGaussian(grid) = GridDefinition::parse(&section).unwrap() else {
+            panic!("expected regular Gaussian grid");
+        };
+        assert!(matches!(
+            grid.longitudes(),
+            Err(crate::Error::InvalidSection { section: 3, .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_quasi_regular_geographic_grids_with_typed_error() {
+        for (template, mut section) in [
+            (1, build_rotated_latlon_section()),
+            (40, build_regular_gaussian_section(90_000_000)),
+        ] {
+            section[30..34].copy_from_slice(&u32::MAX.to_be_bytes());
+            section[10] = 2;
+            assert!(matches!(
+                GridDefinition::parse(&section),
+                Err(crate::Error::UnsupportedQuasiRegularGrid { template: actual })
+                    if actual == template
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_non_microdegree_geographic_angle_units_explicitly() {
+        let mut section = build_regular_gaussian_section(90_000_000);
+        section[38..42].copy_from_slice(&1u32.to_be_bytes());
+        section[42..46].copy_from_slice(&1_000u32.to_be_bytes());
+        assert!(matches!(
+            GridDefinition::parse(&section),
+            Err(crate::Error::UnsupportedGridAngularUnit {
+                template: 40,
+                basic_angle: 1,
+                subdivisions: 1_000,
+            })
+        ));
     }
 
     #[test]
@@ -1276,6 +1886,44 @@ mod tests {
         section[55..59].copy_from_slice(&3_000_000u32.to_be_bytes());
         section[59..63].copy_from_slice(&3_000_000u32.to_be_bytes());
         section[64] = scanning_mode;
+        section
+    }
+
+    fn build_rotated_latlon_section() -> Vec<u8> {
+        let mut section = vec![0u8; 84];
+        section[..4].copy_from_slice(&84u32.to_be_bytes());
+        section[4] = 3;
+        section[6..10].copy_from_slice(&6u32.to_be_bytes());
+        section[12..14].copy_from_slice(&1u16.to_be_bytes());
+        section[30..34].copy_from_slice(&3u32.to_be_bytes());
+        section[34..38].copy_from_slice(&2u32.to_be_bytes());
+        section[46..50].copy_from_slice(&encode_wmo_i32(-10_000_000).unwrap());
+        section[50..54].copy_from_slice(&encode_wmo_i32(-20_000_000).unwrap());
+        section[55..59].copy_from_slice(&encode_wmo_i32(0).unwrap());
+        section[59..63].copy_from_slice(&encode_wmo_i32(20_000_000).unwrap());
+        section[63..67].copy_from_slice(&20_000_000u32.to_be_bytes());
+        section[67..71].copy_from_slice(&10_000_000u32.to_be_bytes());
+        section[71] = 0b0100_0000;
+        section[72..76].copy_from_slice(&encode_wmo_i32(-30_000_000).unwrap());
+        section[76..80].copy_from_slice(&10_000_000u32.to_be_bytes());
+        section[80..84].copy_from_slice(&15.5f32.to_be_bytes());
+        section
+    }
+
+    fn build_regular_gaussian_section(di: u32) -> Vec<u8> {
+        let mut section = vec![0u8; 72];
+        section[..4].copy_from_slice(&72u32.to_be_bytes());
+        section[4] = 3;
+        section[6..10].copy_from_slice(&16u32.to_be_bytes());
+        section[12..14].copy_from_slice(&40u16.to_be_bytes());
+        section[30..34].copy_from_slice(&4u32.to_be_bytes());
+        section[34..38].copy_from_slice(&4u32.to_be_bytes());
+        section[46..50].copy_from_slice(&encode_wmo_i32(59_444_408).unwrap());
+        section[50..54].copy_from_slice(&encode_wmo_i32(0).unwrap());
+        section[55..59].copy_from_slice(&encode_wmo_i32(-59_444_408).unwrap());
+        section[59..63].copy_from_slice(&encode_wmo_i32(270_000_000).unwrap());
+        section[63..67].copy_from_slice(&di.to_be_bytes());
+        section[67..71].copy_from_slice(&2u32.to_be_bytes());
         section
     }
 

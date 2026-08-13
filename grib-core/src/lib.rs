@@ -21,7 +21,7 @@ pub use data::{
 pub use error::{Error, Result};
 pub use grid::{
     AlbersEqualAreaGrid, GridDefinition, LambertConformalGrid, LatLonGrid, MercatorGrid,
-    PolarStereographicGrid, ProjectedGridCore,
+    PolarStereographicGrid, ProjectedGridCore, RegularGaussianGrid, RotatedLatLonGrid,
 };
 pub use metadata::{ForecastTimeUnit, Parameter, ParameterTableSource, ReferenceTime};
 pub use parameter::{
@@ -29,7 +29,11 @@ pub use parameter::{
     LOCAL_PARAMETER_TABLE_CSV_HEADER,
 };
 pub use product::{
-    AnalysisOrForecastTemplate, EnsembleStatisticalProcessTemplate, FixedSurface, Identification,
-    IndividualEnsembleForecastTemplate, ProductDefinition, ProductDefinitionTemplate, ScaledValue,
+    AnalysisOrForecastTemplate, DerivedForecastTemplate, DerivedStatisticalProcessTemplate,
+    EnsembleStatisticalProcessTemplate, FixedSurface, Identification,
+    IndividualEnsembleForecastTemplate, PercentileForecastTemplate,
+    PercentileStatisticalProcessTemplate, ProbabilityForecastTemplate, ProbabilityLimit,
+    ProbabilityStatisticalProcessTemplate, ProbabilityType, ProductDefinition,
+    ProductDefinitionTemplate, ScaledValue, SpatialProcessTemplate, StatisticalInterval,
     StatisticalProcessTemplate, StatisticalTimeRange,
 };

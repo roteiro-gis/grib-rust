@@ -121,8 +121,15 @@ pub struct ProductDefinition {
 pub enum ProductDefinitionTemplate {
     AnalysisOrForecast(AnalysisOrForecastTemplate),
     IndividualEnsembleForecast(IndividualEnsembleForecastTemplate),
+    DerivedForecast(DerivedForecastTemplate),
+    ProbabilityForecast(ProbabilityForecastTemplate),
+    PercentileForecast(PercentileForecastTemplate),
     StatisticalProcess(StatisticalProcessTemplate),
+    ProbabilityStatisticalProcess(ProbabilityStatisticalProcessTemplate),
+    PercentileStatisticalProcess(PercentileStatisticalProcessTemplate),
     EnsembleStatisticalProcess(EnsembleStatisticalProcessTemplate),
+    DerivedStatisticalProcess(DerivedStatisticalProcessTemplate),
+    SpatialProcess(SpatialProcessTemplate),
     /// A well-framed Section 4 whose template is not interpreted by this
     /// version of the library. `raw` contains the template-specific bytes
     /// following the common parameter category and number.
@@ -135,9 +142,13 @@ pub enum ProductDefinitionTemplate {
 /// Product Definition Template 4.0: analysis or forecast at a horizontal level.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnalysisOrForecastTemplate {
-    pub generating_process: u8,
+    pub type_of_generating_process: u8,
+    pub background_generating_process_identifier: u8,
+    pub generating_process_identifier: u8,
+    pub hours_after_data_cutoff: Option<u16>,
+    pub minutes_after_data_cutoff: Option<u8>,
     pub forecast_time_unit: u8,
-    pub forecast_time: u32,
+    pub forecast_time: i32,
     pub first_surface: Option<FixedSurface>,
     pub second_surface: Option<FixedSurface>,
 }
@@ -151,22 +162,186 @@ pub struct IndividualEnsembleForecastTemplate {
     pub number_of_forecasts_in_ensemble: u8,
 }
 
+/// Product Definition Template 4.2: forecast derived from all ensemble members.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DerivedForecastTemplate {
+    pub base: AnalysisOrForecastTemplate,
+    pub derived_forecast_type: u8,
+    pub number_of_forecasts_in_ensemble: u8,
+}
+
+/// A signed decimal threshold used by probability product templates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProbabilityLimit {
+    pub scale_factor: i16,
+    pub scaled_value: i32,
+}
+
+impl ProbabilityLimit {
+    pub fn value_f64(self) -> f64 {
+        f64::from(self.scaled_value) * 10.0_f64.powi(-i32::from(self.scale_factor))
+    }
+}
+
+/// The event whose forecast probability is encoded by templates 4.5 and 4.9.
+///
+/// Known WMO event types carry exactly the limit values used by their
+/// definition. [`ProbabilityType::Other`] preserves reserved, locally defined,
+/// and noncanonical input without imposing semantics on its limits. The writer
+/// accepts `Other` only for codes without a standard typed variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProbabilityType {
+    BelowLowerLimit(ProbabilityLimit),
+    AboveUpperLimit(ProbabilityLimit),
+    BetweenLimits {
+        lower: ProbabilityLimit,
+        upper: ProbabilityLimit,
+    },
+    AboveLowerLimit(ProbabilityLimit),
+    BelowUpperLimit(ProbabilityLimit),
+    EqualLowerLimit(ProbabilityLimit),
+    AboveNormal,
+    NearNormal,
+    BelowNormal,
+    CategoricalBoolean,
+    Quantile,
+    Missing,
+    Other {
+        code: u8,
+        lower: Option<ProbabilityLimit>,
+        upper: Option<ProbabilityLimit>,
+    },
+}
+
+impl ProbabilityType {
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::BelowLowerLimit(_) => 0,
+            Self::AboveUpperLimit(_) => 1,
+            Self::BetweenLimits { .. } => 2,
+            Self::AboveLowerLimit(_) => 3,
+            Self::BelowUpperLimit(_) => 4,
+            Self::EqualLowerLimit(_) => 5,
+            Self::AboveNormal => 6,
+            Self::NearNormal => 7,
+            Self::BelowNormal => 8,
+            Self::CategoricalBoolean => 9,
+            Self::Quantile => 10,
+            Self::Missing => 255,
+            Self::Other { code, .. } => code,
+        }
+    }
+
+    pub const fn lower_limit(self) -> Option<ProbabilityLimit> {
+        match self {
+            Self::BelowLowerLimit(limit)
+            | Self::AboveLowerLimit(limit)
+            | Self::EqualLowerLimit(limit) => Some(limit),
+            Self::BetweenLimits { lower, .. } => Some(lower),
+            Self::Other { lower, .. } => lower,
+            _ => None,
+        }
+    }
+
+    pub const fn upper_limit(self) -> Option<ProbabilityLimit> {
+        match self {
+            Self::AboveUpperLimit(limit) | Self::BelowUpperLimit(limit) => Some(limit),
+            Self::BetweenLimits { upper, .. } => Some(upper),
+            Self::Other { upper, .. } => upper,
+            _ => None,
+        }
+    }
+
+    fn from_code_and_limits(
+        code: u8,
+        lower: Option<ProbabilityLimit>,
+        upper: Option<ProbabilityLimit>,
+    ) -> Self {
+        match (code, lower, upper) {
+            (0, Some(limit), None) => Self::BelowLowerLimit(limit),
+            (1, None, Some(limit)) => Self::AboveUpperLimit(limit),
+            (2, Some(lower), Some(upper)) => Self::BetweenLimits { lower, upper },
+            (3, Some(limit), None) => Self::AboveLowerLimit(limit),
+            (4, None, Some(limit)) => Self::BelowUpperLimit(limit),
+            (5, Some(limit), None) => Self::EqualLowerLimit(limit),
+            (6, None, None) => Self::AboveNormal,
+            (7, None, None) => Self::NearNormal,
+            (8, None, None) => Self::BelowNormal,
+            (9, None, None) => Self::CategoricalBoolean,
+            (10, None, None) => Self::Quantile,
+            (255, None, None) => Self::Missing,
+            (code, lower, upper) => Self::Other { code, lower, upper },
+        }
+    }
+}
+
+/// Product Definition Template 4.5: probability forecast at a point in time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProbabilityForecastTemplate {
+    pub base: AnalysisOrForecastTemplate,
+    pub forecast_probability_number: u8,
+    pub total_number_of_forecast_probabilities: u8,
+    pub probability: ProbabilityType,
+}
+
+/// Product Definition Template 4.6: percentile forecast at a point in time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PercentileForecastTemplate {
+    pub base: AnalysisOrForecastTemplate,
+    pub percentile_value: u8,
+}
+
+/// Time-interval metadata shared by statistically processed product templates.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatisticalInterval {
+    pub end_of_overall_time_interval: ReferenceTime,
+    pub number_of_missing_in_statistical_process: u32,
+    pub time_ranges: Vec<StatisticalTimeRange>,
+}
+
 /// Product Definition Template 4.8: statistically processed field over a time interval.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatisticalProcessTemplate {
     pub base: AnalysisOrForecastTemplate,
-    pub end_of_overall_time_interval: ReferenceTime,
-    pub number_of_missing_in_statistical_process: u32,
-    pub time_ranges: Vec<StatisticalTimeRange>,
+    pub interval: StatisticalInterval,
+}
+
+/// Product Definition Template 4.9: probability forecast over a time interval.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProbabilityStatisticalProcessTemplate {
+    pub probability: ProbabilityForecastTemplate,
+    pub interval: StatisticalInterval,
+}
+
+/// Product Definition Template 4.10: percentile forecast over a time interval.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PercentileStatisticalProcessTemplate {
+    pub percentile: PercentileForecastTemplate,
+    pub interval: StatisticalInterval,
 }
 
 /// Product Definition Template 4.11: individual ensemble forecast over a time interval.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnsembleStatisticalProcessTemplate {
     pub ensemble: IndividualEnsembleForecastTemplate,
-    pub end_of_overall_time_interval: ReferenceTime,
-    pub number_of_missing_in_statistical_process: u32,
-    pub time_ranges: Vec<StatisticalTimeRange>,
+    pub interval: StatisticalInterval,
+}
+
+/// Product Definition Template 4.12: derived ensemble forecast over a time interval.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DerivedStatisticalProcessTemplate {
+    pub derived: DerivedForecastTemplate,
+    pub interval: StatisticalInterval,
+}
+
+/// Product Definition Template 4.15: statistical processing over a spatial area.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpatialProcessTemplate {
+    pub base: AnalysisOrForecastTemplate,
+    pub statistical_process: u8,
+    pub spatial_processing: u8,
+    pub number_of_points_used: u8,
 }
 
 /// Statistical processing descriptor from GRIB2 Product Definition templates
@@ -219,15 +394,23 @@ impl ProductDefinition {
         self.template.number()
     }
 
-    pub fn generating_process(&self) -> Option<u8> {
-        self.template.base().map(|base| base.generating_process)
+    pub fn type_of_generating_process(&self) -> Option<u8> {
+        self.template
+            .base()
+            .map(|base| base.type_of_generating_process)
+    }
+
+    pub fn generating_process_identifier(&self) -> Option<u8> {
+        self.template
+            .base()
+            .map(|base| base.generating_process_identifier)
     }
 
     pub fn forecast_time_unit(&self) -> Option<u8> {
         self.template.base().map(|base| base.forecast_time_unit)
     }
 
-    pub fn forecast_time(&self) -> Option<u32> {
+    pub fn forecast_time(&self) -> Option<i32> {
         self.template.base().map(|base| base.forecast_time)
     }
 
@@ -257,12 +440,33 @@ impl ProductDefinitionTemplate {
             1 => Ok(Self::IndividualEnsembleForecast(
                 IndividualEnsembleForecastTemplate::parse(section_bytes)?,
             )),
+            2 => Ok(Self::DerivedForecast(DerivedForecastTemplate::parse(
+                section_bytes,
+            )?)),
+            5 => Ok(Self::ProbabilityForecast(
+                ProbabilityForecastTemplate::parse(section_bytes)?,
+            )),
+            6 => Ok(Self::PercentileForecast(PercentileForecastTemplate::parse(
+                section_bytes,
+            )?)),
             8 => Ok(Self::StatisticalProcess(StatisticalProcessTemplate::parse(
                 section_bytes,
             )?)),
+            9 => Ok(Self::ProbabilityStatisticalProcess(
+                ProbabilityStatisticalProcessTemplate::parse(section_bytes)?,
+            )),
+            10 => Ok(Self::PercentileStatisticalProcess(
+                PercentileStatisticalProcessTemplate::parse(section_bytes)?,
+            )),
             11 => Ok(Self::EnsembleStatisticalProcess(
                 EnsembleStatisticalProcessTemplate::parse(section_bytes)?,
             )),
+            12 => Ok(Self::DerivedStatisticalProcess(
+                DerivedStatisticalProcessTemplate::parse(section_bytes)?,
+            )),
+            15 => Ok(Self::SpatialProcess(SpatialProcessTemplate::parse(
+                section_bytes,
+            )?)),
             number => {
                 let raw_len = section_bytes.len() - 11;
                 let mut raw = Vec::new();
@@ -279,8 +483,15 @@ impl ProductDefinitionTemplate {
         match self {
             Self::AnalysisOrForecast(_) => 0,
             Self::IndividualEnsembleForecast(_) => 1,
+            Self::DerivedForecast(_) => 2,
+            Self::ProbabilityForecast(_) => 5,
+            Self::PercentileForecast(_) => 6,
             Self::StatisticalProcess(_) => 8,
+            Self::ProbabilityStatisticalProcess(_) => 9,
+            Self::PercentileStatisticalProcess(_) => 10,
             Self::EnsembleStatisticalProcess(_) => 11,
+            Self::DerivedStatisticalProcess(_) => 12,
+            Self::SpatialProcess(_) => 15,
             Self::Unsupported { number, .. } => *number,
         }
     }
@@ -289,19 +500,42 @@ impl ProductDefinitionTemplate {
         Some(match self {
             Self::AnalysisOrForecast(template) => template,
             Self::IndividualEnsembleForecast(template) => &template.base,
+            Self::DerivedForecast(template) => &template.base,
+            Self::ProbabilityForecast(template) => &template.base,
+            Self::PercentileForecast(template) => &template.base,
             Self::StatisticalProcess(template) => &template.base,
+            Self::ProbabilityStatisticalProcess(template) => &template.probability.base,
+            Self::PercentileStatisticalProcess(template) => &template.percentile.base,
             Self::EnsembleStatisticalProcess(template) => &template.ensemble.base,
+            Self::DerivedStatisticalProcess(template) => &template.derived.base,
+            Self::SpatialProcess(template) => &template.base,
             Self::Unsupported { .. } => return None,
         })
     }
 
     fn end_of_overall_time_interval(&self) -> Option<ReferenceTime> {
         match self {
-            Self::StatisticalProcess(template) => Some(template.end_of_overall_time_interval),
-            Self::EnsembleStatisticalProcess(template) => {
-                Some(template.end_of_overall_time_interval)
+            Self::StatisticalProcess(template) => {
+                Some(template.interval.end_of_overall_time_interval)
             }
-            Self::AnalysisOrForecast(_) | Self::IndividualEnsembleForecast(_) => None,
+            Self::ProbabilityStatisticalProcess(template) => {
+                Some(template.interval.end_of_overall_time_interval)
+            }
+            Self::PercentileStatisticalProcess(template) => {
+                Some(template.interval.end_of_overall_time_interval)
+            }
+            Self::EnsembleStatisticalProcess(template) => {
+                Some(template.interval.end_of_overall_time_interval)
+            }
+            Self::DerivedStatisticalProcess(template) => {
+                Some(template.interval.end_of_overall_time_interval)
+            }
+            Self::AnalysisOrForecast(_)
+            | Self::IndividualEnsembleForecast(_)
+            | Self::DerivedForecast(_)
+            | Self::ProbabilityForecast(_)
+            | Self::PercentileForecast(_)
+            | Self::SpatialProcess(_) => None,
             Self::Unsupported { .. } => None,
         }
     }
@@ -313,10 +547,23 @@ impl AnalysisOrForecastTemplate {
     fn parse(section_bytes: &[u8]) -> Result<Self> {
         require_len(section_bytes, Self::MINIMUM_LENGTH, "template 4.0")?;
 
+        let minutes_after_data_cutoff = (section_bytes[16] != 0xff).then_some(section_bytes[16]);
+        if minutes_after_data_cutoff.is_some_and(|minutes| minutes > 59) {
+            return Err(Error::InvalidSection {
+                section: 4,
+                reason: "minutes after data cutoff must be at most 59".into(),
+            });
+        }
+
         Ok(Self {
-            generating_process: section_bytes[11],
+            type_of_generating_process: section_bytes[11],
+            background_generating_process_identifier: section_bytes[12],
+            generating_process_identifier: section_bytes[13],
+            hours_after_data_cutoff: (section_bytes[14..16] != [0xff; 2])
+                .then(|| u16::from_be_bytes(section_bytes[14..16].try_into().unwrap())),
+            minutes_after_data_cutoff,
             forecast_time_unit: section_bytes[17],
-            forecast_time: u32::from_be_bytes(section_bytes[18..22].try_into().unwrap()),
+            forecast_time: decode_wmo_i32(&section_bytes[18..22]).unwrap(),
             first_surface: parse_surface(&section_bytes[22..28]),
             second_surface: parse_surface(&section_bytes[28..34]),
         })
@@ -338,48 +585,145 @@ impl IndividualEnsembleForecastTemplate {
     }
 }
 
-impl StatisticalProcessTemplate {
-    const TIME_RANGE_OFFSET: usize = 46;
+impl DerivedForecastTemplate {
+    const MINIMUM_LENGTH: usize = 36;
 
     fn parse(section_bytes: &[u8]) -> Result<Self> {
-        require_len(section_bytes, Self::TIME_RANGE_OFFSET, "template 4.8")?;
-        let time_range_count = section_bytes[41] as usize;
-        let min_len = required_time_range_template_len(Self::TIME_RANGE_OFFSET, time_range_count)?;
-        require_len(section_bytes, min_len, "template 4.8")?;
+        require_len(section_bytes, Self::MINIMUM_LENGTH, "template 4.2")?;
 
         Ok(Self {
             base: AnalysisOrForecastTemplate::parse(section_bytes)?,
-            end_of_overall_time_interval: parse_reference_time(&section_bytes[34..41], 4)?,
-            number_of_missing_in_statistical_process: u32::from_be_bytes(
-                section_bytes[42..46].try_into().unwrap(),
-            ),
-            time_ranges: parse_statistical_time_ranges(
-                &section_bytes[Self::TIME_RANGE_OFFSET..min_len],
-                time_range_count,
-            ),
+            derived_forecast_type: section_bytes[34],
+            number_of_forecasts_in_ensemble: section_bytes[35],
+        })
+    }
+}
+
+impl ProbabilityForecastTemplate {
+    const MINIMUM_LENGTH: usize = 47;
+
+    fn parse(section_bytes: &[u8]) -> Result<Self> {
+        require_len(section_bytes, Self::MINIMUM_LENGTH, "template 4.5")?;
+
+        let lower = parse_probability_limit(&section_bytes[37..42]);
+        let upper = parse_probability_limit(&section_bytes[42..47]);
+        Ok(Self {
+            base: AnalysisOrForecastTemplate::parse(section_bytes)?,
+            forecast_probability_number: section_bytes[34],
+            total_number_of_forecast_probabilities: section_bytes[35],
+            probability: ProbabilityType::from_code_and_limits(section_bytes[36], lower, upper),
+        })
+    }
+}
+
+impl PercentileForecastTemplate {
+    const MINIMUM_LENGTH: usize = 35;
+
+    fn parse(section_bytes: &[u8]) -> Result<Self> {
+        require_len(section_bytes, Self::MINIMUM_LENGTH, "template 4.6")?;
+
+        let percentile_value = section_bytes[34];
+        if percentile_value > 100 {
+            return Err(Error::InvalidSection {
+                section: 4,
+                reason: format!("template 4.6 percentile {percentile_value} exceeds 100"),
+            });
+        }
+        Ok(Self {
+            base: AnalysisOrForecastTemplate::parse(section_bytes)?,
+            percentile_value,
+        })
+    }
+}
+
+impl StatisticalProcessTemplate {
+    fn parse(section_bytes: &[u8]) -> Result<Self> {
+        Ok(Self {
+            base: AnalysisOrForecastTemplate::parse(section_bytes)?,
+            interval: StatisticalInterval::parse(section_bytes, 34, "template 4.8")?,
+        })
+    }
+}
+
+impl ProbabilityStatisticalProcessTemplate {
+    fn parse(section_bytes: &[u8]) -> Result<Self> {
+        Ok(Self {
+            probability: ProbabilityForecastTemplate::parse(section_bytes)?,
+            interval: StatisticalInterval::parse(section_bytes, 47, "template 4.9")?,
+        })
+    }
+}
+
+impl PercentileStatisticalProcessTemplate {
+    fn parse(section_bytes: &[u8]) -> Result<Self> {
+        Ok(Self {
+            percentile: PercentileForecastTemplate::parse(section_bytes)?,
+            interval: StatisticalInterval::parse(section_bytes, 35, "template 4.10")?,
         })
     }
 }
 
 impl EnsembleStatisticalProcessTemplate {
-    const TIME_RANGE_OFFSET: usize = 49;
-
     fn parse(section_bytes: &[u8]) -> Result<Self> {
-        require_len(section_bytes, Self::TIME_RANGE_OFFSET, "template 4.11")?;
-        let time_range_count = section_bytes[44] as usize;
-        let min_len = required_time_range_template_len(Self::TIME_RANGE_OFFSET, time_range_count)?;
-        require_len(section_bytes, min_len, "template 4.11")?;
-
         Ok(Self {
             ensemble: IndividualEnsembleForecastTemplate::parse(section_bytes)?,
-            end_of_overall_time_interval: parse_reference_time(&section_bytes[37..44], 4)?,
+            interval: StatisticalInterval::parse(section_bytes, 37, "template 4.11")?,
+        })
+    }
+}
+
+impl DerivedStatisticalProcessTemplate {
+    fn parse(section_bytes: &[u8]) -> Result<Self> {
+        Ok(Self {
+            derived: DerivedForecastTemplate::parse(section_bytes)?,
+            interval: StatisticalInterval::parse(section_bytes, 36, "template 4.12")?,
+        })
+    }
+}
+
+impl SpatialProcessTemplate {
+    const MINIMUM_LENGTH: usize = 37;
+
+    fn parse(section_bytes: &[u8]) -> Result<Self> {
+        require_len(section_bytes, Self::MINIMUM_LENGTH, "template 4.15")?;
+
+        Ok(Self {
+            base: AnalysisOrForecastTemplate::parse(section_bytes)?,
+            statistical_process: section_bytes[34],
+            spatial_processing: section_bytes[35],
+            number_of_points_used: section_bytes[36],
+        })
+    }
+}
+
+impl StatisticalInterval {
+    fn parse(section_bytes: &[u8], end_time_offset: usize, context: &str) -> Result<Self> {
+        let time_range_offset =
+            end_time_offset
+                .checked_add(12)
+                .ok_or_else(|| Error::InvalidSection {
+                    section: 4,
+                    reason: "statistical interval offset overflow".into(),
+                })?;
+        require_len(section_bytes, time_range_offset, context)?;
+        let time_range_count = section_bytes[end_time_offset + 7] as usize;
+        let min_len = required_time_range_template_len(time_range_offset, time_range_count)?;
+        require_len(section_bytes, min_len, context)?;
+
+        Ok(Self {
+            end_of_overall_time_interval: parse_reference_time(
+                &section_bytes[end_time_offset..end_time_offset + 7],
+                4,
+            )?,
             number_of_missing_in_statistical_process: u32::from_be_bytes(
-                section_bytes[45..49].try_into().unwrap(),
+                section_bytes[end_time_offset + 8..end_time_offset + 12]
+                    .try_into()
+                    .unwrap(),
             ),
             time_ranges: parse_statistical_time_ranges(
-                &section_bytes[Self::TIME_RANGE_OFFSET..min_len],
+                &section_bytes[time_range_offset..min_len],
                 time_range_count,
-            ),
+            )?,
         })
     }
 }
@@ -426,19 +770,39 @@ fn parse_reference_time(bytes: &[u8], section: u8) -> Result<ReferenceTime> {
 fn parse_statistical_time_ranges(
     bytes: &[u8],
     time_range_count: usize,
-) -> Vec<StatisticalTimeRange> {
-    bytes
-        .chunks_exact(12)
-        .take(time_range_count)
-        .map(|range| StatisticalTimeRange {
+) -> Result<Vec<StatisticalTimeRange>> {
+    let mut ranges = Vec::new();
+    ranges
+        .try_reserve_exact(time_range_count)
+        .map_err(|error| {
+            Error::allocation(
+                "statistical time-range descriptors",
+                time_range_count,
+                error,
+            )
+        })?;
+    for range in bytes.chunks_exact(12).take(time_range_count) {
+        ranges.push(StatisticalTimeRange {
             type_of_statistical_processing: range[0],
             type_of_time_increment: range[1],
             time_range_unit: range[2],
             time_range_length: u32::from_be_bytes(range[3..7].try_into().unwrap()),
             time_increment_unit: range[7],
             time_increment: u32::from_be_bytes(range[8..12].try_into().unwrap()),
-        })
-        .collect()
+        });
+    }
+    Ok(ranges)
+}
+
+fn parse_probability_limit(bytes: &[u8]) -> Option<ProbabilityLimit> {
+    if bytes[0] == 0xff || bytes[1..5] == [0xff; 4] {
+        return None;
+    }
+
+    Some(ProbabilityLimit {
+        scale_factor: decode_wmo_i8(bytes[0]),
+        scaled_value: decode_wmo_i32(&bytes[1..5])?,
+    })
 }
 
 fn parse_surface(section_bytes: &[u8]) -> Option<FixedSurface> {
@@ -465,7 +829,8 @@ fn parse_surface(section_bytes: &[u8]) -> Option<FixedSurface> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AnalysisOrForecastTemplate, Identification, ProductDefinition, ProductDefinitionTemplate,
+        AnalysisOrForecastTemplate, Identification, ProbabilityType, ProductDefinition,
+        ProductDefinitionTemplate,
     };
     use crate::error::Error;
     use crate::metadata::ReferenceTime;
@@ -511,7 +876,11 @@ mod tests {
         assert_eq!(
             product.template,
             ProductDefinitionTemplate::AnalysisOrForecast(AnalysisOrForecastTemplate {
-                generating_process: 2,
+                type_of_generating_process: 2,
+                background_generating_process_identifier: 0,
+                generating_process_identifier: 0,
+                hours_after_data_cutoff: Some(0),
+                minutes_after_data_cutoff: Some(0),
                 forecast_time_unit: 1,
                 forecast_time: 6,
                 first_surface: product.first_surface().cloned(),
@@ -545,6 +914,137 @@ mod tests {
     }
 
     #[test]
+    fn parses_derived_forecast_template() {
+        let mut section = product_section_template_zero();
+        section.resize(36, 0);
+        set_product_template(&mut section, 2);
+        section[34] = 4;
+        section[35] = 50;
+
+        let product = ProductDefinition::parse(&section).unwrap();
+        let ProductDefinitionTemplate::DerivedForecast(template) = product.template else {
+            panic!("expected template 4.2");
+        };
+        assert_eq!(template.derived_forecast_type, 4);
+        assert_eq!(template.number_of_forecasts_in_ensemble, 50);
+        assert_eq!(template.base.forecast_time, 6);
+    }
+
+    #[test]
+    fn parses_probability_forecast_with_typed_thresholds() {
+        let mut section = product_section_template_zero();
+        section.resize(47, 0xff);
+        set_product_template(&mut section, 5);
+        section[34] = 2;
+        section[35] = 10;
+        section[36] = 2;
+        section[37] = 1;
+        section[38..42].copy_from_slice(&crate::binary::encode_wmo_i32(-125).unwrap());
+        section[42] = 1;
+        section[43..47].copy_from_slice(&crate::binary::encode_wmo_i32(250).unwrap());
+
+        let product = ProductDefinition::parse(&section).unwrap();
+        let ProductDefinitionTemplate::ProbabilityForecast(template) = product.template else {
+            panic!("expected template 4.5");
+        };
+        assert_eq!(template.forecast_probability_number, 2);
+        assert_eq!(template.total_number_of_forecast_probabilities, 10);
+        let ProbabilityType::BetweenLimits { lower, upper } = template.probability else {
+            panic!("expected a between-limits probability");
+        };
+        assert_eq!(lower.value_f64(), -12.5);
+        assert_eq!(upper.value_f64(), 25.0);
+    }
+
+    #[test]
+    fn preserves_noncanonical_probability_limit_combinations() {
+        let mut section = product_section_template_zero();
+        section.resize(47, 0xff);
+        set_product_template(&mut section, 5);
+        section[36] = 0;
+
+        let product = ProductDefinition::parse(&section).unwrap();
+        let ProductDefinitionTemplate::ProbabilityForecast(template) = product.template else {
+            panic!("expected template 4.5");
+        };
+        assert_eq!(
+            template.probability,
+            ProbabilityType::Other {
+                code: 0,
+                lower: None,
+                upper: None,
+            }
+        );
+
+        section[36] = 7;
+        let product = ProductDefinition::parse(&section).unwrap();
+        let ProductDefinitionTemplate::ProbabilityForecast(template) = product.template else {
+            panic!("expected template 4.5");
+        };
+        assert_eq!(template.probability, ProbabilityType::NearNormal);
+    }
+
+    #[test]
+    fn parses_percentile_forecast_and_rejects_values_above_one_hundred() {
+        let mut section = product_section_template_zero();
+        section.resize(35, 0);
+        set_product_template(&mut section, 6);
+        section[34] = 90;
+
+        let product = ProductDefinition::parse(&section).unwrap();
+        let ProductDefinitionTemplate::PercentileForecast(template) = product.template else {
+            panic!("expected template 4.6");
+        };
+        assert_eq!(template.percentile_value, 90);
+
+        section[34] = 101;
+        assert!(matches!(
+            ProductDefinition::parse(&section),
+            Err(Error::InvalidSection { section: 4, .. })
+        ));
+    }
+
+    #[test]
+    fn parses_signed_forecast_time_and_process_metadata() {
+        let mut section = product_section_template_zero();
+        section[12] = 7;
+        section[13] = 42;
+        section[14..16].copy_from_slice(&12u16.to_be_bytes());
+        section[16] = 30;
+        section[18..22].copy_from_slice(&crate::binary::encode_wmo_i32(-6).unwrap());
+
+        let product = ProductDefinition::parse(&section).unwrap();
+        assert_eq!(product.type_of_generating_process(), Some(2));
+        assert_eq!(product.generating_process_identifier(), Some(42));
+        assert_eq!(product.forecast_time(), Some(-6));
+        let ProductDefinitionTemplate::AnalysisOrForecast(template) = product.template else {
+            panic!("expected template 4.0");
+        };
+        assert_eq!(template.background_generating_process_identifier, 7);
+        assert_eq!(template.hours_after_data_cutoff, Some(12));
+        assert_eq!(template.minutes_after_data_cutoff, Some(30));
+    }
+
+    #[test]
+    fn parses_missing_cutoff_metadata_and_rejects_invalid_minutes() {
+        let mut section = product_section_template_zero();
+        section[14..16].copy_from_slice(&u16::MAX.to_be_bytes());
+        section[16] = u8::MAX;
+        let product = ProductDefinition::parse(&section).unwrap();
+        let ProductDefinitionTemplate::AnalysisOrForecast(template) = product.template else {
+            panic!("expected template 4.0");
+        };
+        assert_eq!(template.hours_after_data_cutoff, None);
+        assert_eq!(template.minutes_after_data_cutoff, None);
+
+        section[16] = 60;
+        assert!(matches!(
+            ProductDefinition::parse(&section),
+            Err(Error::InvalidSection { section: 4, .. })
+        ));
+    }
+
+    #[test]
     fn parses_statistical_process_template() {
         let section = product_section_template_eight();
 
@@ -564,9 +1064,12 @@ mod tests {
         );
         match product.template {
             ProductDefinitionTemplate::StatisticalProcess(template) => {
-                assert_eq!(template.time_ranges.len(), 1);
-                assert_eq!(template.time_ranges[0].type_of_statistical_processing, 1);
-                assert_eq!(template.time_ranges[0].time_range_length, 6);
+                assert_eq!(template.interval.time_ranges.len(), 1);
+                assert_eq!(
+                    template.interval.time_ranges[0].type_of_statistical_processing,
+                    1
+                );
+                assert_eq!(template.interval.time_ranges[0].time_range_length, 6);
             }
             other => panic!("expected template 4.8, got {other:?}"),
         }
@@ -599,10 +1102,93 @@ mod tests {
         match product.template {
             ProductDefinitionTemplate::EnsembleStatisticalProcess(template) => {
                 assert_eq!(template.ensemble.perturbation_number, 3);
-                assert_eq!(template.time_ranges.len(), 1);
+                assert_eq!(template.interval.time_ranges.len(), 1);
             }
             other => panic!("expected template 4.11, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_probability_statistical_process_template() {
+        let mut section = product_section_template_zero();
+        section.resize(71, 0xff);
+        set_product_template(&mut section, 9);
+        section[34] = 1;
+        section[35] = 10;
+        section[36] = 3;
+        section[37] = 1;
+        section[38..42].copy_from_slice(&crate::binary::encode_wmo_i32(125).unwrap());
+        set_statistical_interval(&mut section, 47);
+
+        let product = ProductDefinition::parse(&section).unwrap();
+        let ProductDefinitionTemplate::ProbabilityStatisticalProcess(template) = product.template
+        else {
+            panic!("expected template 4.9");
+        };
+        assert_eq!(
+            template.probability.probability,
+            ProbabilityType::AboveLowerLimit(super::ProbabilityLimit {
+                scale_factor: 1,
+                scaled_value: 125,
+            })
+        );
+        assert_eq!(template.interval.time_ranges.len(), 1);
+        assert_eq!(template.interval.end_of_overall_time_interval.hour, 18);
+    }
+
+    #[test]
+    fn parses_percentile_statistical_process_template() {
+        let mut section = product_section_template_zero();
+        section.resize(59, 0);
+        set_product_template(&mut section, 10);
+        section[34] = 75;
+        set_statistical_interval(&mut section, 35);
+
+        let product = ProductDefinition::parse(&section).unwrap();
+        let ProductDefinitionTemplate::PercentileStatisticalProcess(template) = product.template
+        else {
+            panic!("expected template 4.10");
+        };
+        assert_eq!(template.percentile.percentile_value, 75);
+        assert_eq!(template.interval.time_ranges.len(), 1);
+    }
+
+    #[test]
+    fn parses_derived_statistical_process_template() {
+        let mut section = product_section_template_zero();
+        section.resize(60, 0);
+        set_product_template(&mut section, 12);
+        section[34] = 1;
+        section[35] = 20;
+        set_statistical_interval(&mut section, 36);
+
+        let product = ProductDefinition::parse(&section).unwrap();
+        let ProductDefinitionTemplate::DerivedStatisticalProcess(template) = product.template
+        else {
+            panic!("expected template 4.12");
+        };
+        assert_eq!(template.derived.derived_forecast_type, 1);
+        assert_eq!(template.derived.number_of_forecasts_in_ensemble, 20);
+        assert_eq!(template.interval.time_ranges.len(), 1);
+    }
+
+    #[test]
+    fn parses_spatial_process_template() {
+        let mut section = product_section_template_zero();
+        section.resize(37, 0);
+        set_product_template(&mut section, 15);
+        section[34] = 1;
+        section[35] = 2;
+        section[36] = 4;
+
+        let product = ProductDefinition::parse(&section).unwrap();
+        let ProductDefinitionTemplate::SpatialProcess(template) = product.template else {
+            panic!("expected template 4.15");
+        };
+        assert_eq!(template.statistical_process, 1);
+        assert_eq!(template.spatial_processing, 2);
+        assert_eq!(template.number_of_points_used, 4);
+        assert_eq!(template.base.forecast_time, 6);
     }
 
     #[test]
@@ -664,6 +1250,32 @@ mod tests {
         assert!(matches!(err, Error::InvalidSection { section: 4, .. }));
     }
 
+    #[test]
+    fn rejects_truncated_instantaneous_product_templates() {
+        for (template, length) in [(2, 35), (5, 46), (6, 34), (15, 36)] {
+            let mut section = product_section_template_zero();
+            section.resize(length, 0);
+            set_product_template(&mut section, template);
+            assert!(matches!(
+                ProductDefinition::parse(&section),
+                Err(Error::InvalidSection { section: 4, .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_truncated_interval_product_templates() {
+        for (template, length) in [(8, 45), (9, 58), (10, 46), (11, 48), (12, 47)] {
+            let mut section = product_section_template_zero();
+            section.resize(length, 0);
+            set_product_template(&mut section, template);
+            assert!(matches!(
+                ProductDefinition::parse(&section),
+                Err(Error::InvalidSection { section: 4, .. })
+            ));
+        }
+    }
+
     fn product_section_template_zero() -> Vec<u8> {
         let mut section = vec![0u8; 34];
         section[..4].copy_from_slice(&(34u32).to_be_bytes());
@@ -684,21 +1296,33 @@ mod tests {
     fn product_section_template_eight() -> Vec<u8> {
         let mut section = product_section_template_zero();
         section.resize(58, 0);
-        section[..4].copy_from_slice(&(58u32).to_be_bytes());
-        section[7..9].copy_from_slice(&8u16.to_be_bytes());
-        section[34..36].copy_from_slice(&2026u16.to_be_bytes());
-        section[36] = 3;
-        section[37] = 20;
-        section[38] = 18;
-        section[39] = 0;
-        section[40] = 0;
-        section[41] = 1;
-        section[46] = 1;
-        section[47] = 2;
-        section[48] = 1;
-        section[49..53].copy_from_slice(&6u32.to_be_bytes());
-        section[53] = 255;
+        set_product_template(&mut section, 8);
+        set_statistical_interval(&mut section, 34);
         section
+    }
+
+    fn set_product_template(section: &mut [u8], template: u16) {
+        let length = u32::try_from(section.len()).unwrap();
+        section[..4].copy_from_slice(&length.to_be_bytes());
+        section[7..9].copy_from_slice(&template.to_be_bytes());
+    }
+
+    fn set_statistical_interval(section: &mut [u8], offset: usize) {
+        section[offset..offset + 2].copy_from_slice(&2026u16.to_be_bytes());
+        section[offset + 2] = 3;
+        section[offset + 3] = 20;
+        section[offset + 4] = 18;
+        section[offset + 5] = 0;
+        section[offset + 6] = 0;
+        section[offset + 7] = 1;
+        section[offset + 8..offset + 12].copy_from_slice(&0u32.to_be_bytes());
+        let range = offset + 12;
+        section[range] = 1;
+        section[range + 1] = 2;
+        section[range + 2] = 1;
+        section[range + 3..range + 7].copy_from_slice(&6u32.to_be_bytes());
+        section[range + 7] = 255;
+        section[range + 8..range + 12].copy_from_slice(&0u32.to_be_bytes());
     }
 
     fn valid_identification_section() -> Vec<u8> {

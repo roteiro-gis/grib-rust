@@ -128,11 +128,11 @@ impl ReferenceTime {
     pub fn checked_add_forecast_time_unit(
         &self,
         unit: ForecastTimeUnit,
-        value: u32,
+        value: i64,
     ) -> Option<Self> {
         let seconds_per_unit = unit.seconds_per_unit()?;
         let base = self.seconds_since_epoch()?;
-        let delta = i64::from(value).checked_mul(seconds_per_unit)?;
+        let delta = value.checked_mul(seconds_per_unit)?;
         Self::from_seconds_since_epoch(base.checked_add(delta)?)
     }
 
@@ -144,7 +144,7 @@ impl ReferenceTime {
         &self,
         edition: u8,
         unit: u8,
-        value: u32,
+        value: i64,
     ) -> Option<Self> {
         let unit = ForecastTimeUnit::from_edition_and_code(edition, unit)?;
         self.checked_add_forecast_time_unit(unit, value)
@@ -154,7 +154,7 @@ impl ReferenceTime {
     ///
     /// Returns `None` for unsupported unit codes, calendar-dependent units, or
     /// invalid timestamps.
-    pub fn checked_add_forecast_time(&self, unit: u8, value: u32) -> Option<Self> {
+    pub fn checked_add_forecast_time(&self, unit: u8, value: i64) -> Option<Self> {
         let unit = ForecastTimeUnit::from_grib2_code(unit)?;
         self.checked_add_forecast_time_unit(unit, value)
     }
@@ -365,6 +365,32 @@ mod tests {
                 month: 3,
                 day: 21,
                 hour: 6,
+                minute: 0,
+                second: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn subtracts_negative_forecast_offsets() {
+        let valid = ReferenceTime {
+            year: 2026,
+            month: 3,
+            day: 20,
+            hour: 6,
+            minute: 0,
+            second: 0,
+        }
+        .checked_add_forecast_time(1, -12)
+        .unwrap();
+
+        assert_eq!(
+            valid,
+            ReferenceTime {
+                year: 2026,
+                month: 3,
+                day: 19,
+                hour: 18,
                 minute: 0,
                 second: 0,
             }
