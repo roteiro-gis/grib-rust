@@ -29,6 +29,18 @@ pub enum Error {
     #[error("unsupported grid definition template: {0}")]
     UnsupportedGridTemplate(u16),
 
+    #[error("unsupported quasi-regular grid definition template: {template}")]
+    UnsupportedQuasiRegularGrid { template: u16 },
+
+    #[error(
+        "grid template {template} uses unsupported angular unit {basic_angle}/{subdivisions} degrees"
+    )]
+    UnsupportedGridAngularUnit {
+        template: u16,
+        basic_angle: u32,
+        subdivisions: u32,
+    },
+
     #[error("unsupported data representation template: {0}")]
     UnsupportedDataTemplate(u16),
 

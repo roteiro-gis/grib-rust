@@ -20,6 +20,20 @@
   expand bitmap gaps a byte at a time
 - locate GRIB messages with substring search instead of testing every byte
   offset
+- decode rotated latitude/longitude and regular Gaussian grids while rejecting
+  quasi-regular geometry with a typed error
+- preserve GRIB2 generating-process and data-cutoff metadata and decode signed
+  forecast offsets without unsigned wraparound
+- decode derived-ensemble, probability, and percentile forecasts with typed
+  probability thresholds for product templates 4.2, 4.5, and 4.6
+- write product templates 4.2, 4.5, and 4.6 and compare their Section 4
+  metadata with ecCodes in the parity suite
+- decode interval probability, percentile, and derived-ensemble templates 4.9,
+  4.10, and 4.12 through one shared statistical-interval model
+- write interval product templates 4.9, 4.10, and 4.12 and verify their
+  timestamps, time ranges, thresholds, and ensemble metadata against ecCodes
+- decode and write spatially processed product template 4.15 and verify its
+  process type, spatial method, and source-point count against ecCodes
 - raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
 
 ## 0.6.0 - 2026-06-25

@@ -13,8 +13,9 @@ use grib_core::{
     AlbersEqualAreaGrid, AnalysisOrForecastTemplate, ComplexPackingParams, DataRepresentation,
     FixedSurface, GridDefinition, Identification, ImagePackingParams, Jpeg2000PackingParams,
     LambertConformalGrid, LatLonGrid, MercatorGrid, PngPackingParams, PolarStereographicGrid,
-    ProductDefinition, ProductDefinitionTemplate, ProjectedGridCore, ReferenceTime,
-    SimplePackingParams, SpatialDifferencingParams, StatisticalTimeRange,
+    ProbabilityLimit, ProbabilityType, ProductDefinition, ProductDefinitionTemplate,
+    ProjectedGridCore, ReferenceTime, SimplePackingParams, SpatialDifferencingParams,
+    StatisticalInterval, StatisticalTimeRange,
 };
 
 pub use grib_core::grib1::ProductDefinition as Grib1ProductDefinition;
@@ -1995,17 +1996,56 @@ fn write_product_section(out: &mut Vec<u8>, product: &ProductDefinition) -> Resu
             write_product_template_prefix(out, product, 1, 37, &template.base)?;
             write_ensemble_product_extra(out, template)
         }
+        ProductDefinitionTemplate::DerivedForecast(template) => {
+            write_product_template_prefix(out, product, 2, 36, &template.base)?;
+            write_derived_product_extra(out, template)
+        }
+        ProductDefinitionTemplate::ProbabilityForecast(template) => {
+            validate_probability_type(template.probability)?;
+            write_product_template_prefix(out, product, 5, 47, &template.base)?;
+            write_probability_product_extra(out, template)
+        }
+        ProductDefinitionTemplate::PercentileForecast(template) => {
+            validate_percentile(template.percentile_value)?;
+            write_product_template_prefix(out, product, 6, 35, &template.base)?;
+            write_u8_be(out, template.percentile_value)
+        }
         ProductDefinitionTemplate::StatisticalProcess(template) => {
-            let range_count = checked_time_range_count(template.time_ranges.len())?;
+            let range_count = checked_time_range_count(template.interval.time_ranges.len())?;
             let section_length = statistical_product_section_len(46, range_count)?;
             write_product_template_prefix(out, product, 8, section_length, &template.base)?;
-            write_reference_time(out, template.end_of_overall_time_interval)?;
-            write_u8_be(out, range_count)?;
-            write_u32_be(out, template.number_of_missing_in_statistical_process)?;
-            write_statistical_time_ranges(out, &template.time_ranges)
+            write_statistical_interval(out, &template.interval, range_count)
+        }
+        ProductDefinitionTemplate::ProbabilityStatisticalProcess(template) => {
+            validate_probability_type(template.probability.probability)?;
+            let range_count = checked_time_range_count(template.interval.time_ranges.len())?;
+            let section_length = statistical_product_section_len(59, range_count)?;
+            write_product_template_prefix(
+                out,
+                product,
+                9,
+                section_length,
+                &template.probability.base,
+            )?;
+            write_probability_product_extra(out, &template.probability)?;
+            write_statistical_interval(out, &template.interval, range_count)
+        }
+        ProductDefinitionTemplate::PercentileStatisticalProcess(template) => {
+            validate_percentile(template.percentile.percentile_value)?;
+            let range_count = checked_time_range_count(template.interval.time_ranges.len())?;
+            let section_length = statistical_product_section_len(47, range_count)?;
+            write_product_template_prefix(
+                out,
+                product,
+                10,
+                section_length,
+                &template.percentile.base,
+            )?;
+            write_u8_be(out, template.percentile.percentile_value)?;
+            write_statistical_interval(out, &template.interval, range_count)
         }
         ProductDefinitionTemplate::EnsembleStatisticalProcess(template) => {
-            let range_count = checked_time_range_count(template.time_ranges.len())?;
+            let range_count = checked_time_range_count(template.interval.time_ranges.len())?;
             let section_length = statistical_product_section_len(49, range_count)?;
             write_product_template_prefix(
                 out,
@@ -2015,10 +2055,26 @@ fn write_product_section(out: &mut Vec<u8>, product: &ProductDefinition) -> Resu
                 &template.ensemble.base,
             )?;
             write_ensemble_product_extra(out, &template.ensemble)?;
-            write_reference_time(out, template.end_of_overall_time_interval)?;
-            write_u8_be(out, range_count)?;
-            write_u32_be(out, template.number_of_missing_in_statistical_process)?;
-            write_statistical_time_ranges(out, &template.time_ranges)
+            write_statistical_interval(out, &template.interval, range_count)
+        }
+        ProductDefinitionTemplate::DerivedStatisticalProcess(template) => {
+            let range_count = checked_time_range_count(template.interval.time_ranges.len())?;
+            let section_length = statistical_product_section_len(48, range_count)?;
+            write_product_template_prefix(
+                out,
+                product,
+                12,
+                section_length,
+                &template.derived.base,
+            )?;
+            write_derived_product_extra(out, &template.derived)?;
+            write_statistical_interval(out, &template.interval, range_count)
+        }
+        ProductDefinitionTemplate::SpatialProcess(template) => {
+            write_product_template_prefix(out, product, 15, 37, &template.base)?;
+            write_u8_be(out, template.statistical_process)?;
+            write_u8_be(out, template.spatial_processing)?;
+            write_u8_be(out, template.number_of_points_used)
         }
         ProductDefinitionTemplate::Unsupported { number, .. } => {
             Err(Error::UnsupportedProductTemplate(*number))
@@ -2034,21 +2090,47 @@ fn write_product_template_prefix(
     section_length: u32,
     template: &AnalysisOrForecastTemplate,
 ) -> Result<()> {
+    validate_product_template_prefix(template)?;
+
     write_u32_be(out, section_length)?;
     write_u8_be(out, 4)?;
     write_u16_be(out, 0)?;
     write_u16_be(out, template_number)?;
     write_u8_be(out, product.parameter_category)?;
     write_u8_be(out, product.parameter_number)?;
-    write_u8_be(out, template.generating_process)?;
-    write_u8_be(out, 0)?;
-    write_u8_be(out, 0)?;
-    write_u16_be(out, 0)?;
-    write_u8_be(out, 0)?;
+    write_u8_be(out, template.type_of_generating_process)?;
+    write_u8_be(out, template.background_generating_process_identifier)?;
+    write_u8_be(out, template.generating_process_identifier)?;
+    write_u16_be(out, template.hours_after_data_cutoff.unwrap_or(u16::MAX))?;
+    write_u8_be(out, template.minutes_after_data_cutoff.unwrap_or(u8::MAX))?;
     write_u8_be(out, template.forecast_time_unit)?;
-    write_u32_be(out, template.forecast_time)?;
+    out.extend_from_slice(&encode_wmo_i32(template.forecast_time).ok_or_else(|| {
+        Error::ValueOutOfRange("forecast time does not fit GRIB signed i32".into())
+    })?);
     write_surface(out, template.first_surface.as_ref())?;
     write_surface(out, template.second_surface.as_ref())
+}
+
+fn validate_product_template_prefix(template: &AnalysisOrForecastTemplate) -> Result<()> {
+    if template.hours_after_data_cutoff == Some(u16::MAX) {
+        return Err(Error::ValueOutOfRange(
+            "hours after data cutoff must be at most 65534".into(),
+        ));
+    }
+    if template
+        .minutes_after_data_cutoff
+        .is_some_and(|minutes| minutes > 59)
+    {
+        return Err(Error::ValueOutOfRange(
+            "minutes after data cutoff must be at most 59".into(),
+        ));
+    }
+    if encode_wmo_i32(template.forecast_time).is_none() {
+        return Err(Error::ValueOutOfRange(
+            "forecast time does not fit GRIB signed i32".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn write_ensemble_product_extra(
@@ -2058,6 +2140,93 @@ fn write_ensemble_product_extra(
     write_u8_be(out, template.type_of_ensemble_forecast)?;
     write_u8_be(out, template.perturbation_number)?;
     write_u8_be(out, template.number_of_forecasts_in_ensemble)
+}
+
+fn write_derived_product_extra(
+    out: &mut Vec<u8>,
+    template: &grib_core::DerivedForecastTemplate,
+) -> Result<()> {
+    write_u8_be(out, template.derived_forecast_type)?;
+    write_u8_be(out, template.number_of_forecasts_in_ensemble)
+}
+
+fn write_probability_product_extra(
+    out: &mut Vec<u8>,
+    template: &grib_core::ProbabilityForecastTemplate,
+) -> Result<()> {
+    write_u8_be(out, template.forecast_probability_number)?;
+    write_u8_be(out, template.total_number_of_forecast_probabilities)?;
+    write_u8_be(out, template.probability.code())?;
+    write_probability_limit(out, template.probability.lower_limit())?;
+    write_probability_limit(out, template.probability.upper_limit())
+}
+
+fn write_probability_limit(out: &mut Vec<u8>, limit: Option<ProbabilityLimit>) -> Result<()> {
+    let Some(limit) = limit else {
+        out.extend_from_slice(&[0xff; 5]);
+        return Ok(());
+    };
+
+    write_u8_be(
+        out,
+        encode_wmo_i8(limit.scale_factor).ok_or_else(|| {
+            Error::ValueOutOfRange(
+                "probability-limit scale factor does not fit GRIB signed i8".into(),
+            )
+        })?,
+    )?;
+    out.extend_from_slice(&encode_wmo_i32(limit.scaled_value).ok_or_else(|| {
+        Error::ValueOutOfRange("probability-limit scaled value does not fit GRIB signed i32".into())
+    })?);
+    Ok(())
+}
+
+fn validate_probability_type(probability: ProbabilityType) -> Result<()> {
+    if let ProbabilityType::Other { code, .. } = probability {
+        if matches!(code, 0..=10 | 255) {
+            return Err(Error::ValueOutOfRange(format!(
+                "WMO probability type {code} must use its typed probability variant"
+            )));
+        }
+    }
+
+    for limit in [probability.lower_limit(), probability.upper_limit()]
+        .into_iter()
+        .flatten()
+    {
+        if encode_wmo_i8(limit.scale_factor).is_none() {
+            return Err(Error::ValueOutOfRange(
+                "probability-limit scale factor does not fit GRIB signed i8".into(),
+            ));
+        }
+        if encode_wmo_i32(limit.scaled_value).is_none() {
+            return Err(Error::ValueOutOfRange(
+                "probability-limit scaled value does not fit GRIB signed i32".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_percentile(percentile: u8) -> Result<()> {
+    if percentile <= 100 {
+        Ok(())
+    } else {
+        Err(Error::ValueOutOfRange(format!(
+            "percentile value {percentile} exceeds 100"
+        )))
+    }
+}
+
+fn write_statistical_interval(
+    out: &mut Vec<u8>,
+    interval: &StatisticalInterval,
+    range_count: u8,
+) -> Result<()> {
+    write_reference_time(out, interval.end_of_overall_time_interval)?;
+    write_u8_be(out, range_count)?;
+    write_u32_be(out, interval.number_of_missing_in_statistical_process)?;
+    write_statistical_time_ranges(out, &interval.time_ranges)
 }
 
 fn write_reference_time(out: &mut Vec<u8>, reference_time: ReferenceTime) -> Result<()> {
@@ -2397,21 +2566,58 @@ fn validate_supported_grib1_grid(grid: &GridDefinition) -> Result<()> {
 
 fn validate_supported_product(product: &ProductDefinition) -> Result<()> {
     match &product.template {
-        ProductDefinitionTemplate::AnalysisOrForecast(_) => Ok(()),
-        ProductDefinitionTemplate::IndividualEnsembleForecast(_) => Ok(()),
+        ProductDefinitionTemplate::AnalysisOrForecast(template) => {
+            validate_product_template_prefix(template)
+        }
+        ProductDefinitionTemplate::IndividualEnsembleForecast(template) => {
+            validate_product_template_prefix(&template.base)
+        }
+        ProductDefinitionTemplate::DerivedForecast(template) => {
+            validate_product_template_prefix(&template.base)
+        }
+        ProductDefinitionTemplate::ProbabilityForecast(template) => {
+            validate_product_template_prefix(&template.base)?;
+            validate_probability_type(template.probability)
+        }
+        ProductDefinitionTemplate::PercentileForecast(template) => {
+            validate_product_template_prefix(&template.base)?;
+            validate_percentile(template.percentile_value)
+        }
         ProductDefinitionTemplate::StatisticalProcess(template) => {
-            checked_time_range_count(template.time_ranges.len())?;
-            validate_reference_time(template.end_of_overall_time_interval)
+            validate_product_template_prefix(&template.base)?;
+            validate_statistical_interval(&template.interval)
+        }
+        ProductDefinitionTemplate::ProbabilityStatisticalProcess(template) => {
+            validate_product_template_prefix(&template.probability.base)?;
+            validate_probability_type(template.probability.probability)?;
+            validate_statistical_interval(&template.interval)
+        }
+        ProductDefinitionTemplate::PercentileStatisticalProcess(template) => {
+            validate_product_template_prefix(&template.percentile.base)?;
+            validate_percentile(template.percentile.percentile_value)?;
+            validate_statistical_interval(&template.interval)
         }
         ProductDefinitionTemplate::EnsembleStatisticalProcess(template) => {
-            checked_time_range_count(template.time_ranges.len())?;
-            validate_reference_time(template.end_of_overall_time_interval)
+            validate_product_template_prefix(&template.ensemble.base)?;
+            validate_statistical_interval(&template.interval)
+        }
+        ProductDefinitionTemplate::DerivedStatisticalProcess(template) => {
+            validate_product_template_prefix(&template.derived.base)?;
+            validate_statistical_interval(&template.interval)
+        }
+        ProductDefinitionTemplate::SpatialProcess(template) => {
+            validate_product_template_prefix(&template.base)
         }
         ProductDefinitionTemplate::Unsupported { number, .. } => {
             Err(Error::UnsupportedProductTemplate(*number))
         }
         template => Err(Error::UnsupportedProductTemplate(template.number())),
     }
+}
+
+fn validate_statistical_interval(interval: &StatisticalInterval) -> Result<()> {
+    checked_time_range_count(interval.time_ranges.len())?;
+    validate_reference_time(interval.end_of_overall_time_interval)
 }
 
 #[cfg(test)]
@@ -2426,10 +2632,14 @@ mod tests {
     use grib_core::metadata::ReferenceTime;
     use grib_core::{
         AlbersEqualAreaGrid, AnalysisOrForecastTemplate, DataRepresentation,
+        DerivedForecastTemplate, DerivedStatisticalProcessTemplate,
         EnsembleStatisticalProcessTemplate, FixedSurface, GridDefinition, Identification,
         IndividualEnsembleForecastTemplate, LambertConformalGrid, LatLonGrid, MercatorGrid,
-        PolarStereographicGrid, ProductDefinition, ProductDefinitionTemplate, ProjectedGridCore,
-        StatisticalProcessTemplate, StatisticalTimeRange,
+        PercentileForecastTemplate, PercentileStatisticalProcessTemplate, PolarStereographicGrid,
+        ProbabilityForecastTemplate, ProbabilityLimit, ProbabilityStatisticalProcessTemplate,
+        ProbabilityType, ProductDefinition, ProductDefinitionTemplate, ProjectedGridCore,
+        SpatialProcessTemplate, StatisticalInterval, StatisticalProcessTemplate,
+        StatisticalTimeRange,
     };
     use grib_reader::sections::scan_sections;
     use grib_reader::{GribFile, PredefinedBitmap};
@@ -2641,7 +2851,11 @@ mod tests {
 
     fn analysis_or_forecast_template() -> AnalysisOrForecastTemplate {
         AnalysisOrForecastTemplate {
-            generating_process: 2,
+            type_of_generating_process: 2,
+            background_generating_process_identifier: 0,
+            generating_process_identifier: 0,
+            hours_after_data_cutoff: Some(0),
+            minutes_after_data_cutoff: Some(0),
             forecast_time_unit: 1,
             forecast_time: 6,
             first_surface: Some(FixedSurface::with_value(103, 0, 850)),
@@ -2668,6 +2882,14 @@ mod tests {
             hour: 18,
             minute: 0,
             second: 0,
+        }
+    }
+
+    fn statistical_interval() -> StatisticalInterval {
+        StatisticalInterval {
+            end_of_overall_time_interval: interval_end_time(),
+            number_of_missing_in_statistical_process: 0,
+            time_ranges: vec![statistical_time_range()],
         }
     }
 
@@ -2716,6 +2938,21 @@ mod tests {
             .product(product(parameter_category, parameter_number))
             .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
             .values(values)
+            .build()
+            .unwrap()
+    }
+
+    fn field_with_product_template(template: ProductDefinitionTemplate) -> super::Grib2Field {
+        Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(ProductDefinition {
+                parameter_category: 0,
+                parameter_number: 0,
+                template,
+            })
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[1.0, 2.0, 3.0, 4.0])
             .build()
             .unwrap()
     }
@@ -2910,6 +3147,57 @@ mod tests {
     }
 
     #[test]
+    fn writes_signed_forecast_offset_and_process_metadata() {
+        let mut template = analysis_or_forecast_template();
+        template.background_generating_process_identifier = 7;
+        template.generating_process_identifier = 42;
+        template.hours_after_data_cutoff = Some(12);
+        template.minutes_after_data_cutoff = Some(30);
+        template.forecast_time = -6;
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(ProductDefinition {
+                parameter_category: 0,
+                parameter_number: 0,
+                template: ProductDefinitionTemplate::AnalysisOrForecast(template),
+            })
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[1.0, 2.0, 3.0, 4.0])
+            .build()
+            .unwrap();
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        let message = file.message(0).unwrap();
+        assert_eq!(message.forecast_time(), Some(-6));
+        let product = message.product_definition().unwrap();
+        assert_eq!(product.generating_process_identifier(), Some(42));
+        let ProductDefinitionTemplate::AnalysisOrForecast(template) = &product.template else {
+            panic!("expected template 4.0");
+        };
+        assert_eq!(template.background_generating_process_identifier, 7);
+        assert_eq!(template.hours_after_data_cutoff, Some(12));
+        assert_eq!(template.minutes_after_data_cutoff, Some(30));
+    }
+
+    #[test]
+    fn rejects_unrepresentable_cutoff_metadata() {
+        let mut template = analysis_or_forecast_template();
+        template.hours_after_data_cutoff = Some(u16::MAX);
+        let mut product = product(0, 0);
+        product.template = ProductDefinitionTemplate::AnalysisOrForecast(template);
+        let err = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product)
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[1.0, 2.0, 3.0, 4.0])
+            .build()
+            .unwrap_err();
+        assert!(matches!(err, grib_core::Error::ValueOutOfRange(_)));
+    }
+
+    #[test]
     fn writes_individual_ensemble_product_template_readable_by_reader() {
         let values = [1.0, 2.0, 3.0, 4.0];
         let field = Grib2FieldBuilder::new()
@@ -2957,6 +3245,182 @@ mod tests {
     }
 
     #[test]
+    fn writes_derived_forecast_product_template_readable_by_reader() {
+        let field = field_with_product_template(ProductDefinitionTemplate::DerivedForecast(
+            DerivedForecastTemplate {
+                base: analysis_or_forecast_template(),
+                derived_forecast_type: 4,
+                number_of_forecasts_in_ensemble: 50,
+            },
+        ));
+
+        let bytes = write_message([field]);
+        let product_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 4)
+            .unwrap();
+        assert_eq!(product_section.length, 36);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        let product = message.product_definition().unwrap();
+        let ProductDefinitionTemplate::DerivedForecast(template) = &product.template else {
+            panic!("expected template 4.2");
+        };
+        assert_eq!(template.derived_forecast_type, 4);
+        assert_eq!(template.number_of_forecasts_in_ensemble, 50);
+        assert_eq!(
+            message.read_flat_data_as_f64().unwrap(),
+            [1.0, 2.0, 3.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn writes_probability_forecast_product_template_readable_by_reader() {
+        let probability = ProbabilityType::BetweenLimits {
+            lower: ProbabilityLimit {
+                scale_factor: 1,
+                scaled_value: -125,
+            },
+            upper: ProbabilityLimit {
+                scale_factor: 1,
+                scaled_value: 250,
+            },
+        };
+        let field = field_with_product_template(ProductDefinitionTemplate::ProbabilityForecast(
+            ProbabilityForecastTemplate {
+                base: analysis_or_forecast_template(),
+                forecast_probability_number: 2,
+                total_number_of_forecast_probabilities: 10,
+                probability,
+            },
+        ));
+
+        let bytes = write_message([field]);
+        let product_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 4)
+            .unwrap();
+        assert_eq!(product_section.length, 47);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        let product = message.product_definition().unwrap();
+        let ProductDefinitionTemplate::ProbabilityForecast(template) = &product.template else {
+            panic!("expected template 4.5");
+        };
+        assert_eq!(template.forecast_probability_number, 2);
+        assert_eq!(template.total_number_of_forecast_probabilities, 10);
+        assert_eq!(template.probability, probability);
+        assert_eq!(
+            message.read_flat_data_as_f64().unwrap(),
+            [1.0, 2.0, 3.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn writes_percentile_forecast_product_template_readable_by_reader() {
+        let field = field_with_product_template(ProductDefinitionTemplate::PercentileForecast(
+            PercentileForecastTemplate {
+                base: analysis_or_forecast_template(),
+                percentile_value: 90,
+            },
+        ));
+
+        let bytes = write_message([field]);
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        let product = message.product_definition().unwrap();
+        let ProductDefinitionTemplate::PercentileForecast(template) = &product.template else {
+            panic!("expected template 4.6");
+        };
+        assert_eq!(template.percentile_value, 90);
+        assert_eq!(
+            message.read_flat_data_as_f64().unwrap(),
+            [1.0, 2.0, 3.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn writes_spatial_process_product_template_readable_by_reader() {
+        let field = field_with_product_template(ProductDefinitionTemplate::SpatialProcess(
+            SpatialProcessTemplate {
+                base: analysis_or_forecast_template(),
+                statistical_process: 1,
+                spatial_processing: 2,
+                number_of_points_used: 4,
+            },
+        ));
+
+        let bytes = write_message([field]);
+        let product_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 4)
+            .unwrap();
+        assert_eq!(product_section.length, 37);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        let product = message.product_definition().unwrap();
+        let ProductDefinitionTemplate::SpatialProcess(template) = &product.template else {
+            panic!("expected template 4.15");
+        };
+        assert_eq!(template.statistical_process, 1);
+        assert_eq!(template.spatial_processing, 2);
+        assert_eq!(template.number_of_points_used, 4);
+        assert_eq!(
+            message.read_flat_data_as_f64().unwrap(),
+            [1.0, 2.0, 3.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn rejects_noncanonical_probability_types_and_invalid_percentiles() {
+        for template in [
+            ProductDefinitionTemplate::ProbabilityForecast(ProbabilityForecastTemplate {
+                base: analysis_or_forecast_template(),
+                forecast_probability_number: 1,
+                total_number_of_forecast_probabilities: 10,
+                probability: ProbabilityType::Other {
+                    code: 0,
+                    lower: None,
+                    upper: None,
+                },
+            }),
+            ProductDefinitionTemplate::ProbabilityForecast(ProbabilityForecastTemplate {
+                base: analysis_or_forecast_template(),
+                forecast_probability_number: 1,
+                total_number_of_forecast_probabilities: 10,
+                probability: ProbabilityType::BelowLowerLimit(ProbabilityLimit {
+                    scale_factor: 128,
+                    scaled_value: 10,
+                }),
+            }),
+            ProductDefinitionTemplate::PercentileForecast(PercentileForecastTemplate {
+                base: analysis_or_forecast_template(),
+                percentile_value: 101,
+            }),
+        ] {
+            let err = Grib2FieldBuilder::new()
+                .identification(identification())
+                .grid(grid())
+                .product(ProductDefinition {
+                    parameter_category: 0,
+                    parameter_number: 0,
+                    template,
+                })
+                .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+                .values(&[1.0, 2.0, 3.0, 4.0])
+                .build()
+                .unwrap_err();
+            assert!(matches!(err, grib_core::Error::ValueOutOfRange(_)));
+        }
+    }
+
+    #[test]
     fn writes_statistical_product_template_readable_by_reader() {
         let values = [1.0, 2.0, 3.0, 4.0];
         let mut base = analysis_or_forecast_template();
@@ -2970,9 +3434,7 @@ mod tests {
                 template: ProductDefinitionTemplate::StatisticalProcess(
                     StatisticalProcessTemplate {
                         base,
-                        end_of_overall_time_interval: interval_end_time(),
-                        number_of_missing_in_statistical_process: 0,
-                        time_ranges: vec![statistical_time_range()],
+                        interval: statistical_interval(),
                     },
                 ),
             })
@@ -2997,8 +3459,7 @@ mod tests {
         match &product.template {
             ProductDefinitionTemplate::StatisticalProcess(template) => {
                 assert_eq!(template.base.forecast_time, 1);
-                assert_eq!(template.end_of_overall_time_interval, interval_end_time());
-                assert_eq!(template.time_ranges, vec![statistical_time_range()]);
+                assert_eq!(template.interval, statistical_interval());
             }
             other => panic!("expected template 4.8, got {other:?}"),
         }
@@ -3022,9 +3483,7 @@ mod tests {
                             perturbation_number: 3,
                             number_of_forecasts_in_ensemble: 30,
                         },
-                        end_of_overall_time_interval: interval_end_time(),
-                        number_of_missing_in_statistical_process: 0,
-                        time_ranges: vec![statistical_time_range()],
+                        interval: statistical_interval(),
                     },
                 ),
             })
@@ -3051,12 +3510,118 @@ mod tests {
                 assert_eq!(template.ensemble.type_of_ensemble_forecast, 1);
                 assert_eq!(template.ensemble.perturbation_number, 3);
                 assert_eq!(template.ensemble.number_of_forecasts_in_ensemble, 30);
-                assert_eq!(template.end_of_overall_time_interval, interval_end_time());
-                assert_eq!(template.time_ranges, vec![statistical_time_range()]);
+                assert_eq!(template.interval, statistical_interval());
             }
             other => panic!("expected template 4.11, got {other:?}"),
         }
         assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+
+    #[test]
+    fn writes_probability_statistical_product_template_readable_by_reader() {
+        let probability = ProbabilityType::AboveLowerLimit(ProbabilityLimit {
+            scale_factor: 1,
+            scaled_value: 125,
+        });
+        let field =
+            field_with_product_template(ProductDefinitionTemplate::ProbabilityStatisticalProcess(
+                ProbabilityStatisticalProcessTemplate {
+                    probability: ProbabilityForecastTemplate {
+                        base: analysis_or_forecast_template(),
+                        forecast_probability_number: 1,
+                        total_number_of_forecast_probabilities: 10,
+                        probability,
+                    },
+                    interval: statistical_interval(),
+                },
+            ));
+
+        let bytes = write_message([field]);
+        let product_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 4)
+            .unwrap();
+        assert_eq!(product_section.length, 71);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        let product = message.product_definition().unwrap();
+        let ProductDefinitionTemplate::ProbabilityStatisticalProcess(template) = &product.template
+        else {
+            panic!("expected template 4.9");
+        };
+        assert_eq!(template.probability.probability, probability);
+        assert_eq!(template.interval, statistical_interval());
+        assert_eq!(message.valid_time(), Some(interval_end_time()));
+    }
+
+    #[test]
+    fn writes_percentile_statistical_product_template_readable_by_reader() {
+        let field =
+            field_with_product_template(ProductDefinitionTemplate::PercentileStatisticalProcess(
+                PercentileStatisticalProcessTemplate {
+                    percentile: PercentileForecastTemplate {
+                        base: analysis_or_forecast_template(),
+                        percentile_value: 75,
+                    },
+                    interval: statistical_interval(),
+                },
+            ));
+
+        let bytes = write_message([field]);
+        let product_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 4)
+            .unwrap();
+        assert_eq!(product_section.length, 59);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        let product = message.product_definition().unwrap();
+        let ProductDefinitionTemplate::PercentileStatisticalProcess(template) = &product.template
+        else {
+            panic!("expected template 4.10");
+        };
+        assert_eq!(template.percentile.percentile_value, 75);
+        assert_eq!(template.interval, statistical_interval());
+        assert_eq!(message.valid_time(), Some(interval_end_time()));
+    }
+
+    #[test]
+    fn writes_derived_statistical_product_template_readable_by_reader() {
+        let field =
+            field_with_product_template(ProductDefinitionTemplate::DerivedStatisticalProcess(
+                DerivedStatisticalProcessTemplate {
+                    derived: DerivedForecastTemplate {
+                        base: analysis_or_forecast_template(),
+                        derived_forecast_type: 1,
+                        number_of_forecasts_in_ensemble: 20,
+                    },
+                    interval: statistical_interval(),
+                },
+            ));
+
+        let bytes = write_message([field]);
+        let product_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 4)
+            .unwrap();
+        assert_eq!(product_section.length, 60);
+
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let message = file.message(0).unwrap();
+        let product = message.product_definition().unwrap();
+        let ProductDefinitionTemplate::DerivedStatisticalProcess(template) = &product.template
+        else {
+            panic!("expected template 4.12");
+        };
+        assert_eq!(template.derived.derived_forecast_type, 1);
+        assert_eq!(template.derived.number_of_forecasts_in_ensemble, 20);
+        assert_eq!(template.interval, statistical_interval());
+        assert_eq!(message.valid_time(), Some(interval_end_time()));
     }
 
     #[test]
@@ -3070,9 +3635,10 @@ mod tests {
                 template: ProductDefinitionTemplate::StatisticalProcess(
                     StatisticalProcessTemplate {
                         base: analysis_or_forecast_template(),
-                        end_of_overall_time_interval: interval_end_time(),
-                        number_of_missing_in_statistical_process: 0,
-                        time_ranges: vec![statistical_time_range(); 256],
+                        interval: StatisticalInterval {
+                            time_ranges: vec![statistical_time_range(); 256],
+                            ..statistical_interval()
+                        },
                     },
                 ),
             })
@@ -3097,16 +3663,17 @@ mod tests {
                 template: ProductDefinitionTemplate::StatisticalProcess(
                     StatisticalProcessTemplate {
                         base: analysis_or_forecast_template(),
-                        end_of_overall_time_interval: ReferenceTime {
-                            year: 2026,
-                            month: 13,
-                            day: 20,
-                            hour: 18,
-                            minute: 0,
-                            second: 0,
+                        interval: StatisticalInterval {
+                            end_of_overall_time_interval: ReferenceTime {
+                                year: 2026,
+                                month: 13,
+                                day: 20,
+                                hour: 18,
+                                minute: 0,
+                                second: 0,
+                            },
+                            ..statistical_interval()
                         },
-                        number_of_missing_in_statistical_process: 0,
-                        time_ranges: vec![statistical_time_range()],
                     },
                 ),
             })

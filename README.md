@@ -132,14 +132,14 @@ let product = ProductDefinition {
     parameter_category: 0,
     parameter_number: 0,
     template: ProductDefinitionTemplate::AnalysisOrForecast(AnalysisOrForecastTemplate {
-        generating_process: 2,
+        type_of_generating_process: 2,
+        background_generating_process_identifier: 0,
+        generating_process_identifier: 0,
+        hours_after_data_cutoff: Some(0),
+        minutes_after_data_cutoff: Some(0),
         forecast_time_unit: 1,
         forecast_time: 6,
-        first_surface: Some(FixedSurface {
-            surface_type: 103,
-            scale_factor: 0,
-            scaled_value: 850,
-        }),
+        first_surface: Some(FixedSurface::with_value(103, 0, 850)),
         second_surface: None,
     }),
 };
@@ -163,6 +163,8 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Logical field indexing for multi-field GRIB2 messages
 - GRIB2 Section 2 access and same-message bitmap reuse through indicator 254
 - Regular latitude/longitude grids for GRIB1 and GRIB2
+- Reader GRIB2 rotated latitude/longitude template 3.1 and regular Gaussian
+  template 3.40, with explicit typed rejection of quasi-regular grids
 - Reader GRIB2 Mercator grid template 3.10, polar stereographic grid template
   3.20, Lambert conformal grid template 3.30, and Albers equal-area grid
   template 3.31 metadata, projected coordinate offsets, and flat data decode
@@ -174,7 +176,10 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Typed metadata access for reference time, parameter identity, product metadata, grid geometry, and lat/lon coordinates
 - Explicit north-up decode methods in addition to reader order that preserves
   the encoded i/j scan directions
-- Reader and writer GRIB2 product definition templates 4.0, 4.1, 4.8, and 4.11
+- Reader GRIB2 product definition templates 4.0, 4.1, 4.2, 4.5, 4.6, 4.8,
+  4.9, 4.10, 4.11, 4.12, and 4.15
+- Writer GRIB2 product definition templates 4.0, 4.1, 4.2, 4.5, 4.6, 4.8,
+  4.9, 4.10, 4.11, 4.12, and 4.15
 - Forecast valid-time helpers for supported fixed-width GRIB1/GRIB2 time units
 - `GribFile::builder()` for strict or tolerant scanning and allocation limits
 - Bitmap application with missing values surfaced as `NaN`
@@ -194,11 +199,16 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 
 ## Not Yet Supported
 
-- Remaining GRIB2 grid templates beyond 3.0, 3.10, 3.20, 3.30, and 3.31
-- Remaining GRIB2 product definition templates beyond 4.0, 4.1, 4.8, and 4.11
+- Remaining GRIB2 grid templates beyond 3.0, 3.1, 3.10, 3.20, 3.30, 3.31,
+  and 3.40
+- Remaining reader GRIB2 product definition templates beyond 4.0, 4.1, 4.2,
+  4.5, 4.6, 4.8, 4.9, 4.10, 4.11, 4.12, and 4.15
+- Remaining writer GRIB2 product definition templates beyond 4.0, 4.1, 4.2,
+  4.5, 4.6, 4.8, 4.9, 4.10, 4.11, 4.12, and 4.15
 - Writer GRIB2 row-by-row complex packing
 
-Unsupported cases fail explicitly with typed errors.
+Unsupported decode and encode operations fail explicitly with typed errors;
+unknown GRIB2 product templates remain indexable with their raw bytes preserved.
 Calendar-dependent forecast units such as months and years are exposed through
 raw metadata but currently return `None` from `valid_time()`.
 
