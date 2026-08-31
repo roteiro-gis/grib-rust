@@ -34,6 +34,20 @@
   timestamps, time ranges, thresholds, and ensemble metadata against ecCodes
 - decode and write spatially processed product template 4.15 and verify its
   process type, spatial method, and source-point count against ecCodes
+- replace duplicate simple- and image-packing parameter structs with one
+  `ScaledPackingParams` model shared by every scaled representation
+- decode CCSDS/AEC data representation template 5.42 behind the `ccsds`
+  feature with validated option masks, block sizes, reference sample intervals,
+  and one shared safe interface to bundled libaec 1.1.7
+- write CCSDS/AEC template 5.42 with automatic bit-width selection, bitmap and
+  constant-field handling, configurable codec parameters, and ecCodes parity
+  for default, restricted, signed, 32-bit, and nonstandard-block streams
+- build the parity image from SHA-256-verified ecCodes 2.47.0 and libaec 1.1.7
+  source archives, limit native builds to two compile jobs, and default parity
+  containers to two CPUs and two Cargo build jobs without sharing incompatible
+  native target artifacts on non-Linux hosts
+- compare numeric GRIB2 parameter identities in parity tests so ecCodes label
+  wording changes do not masquerade as format incompatibilities
 - raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
 
 ## 0.6.0 - 2026-06-25

@@ -82,6 +82,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "grib-aec"
+version = "0.7.0"
+dependencies = [
+ "cc",
+ "thiserror",
+]
+
+[[package]]
 name = "grib-core"
 version = "0.7.0"
 dependencies = [
@@ -92,6 +100,7 @@ dependencies = [
 name = "grib-reader"
 version = "0.7.0"
 dependencies = [
+ "grib-aec",
  "grib-core",
  "memchr",
  "memmap2",
@@ -113,6 +122,7 @@ dependencies = [
 name = "grib-writer"
 version = "0.7.0"
 dependencies = [
+ "grib-aec",
  "grib-core",
 ]
 

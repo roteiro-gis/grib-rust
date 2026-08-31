@@ -288,6 +288,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "grib-aec"
+version = "0.7.0"
+dependencies = [
+ "cc",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "grib-core"
 version = "0.7.0"
 dependencies = [
@@ -299,6 +307,7 @@ name = "grib-reader"
 version = "0.7.0"
 dependencies = [
  "criterion",
+ "grib-aec",
  "grib-core",
  "jpeg2k",
  "memchr",
@@ -316,6 +325,7 @@ name = "grib-writer"
 version = "0.7.0"
 dependencies = [
  "criterion",
+ "grib-aec",
  "grib-core",
  "grib-reader",
  "openjp2",

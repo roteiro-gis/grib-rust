@@ -7,15 +7,16 @@
 [![grib-writer crates.io](https://img.shields.io/crates/v/grib-writer.svg)](https://crates.io/crates/grib-writer)
 [![grib-writer docs.rs](https://docs.rs/grib-writer/badge.svg)](https://docs.rs/grib-writer)
 
-Rust GRIB reader, writer, and shared core primitives for weather and climate data. The default build has no C libraries, no build scripts, and no unsafe in crate code beyond `memmap2`; optional GRIB2 image-packing codecs are behind feature flags.
+Rust GRIB reader, writer, and shared core primitives for weather and climate data. Default `grib-core`, `grib-reader`, and `grib-writer` builds have no C libraries or build scripts and no unsafe crate code beyond `memmap2`; optional GRIB2 image and CCSDS packing codecs are behind feature flags. The `ccsds` feature compiles the pinned libaec source through the isolated safe `grib-aec` interface.
 
 ## Crates
 
 | Crate | Description |
 |---|---|
+| `grib-aec` | Safe shared interface to the bundled libaec CCSDS codec |
 | `grib-core` | Shared GRIB data model, code tables, binary primitives, bit I/O, and validation helpers |
 | `grib-reader` | GRIB1/GRIB2 file opening, message scanning, metadata parsing, and packed data decoding |
-| `grib-writer` | GRIB1/GRIB2 field builders, simple/complex packing, bitmap handling, and message serialization |
+| `grib-writer` | GRIB1/GRIB2 field builders, simple/complex/image/CCSDS packing, bitmap handling, and message serialization |
 
 ## Reader Usage
 
@@ -186,12 +187,16 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Parallel field decoding via Rayon
 - Output: caller-owned `&mut [f32]`/`&mut [f64]`, flat `Vec<f32>`/`Vec<f64>`, or `ndarray::ArrayD<f32>`/`ArrayD<f64>`
 - Memory-mapped files, owned byte buffers, or arbitrary `Read` streams
+- Feature-gated reader GRIB2 CCSDS/AEC template 5.42 decode using the bundled,
+  security-fixed libaec 1.1.7 codec
 - Writer GRIB2 regular lat/lon fields with simple packing template 5.0,
   complex packing template 5.2, and spatial differencing template 5.3
 - Writer GRIB2 Mercator grid template 3.10, polar stereographic grid template
   3.20, Lambert conformal grid template 3.30, and Albers equal-area grid
   template 3.31 fields
 - Feature-gated writer GRIB2 JPEG2000 template 5.40 and PNG template 5.41 packed data encode
+- Feature-gated writer GRIB2 CCSDS/AEC template 5.42 encode with automatic
+  bit-width selection, bitmap support, and configurable codec parameters
 - Writer GRIB2 bitmap section generation from explicit masks or `NaN` values
 - Writer single-message multi-field GRIB2 output with reused grid sections
 - Writer GRIB1 regular lat/lon fields with simple packing and optional explicit
@@ -214,11 +219,11 @@ raw metadata but currently return `None` from `valid_time()`.
 
 ## API Compatibility
 
-The workspace is pre-1.0. `GridDefinition` is intentionally `#[non_exhaustive]`
-because GRIB grid templates are open-ended: WMO can add templates and producers
-can use center-specific local templates. Downstream code should prefer
-`GridDefinition` query helpers for common behavior or include a wildcard arm
-when matching specific grid families.
+The workspace is pre-1.0. `GridDefinition` and `DataRepresentation` are
+intentionally `#[non_exhaustive]` because WMO can add templates and producers
+can use center-specific local templates. Downstream code should prefer query
+helpers for common behavior or include a wildcard arm when matching specific
+template families.
 
 ## Feature flags
 
@@ -227,20 +232,21 @@ when matching specific grid families.
 | `rayon` | yes | Parallel field decoding |
 | `jpeg2000` | no | GRIB2 template 5.40 JPEG2000 packed-data decode in `grib-reader` and encode in `grib-writer` |
 | `png` | no | GRIB2 template 5.41 PNG packed-data decode in `grib-reader` and encode in `grib-writer` |
-| `codecs` | no | Enables both `jpeg2000` and `png` |
+| `ccsds` | no | GRIB2 template 5.42 CCSDS/AEC packed-data decode in `grib-reader` and encode in `grib-writer` using bundled libaec 1.1.7 |
+| `codecs` | no | Enables `jpeg2000`, `png`, and `ccsds` |
 
 ## Testing
 
 ```sh
 cargo fmt --all --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo run -p grib-reader --example sync_corpus
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo run -p grib-reader --example sync_corpus --locked
 git diff --exit-code
-cargo test --workspace --all-features
-cargo test -p grib-reader --no-default-features
+cargo test --all-features --locked
+cargo test --no-default-features --locked
 ./scripts/run-reference-parity.sh
-cargo check --manifest-path grib-reader/fuzz/Cargo.toml --bins
-cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins -- -D warnings
+cargo check --manifest-path grib-reader/fuzz/Cargo.toml --bins --locked
+cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins --locked -- -D warnings
 ./scripts/verify-packages.sh
 ```
 
@@ -251,12 +257,20 @@ temporary-registry workspace verifier.
 
 The `Reference Compat` workflow runs the Dockerized ecCodes parity suite for
 pull requests, `main`/`master` pushes, release tags, and a weekly scheduled
-check. The reader and writer parity tests stay `#[ignore]` for normal local
-`cargo test` because they require the ecCodes helper; CI invokes them through:
+check. Its image compiles SHA-256-verified ecCodes 2.47.0 and libaec 1.1.7
+source archives. The reader and writer parity tests stay `#[ignore]` for normal
+local `cargo test` because they require the ecCodes helper; CI invokes them
+through:
 
 ```sh
 ./scripts/run-reference-parity.sh
 ```
+
+The parity container defaults to two CPUs and two Cargo build jobs. Set
+`ECCODES_DOCKER_CPUS` or `CARGO_BUILD_JOBS` to adjust those limits explicitly.
+On non-Linux hosts, container artifacts use container-local storage so native
+Linux objects cannot collide with the host's `target/`; set
+`ECCODES_CARGO_TARGET_DIR` to override that location.
 
 ## Release Checklist
 
@@ -266,6 +280,8 @@ git pull --ff-only
 git merge <release-branch>
 
 ./scripts/verify-packages.sh
+cargo publish -p grib-aec --dry-run --locked
+cargo publish -p grib-aec --locked
 cargo publish -p grib-core --dry-run --locked
 cargo publish -p grib-core --locked
 cargo publish -p grib-reader --dry-run --locked
@@ -292,7 +308,7 @@ git push origin v<version>
   `main`/`master` pushes, release tags, and weekly scheduled verification.
 - `grib-writer` has a versioned dev-dependency on `grib-reader` for local
   validation tests and benchmarks, so dry-run and publish it after
-  `grib-reader` v0.6.0 is visible in the crates.io index.
+  `grib-reader` v0.7.0 is visible in the crates.io index.
 - For reference comparisons and current benchmark results against ecCodes, see
   [docs/benchmark-report.md](docs/benchmark-report.md). Re-run the benchmark
   scripts after corpus changes before using those numbers as current throughput

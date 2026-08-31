@@ -14,6 +14,7 @@ categories = ["science", "encoding"]
 
 [dependencies]
 grib-core = { path = "../grib-core", version = "0.7.0" }
+grib-aec = { workspace = true, optional = true }
 openjp2 = { version = "0.6.1", default-features = false, features = ["file-io", "std"], optional = true }
 png = { version = "0.18.1", optional = true }
 tempfile = { version = "3", optional = true }
@@ -22,7 +23,8 @@ tempfile = { version = "3", optional = true }
 default = []
 jpeg2000 = ["dep:openjp2", "dep:tempfile"]
 png = ["dep:png"]
-codecs = ["jpeg2000", "png"]
+ccsds = ["dep:grib-aec"]
+codecs = ["jpeg2000", "png", "ccsds"]
 
 [dev-dependencies]
 criterion = "0.5"

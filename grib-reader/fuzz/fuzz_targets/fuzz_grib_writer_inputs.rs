@@ -2,10 +2,10 @@
 
 use grib_core::metadata::ReferenceTime;
 use grib_core::{
-    AnalysisOrForecastTemplate, DerivedForecastTemplate, DerivedStatisticalProcessTemplate,
-    FixedSurface, GridDefinition, Identification, LatLonGrid, PercentileForecastTemplate,
-    PercentileStatisticalProcessTemplate, ProbabilityForecastTemplate, ProbabilityLimit,
-    ProbabilityStatisticalProcessTemplate, ProbabilityType, ProductDefinition,
+    AnalysisOrForecastTemplate, CcsdsBlockSize, CcsdsFlags, DerivedForecastTemplate,
+    DerivedStatisticalProcessTemplate, FixedSurface, GridDefinition, Identification, LatLonGrid,
+    PercentileForecastTemplate, PercentileStatisticalProcessTemplate, ProbabilityForecastTemplate,
+    ProbabilityLimit, ProbabilityStatisticalProcessTemplate, ProbabilityType, ProductDefinition,
     ProductDefinitionTemplate, SpatialProcessTemplate, StatisticalInterval, StatisticalTimeRange,
 };
 use grib_reader::GribFile;
@@ -86,18 +86,38 @@ fn generated_grib2_field(
     values: Vec<f64>,
 ) -> grib_writer::Result<Grib2Field> {
     let decimal_scale = decimal_scale(input);
-    let packing = if input.bool() {
-        let spatial_differencing = match input.u8() % 4 {
-            0 => Some(SpatialDifferencingOrder::First),
-            1 => Some(SpatialDifferencingOrder::Second),
-            _ => None,
-        };
-        PackingStrategy::ComplexAuto {
-            decimal_scale,
-            spatial_differencing,
+    let packing = match input.u8() % 3 {
+        0 => {
+            let spatial_differencing = match input.u8() % 4 {
+                0 => Some(SpatialDifferencingOrder::First),
+                1 => Some(SpatialDifferencingOrder::Second),
+                _ => None,
+            };
+            PackingStrategy::ComplexAuto {
+                decimal_scale,
+                spatial_differencing,
+            }
         }
-    } else {
-        PackingStrategy::SimpleAuto { decimal_scale }
+        1 => {
+            let (flags, block_size) = match input.u8() % 3 {
+                0 => (CcsdsFlags::DEFAULT, CcsdsBlockSize::THIRTY_TWO),
+                1 => (
+                    CcsdsFlags::DEFAULT | CcsdsFlags::SIGNED,
+                    CcsdsBlockSize::SIXTEEN,
+                ),
+                _ => (
+                    CcsdsFlags::DEFAULT | CcsdsFlags::NOT_ENFORCE,
+                    CcsdsBlockSize::new(12).unwrap(),
+                ),
+            };
+            PackingStrategy::CcsdsAuto {
+                decimal_scale,
+                flags,
+                block_size,
+                reference_sample_interval: u16::from(input.u8()) + 1,
+            }
+        }
+        _ => PackingStrategy::SimpleAuto { decimal_scale },
     };
     let mut builder = Grib2FieldBuilder::new()
         .discipline(input.u8() % 3)

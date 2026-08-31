@@ -12,8 +12,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 grib-core = { path = "../../grib-core" }
-grib-reader = { path = ".." }
-grib-writer = { path = "../../grib-writer" }
+grib-reader = { path = "..", features = ["ccsds"] }
+grib-writer = { path = "../../grib-writer", features = ["ccsds"] }
 
 [[bin]]
 name = "fuzz_grib_open"

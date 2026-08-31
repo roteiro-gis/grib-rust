@@ -18,6 +18,9 @@ pub struct ReferenceDump {
 pub struct ReferenceMessage {
     pub edition: u8,
     pub name: String,
+    pub discipline: Option<i64>,
+    pub parameter_category: Option<i64>,
+    pub parameter_number: Option<i64>,
     pub reference_time: ReferenceTimeDump,
     pub ni: usize,
     pub nj: usize,
@@ -77,6 +80,22 @@ pub fn dump_reference(helper: &Path, path: &Path) -> ReferenceDump {
             path.display()
         )
     })
+}
+
+pub fn generate_ccsds_reference(helper: &Path, profile: &str, path: &Path) {
+    let output = Command::new(helper)
+        .arg("generate-ccsds")
+        .arg(profile)
+        .arg(path)
+        .output()
+        .unwrap_or_else(|err| panic!("failed to run {}: {err}", helper.display()));
+    assert!(
+        output.status.success(),
+        "CCSDS {profile} reference generation failed for {}:\nstdout:\n{}\nstderr:\n{}",
+        path.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 pub fn benchmark_reference(

@@ -10,13 +10,18 @@ use grib_core::binary::{
 };
 use grib_core::bit::BitWriter;
 use grib_core::{
-    AlbersEqualAreaGrid, AnalysisOrForecastTemplate, ComplexPackingParams, DataRepresentation,
-    FixedSurface, GridDefinition, Identification, ImagePackingParams, Jpeg2000PackingParams,
-    LambertConformalGrid, LatLonGrid, MercatorGrid, PngPackingParams, PolarStereographicGrid,
-    ProbabilityLimit, ProbabilityType, ProductDefinition, ProductDefinitionTemplate,
-    ProjectedGridCore, ReferenceTime, SimplePackingParams, SpatialDifferencingParams,
-    StatisticalInterval, StatisticalTimeRange,
+    AlbersEqualAreaGrid, AnalysisOrForecastTemplate, CcsdsBlockSize, CcsdsFlags,
+    CcsdsPackingParams, ComplexPackingParams, DataRepresentation, FixedSurface, GridDefinition,
+    Identification, Jpeg2000PackingParams, LambertConformalGrid, LatLonGrid, MercatorGrid,
+    PngPackingParams, PolarStereographicGrid, ProbabilityLimit, ProbabilityType, ProductDefinition,
+    ProductDefinitionTemplate, ProjectedGridCore, ReferenceTime, ScaledPackingParams,
+    SpatialDifferencingParams, StatisticalInterval, StatisticalTimeRange,
 };
+
+#[cfg(feature = "ccsds")]
+use grib_aec::{encode as aec_encode, AecFlags, AecParams};
+#[cfg(feature = "ccsds")]
+use grib_core::filled_vec;
 
 pub use grib_core::grib1::ProductDefinition as Grib1ProductDefinition;
 pub use grib_core::{Error, Result};
@@ -35,6 +40,17 @@ pub enum PackingStrategy {
     Jpeg2000Auto { decimal_scale: i16 },
     /// GRIB2 PNG image packing template 5.41.
     PngAuto { decimal_scale: i16 },
+    /// GRIB2 CCSDS/AEC packing template 5.42.
+    ///
+    /// The interoperable baseline uses [`CcsdsFlags::DEFAULT`],
+    /// [`CcsdsBlockSize::THIRTY_TWO`], and reference-sample interval 128.
+    /// [`CcsdsFlags::PAD_RSI`] is decode-only and is rejected by the writer.
+    CcsdsAuto {
+        decimal_scale: i16,
+        flags: CcsdsFlags,
+        block_size: CcsdsBlockSize,
+        reference_sample_interval: u16,
+    },
 }
 
 /// Spatial differencing order for GRIB2 complex packing template 5.3.
@@ -189,6 +205,11 @@ impl Grib1FieldBuilder {
             PackingStrategy::PngAuto { .. } => {
                 return Err(Error::Other(
                     "GRIB1 writer does not support PNG packing".into(),
+                ));
+            }
+            PackingStrategy::CcsdsAuto { .. } => {
+                return Err(Error::Other(
+                    "GRIB1 writer does not support CCSDS packing".into(),
                 ));
             }
         };
@@ -358,6 +379,19 @@ impl Grib2FieldBuilder {
             PackingStrategy::PngAuto { decimal_scale } => {
                 pack_png_auto(&values, bitmap.as_deref(), &grid, decimal_scale)?
             }
+            PackingStrategy::CcsdsAuto {
+                decimal_scale,
+                flags,
+                block_size,
+                reference_sample_interval,
+            } => pack_ccsds_auto(
+                &values,
+                bitmap.as_deref(),
+                decimal_scale,
+                flags,
+                block_size,
+                reference_sample_interval,
+            )?,
         };
 
         Ok(Grib2Field {
@@ -526,7 +560,7 @@ fn pack_simple_auto(
         writer.align_to_byte()?;
     }
 
-    let representation = DataRepresentation::SimplePacking(SimplePackingParams {
+    let representation = DataRepresentation::SimplePacking(ScaledPackingParams {
         encoded_values: present_count,
         reference_value,
         binary_scale: 0,
@@ -710,10 +744,199 @@ fn pack_png_auto(
     Err(Error::UnsupportedDataTemplate(41))
 }
 
+#[cfg(feature = "ccsds")]
+fn pack_ccsds_auto(
+    values: &[f64],
+    explicit_bitmap: Option<&[bool]>,
+    decimal_scale: i16,
+    flags: CcsdsFlags,
+    block_size: CcsdsBlockSize,
+    reference_sample_interval: u16,
+) -> Result<PackedField> {
+    if flags.contains(CcsdsFlags::PAD_RSI) {
+        return Err(Error::ValueOutOfRange(
+            "CCSDS PAD_RSI is a legacy decode-only option".into(),
+        ));
+    }
+
+    let present = present_mask(values, explicit_bitmap)?;
+    let present_count = present.iter().filter(|present| **present).count();
+    let bitmap_payload = if present.iter().any(|present| !*present) {
+        Some(pack_bitmap(&present)?)
+    } else {
+        None
+    };
+    let quantized = quantize_present_values(values, &present, decimal_scale, "CCSDS packing")?;
+    let (reference_value, deltas) = ccsds_packing_deltas(&quantized, decimal_scale)?;
+    let max_delta = deltas.iter().copied().max().unwrap_or(0);
+    let bits_per_value = ccsds_bits_per_value(max_delta, flags)?;
+    if bits_per_value > 32 {
+        return Err(Error::UnsupportedPackingWidth(bits_per_value));
+    }
+
+    let params = CcsdsPackingParams::new(
+        ScaledPackingParams {
+            encoded_values: present_count,
+            reference_value,
+            binary_scale: 0,
+            decimal_scale,
+            bits_per_value,
+            original_field_type: 0,
+        },
+        flags,
+        block_size,
+        reference_sample_interval,
+    )?;
+    let data_payload = if bits_per_value == 0 {
+        Vec::new()
+    } else {
+        encode_ccsds_payload(&deltas, &params)?
+    };
+
+    Ok(PackedField {
+        representation: DataRepresentation::CcsdsPacking(params),
+        bitmap_payload,
+        data_payload,
+    })
+}
+
+#[cfg(not(feature = "ccsds"))]
+fn pack_ccsds_auto(
+    _values: &[f64],
+    _explicit_bitmap: Option<&[bool]>,
+    _decimal_scale: i16,
+    _flags: CcsdsFlags,
+    _block_size: CcsdsBlockSize,
+    _reference_sample_interval: u16,
+) -> Result<PackedField> {
+    Err(Error::UnsupportedDataTemplate(42))
+}
+
+#[cfg(feature = "ccsds")]
+fn ccsds_bits_per_value(max_delta: u64, flags: CcsdsFlags) -> Result<u8> {
+    let mut bits = bits_needed(max_delta)?;
+    if bits == 0 || !flags.contains(CcsdsFlags::SIGNED) {
+        return Ok(bits);
+    }
+
+    let container_bits = match bits {
+        1..=8 => 8,
+        9..=16 => 16,
+        17..=32 => 32,
+        _ => return Err(Error::UnsupportedPackingWidth(bits)),
+    };
+    if bits < container_bits {
+        // libaec sign-extends widths smaller than their sample container.
+        // ecCodes expands 17--24-bit samples to four-byte containers, even
+        // when the template advertises THREE_BYTE. Reserve a zero sign bit so
+        // GRIB's non-negative packed differences retain the same numeric value
+        // in both compact libaec clients and ecCodes' canonical layout.
+        bits = bits
+            .checked_add(1)
+            .ok_or(Error::UnsupportedPackingWidth(bits))?;
+    }
+    Ok(bits)
+}
+
+#[cfg(feature = "ccsds")]
+fn ccsds_packing_deltas(quantized: &[f64], decimal_scale: i16) -> Result<(f32, Vec<u64>)> {
+    let Some(&first) = quantized.first() else {
+        return Ok((0.0, Vec::new()));
+    };
+    if quantized.iter().all(|value| *value == first) {
+        let decimal_factor = 10.0_f64.powi(-i32::from(decimal_scale));
+        let constant = first * decimal_factor;
+        let reference_value = constant as f32;
+        if !constant.is_finite() || !reference_value.is_finite() {
+            return Err(Error::ValueOutOfRange(
+                "constant CCSDS reference value does not fit IEEE f32".into(),
+            ));
+        }
+        return Ok((
+            reference_value,
+            filled_vec(quantized.len(), 0_u64, "constant CCSDS packed")?,
+        ));
+    }
+
+    simple_packing_deltas(quantized)
+}
+
+#[cfg(feature = "ccsds")]
+fn encode_ccsds_payload(deltas: &[u64], params: &CcsdsPackingParams) -> Result<Vec<u8>> {
+    let bits_per_value = params.packing().bits_per_value;
+    let bytes_per_sample = ccsds_bytes_per_sample(bits_per_value, params.flags())?;
+    let byte_count =
+        deltas
+            .len()
+            .checked_mul(bytes_per_sample)
+            .ok_or(Error::ArithmeticOverflow {
+                operation: "computing CCSDS input byte count",
+            })?;
+    let mut samples = Vec::new();
+    samples
+        .try_reserve_exact(byte_count)
+        .map_err(|error| Error::allocation("bytes for CCSDS input samples", byte_count, error))?;
+    for &delta in deltas {
+        let sample =
+            u32::try_from(delta).map_err(|_| Error::UnsupportedPackingWidth(bits_per_value))?;
+        if params.flags().contains(CcsdsFlags::MSB) {
+            samples.extend_from_slice(&sample.to_be_bytes()[4 - bytes_per_sample..]);
+        } else {
+            samples.extend_from_slice(&sample.to_le_bytes()[..bytes_per_sample]);
+        }
+    }
+
+    let codec_params = AecParams::new(
+        bits_per_value,
+        params.block_size().samples(),
+        params.reference_sample_interval(),
+        ccsds_encoder_flags(params.flags()),
+    )
+    .map_err(|error| Error::Codec {
+        codec: "CCSDS/AEC",
+        operation: "configure",
+        reason: error.to_string(),
+    })?;
+    aec_encode(&samples, codec_params).map_err(|error| Error::Codec {
+        codec: "CCSDS/AEC",
+        operation: "encode",
+        reason: error.to_string(),
+    })
+}
+
+#[cfg(feature = "ccsds")]
+fn ccsds_bytes_per_sample(bits_per_value: u8, flags: CcsdsFlags) -> Result<usize> {
+    match bits_per_value {
+        1..=8 => Ok(1),
+        9..=16 => Ok(2),
+        17..=24 if flags.contains(CcsdsFlags::THREE_BYTE) => Ok(3),
+        17..=32 => Ok(4),
+        bits => Err(Error::UnsupportedPackingWidth(bits)),
+    }
+}
+
+#[cfg(feature = "ccsds")]
+fn ccsds_encoder_flags(flags: CcsdsFlags) -> AecFlags {
+    let mut codec_flags = AecFlags::NONE;
+    for (wire_flag, codec_flag) in [
+        (CcsdsFlags::SIGNED, AecFlags::DATA_SIGNED),
+        (CcsdsFlags::THREE_BYTE, AecFlags::DATA_3BYTE),
+        (CcsdsFlags::MSB, AecFlags::DATA_MSB),
+        (CcsdsFlags::PREPROCESS, AecFlags::DATA_PREPROCESS),
+        (CcsdsFlags::RESTRICTED, AecFlags::RESTRICTED),
+        (CcsdsFlags::NOT_ENFORCE, AecFlags::NOT_ENFORCE),
+    ] {
+        if flags.contains(wire_flag) {
+            codec_flags |= codec_flag;
+        }
+    }
+    codec_flags
+}
+
 #[cfg(any(feature = "jpeg2000", feature = "png"))]
 #[derive(Debug, Clone)]
 struct PreparedImagePacking {
-    params: ImagePackingParams,
+    params: ScaledPackingParams,
     bitmap_payload: Option<Vec<u8>>,
     deltas: Vec<u64>,
     dimensions: ImageDimensions,
@@ -757,7 +980,7 @@ fn prepare_image_packing(
     validate_image_deltas_fit(&deltas, bits_per_value)?;
 
     Ok(PreparedImagePacking {
-        params: ImagePackingParams {
+        params: ScaledPackingParams {
             encoded_values: present_count,
             reference_value,
             binary_scale: 0,
@@ -2334,13 +2557,19 @@ fn write_data_representation_section(out: &mut Vec<u8>, packed: &PackedField) ->
         DataRepresentation::PngPacking(params) => {
             write_png_data_representation_section(out, params)
         }
+        DataRepresentation::CcsdsPacking(params) => {
+            write_ccsds_data_representation_section(out, params)
+        }
         DataRepresentation::Unsupported(template) => Err(Error::UnsupportedDataTemplate(*template)),
+        _ => Err(Error::Other(
+            "data representation variant is not supported by this writer".into(),
+        )),
     }
 }
 
 fn write_simple_data_representation_section(
     out: &mut Vec<u8>,
-    params: &SimplePackingParams,
+    params: &ScaledPackingParams,
 ) -> Result<()> {
     let encoded_values = u32::try_from(params.encoded_values)
         .map_err(|_| Error::Other("encoded value count exceeds u32".into()))?;
@@ -2417,7 +2646,7 @@ fn write_jpeg2000_data_representation_section(
     out: &mut Vec<u8>,
     params: &Jpeg2000PackingParams,
 ) -> Result<()> {
-    write_image_data_representation_base(out, 23, 40, &params.packing)?;
+    write_scaled_data_representation_base(out, 23, 40, &params.packing)?;
     write_u8_be(out, params.compression_type)?;
     write_u8_be(out, params.target_compression_ratio)
 }
@@ -2426,14 +2655,24 @@ fn write_png_data_representation_section(
     out: &mut Vec<u8>,
     params: &PngPackingParams,
 ) -> Result<()> {
-    write_image_data_representation_base(out, 21, 41, &params.packing)
+    write_scaled_data_representation_base(out, 21, 41, &params.packing)
 }
 
-fn write_image_data_representation_base(
+fn write_ccsds_data_representation_section(
+    out: &mut Vec<u8>,
+    params: &CcsdsPackingParams,
+) -> Result<()> {
+    write_scaled_data_representation_base(out, 25, 42, params.packing())?;
+    write_u8_be(out, params.flags().bits())?;
+    write_u8_be(out, params.block_size().samples())?;
+    write_u16_be(out, params.reference_sample_interval())
+}
+
+fn write_scaled_data_representation_base(
     out: &mut Vec<u8>,
     section_length: u32,
     template: u16,
-    params: &ImagePackingParams,
+    params: &ScaledPackingParams,
 ) -> Result<()> {
     let encoded_values = u32::try_from(params.encoded_values)
         .map_err(|_| Error::Other("encoded value count exceeds u32".into()))?;
@@ -2631,8 +2870,8 @@ mod tests {
     use grib_core::binary::decode_ibm_f32;
     use grib_core::metadata::ReferenceTime;
     use grib_core::{
-        AlbersEqualAreaGrid, AnalysisOrForecastTemplate, DataRepresentation,
-        DerivedForecastTemplate, DerivedStatisticalProcessTemplate,
+        AlbersEqualAreaGrid, AnalysisOrForecastTemplate, CcsdsBlockSize, CcsdsFlags,
+        DataRepresentation, DerivedForecastTemplate, DerivedStatisticalProcessTemplate,
         EnsembleStatisticalProcessTemplate, FixedSurface, GridDefinition, Identification,
         IndividualEnsembleForecastTemplate, LambertConformalGrid, LatLonGrid, MercatorGrid,
         PercentileForecastTemplate, PercentileStatisticalProcessTemplate, PolarStereographicGrid,
@@ -3927,6 +4166,26 @@ mod tests {
         assert!(matches!(err, grib_core::Error::UnsupportedDataTemplate(40)));
     }
 
+    #[cfg(not(feature = "ccsds"))]
+    #[test]
+    fn ccsds_packing_requires_ccsds_feature() {
+        let err = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 0))
+            .packing(PackingStrategy::CcsdsAuto {
+                decimal_scale: 0,
+                flags: CcsdsFlags::DEFAULT,
+                block_size: CcsdsBlockSize::THIRTY_TWO,
+                reference_sample_interval: 128,
+            })
+            .values(&[1.0, 2.0, 3.0, 4.0])
+            .build()
+            .unwrap_err();
+
+        assert!(matches!(err, grib_core::Error::UnsupportedDataTemplate(42)));
+    }
+
     #[cfg(feature = "png")]
     #[test]
     fn writes_png_grib2_field() {
@@ -4045,6 +4304,286 @@ mod tests {
 
         let payload = section_payload(&bytes, 7);
         assert!(payload.starts_with(&[0xff, 0x4f, 0xff, 0x51]));
+    }
+
+    #[cfg(feature = "ccsds")]
+    #[test]
+    fn writes_signed_preprocessed_ccsds_field_readable_by_reader() {
+        let values = [0.0, 127.0, 128.0, 255.0];
+        let flags = CcsdsFlags::DEFAULT | CcsdsFlags::SIGNED;
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 0))
+            .packing(PackingStrategy::CcsdsAuto {
+                decimal_scale: 0,
+                flags,
+                block_size: CcsdsBlockSize::THIRTY_TWO,
+                reference_sample_interval: 128,
+            })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        match field.data_representation() {
+            DataRepresentation::CcsdsPacking(params) => {
+                assert_eq!(params.packing().encoded_values, values.len());
+                assert_eq!(params.packing().bits_per_value, 8);
+                assert_eq!(params.flags(), flags);
+            }
+            other => panic!("expected CCSDS packing, got {other:?}"),
+        }
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        assert_eq!(
+            file.message(0).unwrap().read_flat_data_as_f64().unwrap(),
+            values
+        );
+    }
+
+    #[cfg(feature = "ccsds")]
+    #[test]
+    fn writes_non_byte_signed_and_layout_independent_ccsds_streams() {
+        let cases = [
+            (
+                vec![0.0, 31.0, 1.0, 30.0],
+                CcsdsFlags::DEFAULT | CcsdsFlags::SIGNED,
+                6,
+            ),
+            (
+                vec![0.0, 16_777_215.0, 1.0, 0xaaaaaa as f64],
+                CcsdsFlags::DEFAULT | CcsdsFlags::SIGNED,
+                25,
+            ),
+            (
+                vec![0.0, 1_048_575.0, 0x54321 as f64, 1.0],
+                CcsdsFlags::NONE,
+                20,
+            ),
+        ];
+
+        for (values, flags, expected_bits) in cases {
+            let field = Grib2FieldBuilder::new()
+                .identification(identification())
+                .grid(grid())
+                .product(product(0, 0))
+                .packing(PackingStrategy::CcsdsAuto {
+                    decimal_scale: 0,
+                    flags,
+                    block_size: CcsdsBlockSize::THIRTY_TWO,
+                    reference_sample_interval: 128,
+                })
+                .values(&values)
+                .build()
+                .unwrap();
+
+            let DataRepresentation::CcsdsPacking(params) = field.data_representation() else {
+                panic!("expected CCSDS packing");
+            };
+            assert_eq!(params.packing().bits_per_value, expected_bits);
+            assert_eq!(params.flags(), flags);
+
+            let file = GribFile::from_bytes(write_message([field])).unwrap();
+            assert_eq!(
+                file.message(0).unwrap().read_flat_data_as_f64().unwrap(),
+                values
+            );
+        }
+    }
+
+    #[cfg(feature = "ccsds")]
+    #[test]
+    fn writes_constant_ccsds_reference_without_applying_scale_factors() {
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 0))
+            .packing(PackingStrategy::CcsdsAuto {
+                decimal_scale: 1,
+                flags: CcsdsFlags::DEFAULT,
+                block_size: CcsdsBlockSize::THIRTY_TWO,
+                reference_sample_interval: 128,
+            })
+            .values(&[42.0; 4])
+            .build()
+            .unwrap();
+
+        match field.data_representation() {
+            DataRepresentation::CcsdsPacking(params) => {
+                assert_eq!(params.packing().reference_value, 42.0);
+                assert_eq!(params.packing().decimal_scale, 1);
+                assert_eq!(params.packing().bits_per_value, 0);
+            }
+            other => panic!("expected CCSDS packing, got {other:?}"),
+        }
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        assert_eq!(
+            file.message(0).unwrap().read_flat_data_as_f64().unwrap(),
+            vec![42.0; 4]
+        );
+    }
+
+    #[cfg(feature = "ccsds")]
+    #[test]
+    fn writes_ccsds_bitmap_and_all_missing_fields() {
+        let build = |values: &[f64]| {
+            Grib2FieldBuilder::new()
+                .identification(identification())
+                .grid(grid())
+                .product(product(0, 0))
+                .packing(PackingStrategy::CcsdsAuto {
+                    decimal_scale: 0,
+                    flags: CcsdsFlags::DEFAULT,
+                    block_size: CcsdsBlockSize::THIRTY_TWO,
+                    reference_sample_interval: 128,
+                })
+                .values(values)
+                .build()
+                .unwrap()
+        };
+        let partial = build(&[5.0, f64::NAN, 7.0, 8.0]);
+        let all_missing = build(&[f64::NAN; 4]);
+
+        let DataRepresentation::CcsdsPacking(partial_params) = partial.data_representation() else {
+            panic!("expected CCSDS packing");
+        };
+        assert_eq!(partial_params.packing().encoded_values, 3);
+        let DataRepresentation::CcsdsPacking(missing_params) = all_missing.data_representation()
+        else {
+            panic!("expected CCSDS packing");
+        };
+        assert_eq!(missing_params.packing().encoded_values, 0);
+        assert_eq!(missing_params.packing().bits_per_value, 0);
+
+        let file = GribFile::from_bytes(write_message([partial, all_missing])).unwrap();
+        let partial_values = file.message(0).unwrap().read_flat_data_as_f64().unwrap();
+        assert_eq!(partial_values[0], 5.0);
+        assert!(partial_values[1].is_nan());
+        assert_eq!(&partial_values[2..], &[7.0, 8.0]);
+        assert!(file
+            .message(1)
+            .unwrap()
+            .read_flat_data_as_f64()
+            .unwrap()
+            .iter()
+            .all(|value| value.is_nan()));
+    }
+
+    #[cfg(feature = "ccsds")]
+    #[test]
+    fn writes_restricted_and_unenforced_ccsds_streams() {
+        let cases = [
+            (
+                vec![0.0, 1.0, 15.0, 7.0],
+                grid(),
+                CcsdsFlags::DEFAULT | CcsdsFlags::RESTRICTED,
+                CcsdsBlockSize::SIXTEEN,
+            ),
+            (
+                (0..12).map(f64::from).collect::<Vec<_>>(),
+                grid_with_shape_and_scanning_mode(12, 1, 0),
+                CcsdsFlags::DEFAULT | CcsdsFlags::NOT_ENFORCE,
+                CcsdsBlockSize::new(12).unwrap(),
+            ),
+        ];
+
+        for (values, grid, flags, block_size) in cases {
+            let field = Grib2FieldBuilder::new()
+                .identification(identification())
+                .grid(grid)
+                .product(product(0, 0))
+                .packing(PackingStrategy::CcsdsAuto {
+                    decimal_scale: 0,
+                    flags,
+                    block_size,
+                    reference_sample_interval: 128,
+                })
+                .values(&values)
+                .build()
+                .unwrap();
+
+            let file = GribFile::from_bytes(write_message([field])).unwrap();
+            assert_eq!(
+                file.message(0).unwrap().read_flat_data_as_f64().unwrap(),
+                values
+            );
+        }
+    }
+
+    #[cfg(feature = "ccsds")]
+    #[test]
+    fn writes_incompressible_32_bit_ccsds_stream() {
+        let values = [
+            0.0,
+            u32::MAX as f64,
+            0x5555_5555u32 as f64,
+            0xaaaa_aaaau32 as f64,
+        ];
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 0))
+            .packing(PackingStrategy::CcsdsAuto {
+                decimal_scale: 0,
+                flags: CcsdsFlags::MSB,
+                block_size: CcsdsBlockSize::EIGHT,
+                reference_sample_interval: 1,
+            })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        let DataRepresentation::CcsdsPacking(params) = field.data_representation() else {
+            panic!("expected CCSDS packing");
+        };
+        assert_eq!(params.packing().bits_per_value, 32);
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        assert_eq!(
+            file.message(0).unwrap().read_flat_data_as_f64().unwrap(),
+            values
+        );
+    }
+
+    #[cfg(feature = "ccsds")]
+    #[test]
+    fn rejects_ccsds_padding_and_widths_above_32_bits() {
+        let padding_error = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 0))
+            .packing(PackingStrategy::CcsdsAuto {
+                decimal_scale: 0,
+                flags: CcsdsFlags::DEFAULT | CcsdsFlags::PAD_RSI,
+                block_size: CcsdsBlockSize::THIRTY_TWO,
+                reference_sample_interval: 128,
+            })
+            .values(&[1.0, 2.0, 3.0, 4.0])
+            .build()
+            .unwrap_err();
+        assert!(matches!(
+            padding_error,
+            grib_core::Error::ValueOutOfRange(_)
+        ));
+
+        let width_error = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, 0))
+            .packing(PackingStrategy::CcsdsAuto {
+                decimal_scale: 0,
+                flags: CcsdsFlags::DEFAULT,
+                block_size: CcsdsBlockSize::THIRTY_TWO,
+                reference_sample_interval: 128,
+            })
+            .values(&[0.0, 4_294_967_296.0, 1.0, 2.0])
+            .build()
+            .unwrap_err();
+        assert!(matches!(
+            width_error,
+            grib_core::Error::UnsupportedPackingWidth(33)
+        ));
     }
 
     #[test]

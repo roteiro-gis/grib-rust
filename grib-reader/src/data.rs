@@ -3,10 +3,13 @@
 use crate::error::{Error, Result};
 use grib_core::bit::BitReader;
 pub use grib_core::data::{
-    ComplexPackingParams, DataRepresentation, ImagePackingParams, Jpeg2000PackingParams,
-    PngPackingParams, SimplePackingParams, SpatialDifferencingParams,
+    CcsdsBlockSize, CcsdsFlags, CcsdsPackingParams, ComplexPackingParams, DataRepresentation,
+    Jpeg2000PackingParams, PngPackingParams, ScaledPackingParams, SpatialDifferencingParams,
 };
 use grib_core::filled_vec;
+
+#[cfg(feature = "ccsds")]
+use grib_aec::{decode as aec_decode, AecFlags, AecParams};
 
 /// Numeric target type for decoded field values.
 pub trait DecodeSample: Copy + Sized {
@@ -117,8 +120,14 @@ pub(crate) fn decode_payload_into<T: DecodeSample>(
         DataRepresentation::ComplexPacking(params) => params.encoded_values,
         DataRepresentation::Jpeg2000Packing(params) => params.packing.encoded_values,
         DataRepresentation::PngPacking(params) => params.packing.encoded_values,
+        DataRepresentation::CcsdsPacking(params) => params.packing().encoded_values,
         DataRepresentation::Unsupported(template) => {
             return Err(Error::UnsupportedDataTemplate(*template));
+        }
+        _ => {
+            return Err(Error::InvalidMessage(
+                "data representation variant is not supported by this reader".into(),
+            ));
         }
     };
     match bitmap_section {
@@ -154,7 +163,11 @@ pub(crate) fn decode_payload_into<T: DecodeSample>(
         DataRepresentation::PngPacking(params) => {
             unpack_png_into(payload, params, expected_values, &mut output)?
         }
+        DataRepresentation::CcsdsPacking(params) => {
+            unpack_ccsds_into(payload, params, expected_values, &mut output)?
+        }
         DataRepresentation::Unsupported(_) => unreachable!(),
+        _ => unreachable!("unsupported representation rejected before decoding"),
     }
     output.finish()
 }
@@ -210,7 +223,7 @@ pub(crate) fn count_bitmap_present_points(
 /// Unpack simple-packed values.
 pub fn unpack_simple(
     data_bytes: &[u8],
-    params: &SimplePackingParams,
+    params: &ScaledPackingParams,
     num_values: usize,
 ) -> Result<Vec<f64>> {
     let mut values = filled_vec(num_values, 0.0, "simple-packed field")?;
@@ -222,7 +235,7 @@ pub fn unpack_simple(
 
 fn unpack_simple_into<T: DecodeSample>(
     data_bytes: &[u8],
-    params: &SimplePackingParams,
+    params: &ScaledPackingParams,
     num_values: usize,
     output: &mut OutputCursor<'_, T>,
 ) -> Result<()> {
@@ -339,6 +352,151 @@ fn unpack_simple_dense<T: DecodeSample>(
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "ccsds")]
+fn unpack_ccsds_into<T: DecodeSample>(
+    data_bytes: &[u8],
+    params: &CcsdsPackingParams,
+    num_values: usize,
+    output: &mut OutputCursor<'_, T>,
+) -> Result<()> {
+    let packing = params.packing();
+    let bits = packing.bits_per_value;
+
+    if bits == 0 {
+        if !data_bytes.is_empty() {
+            return Err(Error::DataLengthMismatch {
+                expected: 0,
+                actual: data_bytes.len(),
+            });
+        }
+        // ecCodes stores a constant CCSDS field directly in referenceValue and
+        // ignores both scale factors when bitsPerValue is zero.
+        let value = T::from_f64(f64::from(packing.reference_value));
+        if let Some(dense) = output.take_dense(num_values)? {
+            dense.fill(value);
+        } else {
+            for _ in 0..num_values {
+                output.push_present(value)?;
+            }
+        }
+        return Ok(());
+    }
+
+    if num_values == 0 {
+        if data_bytes.is_empty() {
+            return Ok(());
+        }
+        return Err(Error::DataLengthMismatch {
+            expected: 0,
+            actual: data_bytes.len(),
+        });
+    }
+
+    let bytes_per_sample = usize::from(bits).div_ceil(8);
+    let decoded_size =
+        num_values
+            .checked_mul(bytes_per_sample)
+            .ok_or(Error::ArithmeticOverflow {
+                operation: "computing CCSDS decoded byte count",
+            })?;
+    let codec_params = AecParams::new(
+        bits,
+        params.block_size().samples(),
+        params.reference_sample_interval(),
+        ccsds_decoder_flags(params.flags()),
+    )
+    .map_err(|error| Error::Codec {
+        codec: "CCSDS/AEC",
+        operation: "configure",
+        reason: error.to_string(),
+    })?;
+    let decoded =
+        aec_decode(data_bytes, num_values, codec_params).map_err(|error| Error::Codec {
+            codec: "CCSDS/AEC",
+            operation: "decode",
+            reason: error.to_string(),
+        })?;
+    if decoded.len() != decoded_size {
+        return Err(Error::DataLengthMismatch {
+            expected: decoded_size,
+            actual: decoded.len(),
+        });
+    }
+
+    let value_mask = if bits == 32 {
+        u32::MAX
+    } else {
+        (1u32 << bits) - 1
+    };
+    for bytes in decoded.chunks_exact(bytes_per_sample) {
+        let container = bytes
+            .iter()
+            .fold(0u32, |value, byte| (value << 8) | u32::from(*byte));
+        let raw = container & value_mask;
+        let signed = params.flags().contains(CcsdsFlags::SIGNED);
+        let high_mask = if bytes_per_sample == 4 {
+            !value_mask
+        } else {
+            ((1u32 << (bytes_per_sample * 8)) - 1) & !value_mask
+        };
+        let expected_high = if signed && raw & (1u32 << (bits - 1)) != 0 {
+            high_mask
+        } else {
+            0
+        };
+        if container & high_mask != expected_high {
+            return Err(Error::ValueOutOfRange(format!(
+                "CCSDS sample container 0x{container:08x} has invalid extension bits for its {bits}-bit width"
+            )));
+        }
+        // SIGNED controls the AEC preprocessor. GRIB template 5.42 still
+        // stores non-negative scaled differences, so reconstruction uses the
+        // declared low bits as an unsigned value.
+        output.push_present(scale_ccsds_value(packing, f64::from(raw)))?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "ccsds")]
+fn ccsds_decoder_flags(flags: CcsdsFlags) -> AecFlags {
+    // MSB and THREE_BYTE describe the caller's decoded sample containers, not
+    // the CCSDS bitstream. Request one canonical, compact big-endian layout so
+    // the reader never depends on host endianness or four-byte padding.
+    let mut codec_flags = AecFlags::DATA_MSB | AecFlags::DATA_3BYTE;
+    for (wire_flag, codec_flag) in [
+        (CcsdsFlags::SIGNED, AecFlags::DATA_SIGNED),
+        (CcsdsFlags::PREPROCESS, AecFlags::DATA_PREPROCESS),
+        (CcsdsFlags::RESTRICTED, AecFlags::RESTRICTED),
+        (CcsdsFlags::PAD_RSI, AecFlags::PAD_RSI),
+        (CcsdsFlags::NOT_ENFORCE, AecFlags::NOT_ENFORCE),
+    ] {
+        if flags.contains(wire_flag) {
+            codec_flags |= codec_flag;
+        }
+    }
+    codec_flags
+}
+
+#[cfg(feature = "ccsds")]
+fn scale_ccsds_value<T: DecodeSample>(params: &ScaledPackingParams, packed: f64) -> T {
+    T::from_f64(scale_decoded_value(
+        f64::from(params.reference_value),
+        packed,
+        2.0_f64.powi(i32::from(params.binary_scale)),
+        10.0_f64.powi(-i32::from(params.decimal_scale)),
+    ))
+}
+
+#[cfg(not(feature = "ccsds"))]
+fn unpack_ccsds_into<T: DecodeSample>(
+    _data_bytes: &[u8],
+    _params: &CcsdsPackingParams,
+    _num_values: usize,
+    _output: &mut OutputCursor<'_, T>,
+) -> Result<()> {
+    Err(Error::UnsupportedDataTemplate(42))
 }
 
 #[cfg(feature = "jpeg2000")]
@@ -696,7 +854,7 @@ fn unpack_png_subbyte_grayscale<T: DecodeSample>(
     width: u32,
     height: u32,
     bits_per_sample: u8,
-    params: &ImagePackingParams,
+    params: &ScaledPackingParams,
     output: &mut OutputCursor<'_, T>,
 ) -> Result<()> {
     let width = usize::try_from(width).map_err(|_| Error::Other("PNG width overflow".into()))?;
@@ -736,7 +894,7 @@ fn unpack_png_bytes<T: DecodeSample>(
     data: &[u8],
     bytes_per_sample: usize,
     num_values: usize,
-    params: &ImagePackingParams,
+    params: &ScaledPackingParams,
     output: &mut OutputCursor<'_, T>,
 ) -> Result<()> {
     let expected_bytes = num_values
@@ -763,7 +921,7 @@ fn unpack_png_bytes<T: DecodeSample>(
 fn unpack_png_u16<T: DecodeSample>(
     data: &[u8],
     num_values: usize,
-    params: &ImagePackingParams,
+    params: &ScaledPackingParams,
     output: &mut OutputCursor<'_, T>,
 ) -> Result<()> {
     let expected_bytes = num_values
@@ -787,7 +945,7 @@ fn unpack_png_u16<T: DecodeSample>(
 #[cfg(any(feature = "jpeg2000", feature = "png"))]
 fn push_image_value<T: DecodeSample>(
     output: &mut OutputCursor<'_, T>,
-    params: &ImagePackingParams,
+    params: &ScaledPackingParams,
     raw: u64,
 ) -> Result<()> {
     validate_raw_value_fits(raw, params.bits_per_value)?;
@@ -810,7 +968,7 @@ fn validate_raw_value_fits(raw: u64, bits_per_value: u8) -> Result<()> {
 }
 
 #[cfg(any(feature = "jpeg2000", feature = "png"))]
-fn scale_image_value<T: DecodeSample>(params: &ImagePackingParams, raw: u64) -> T {
+fn scale_image_value<T: DecodeSample>(params: &ScaledPackingParams, raw: u64) -> T {
     let binary_factor = 2.0_f64.powi(params.binary_scale as i32);
     let decimal_factor = 10.0_f64.powi(-(params.decimal_scale as i32));
     T::from_f64(scale_decoded_value(
@@ -1427,15 +1585,15 @@ enum MissingKind {
 mod tests {
     use super::{
         bitmap_payload, count_bitmap_present_points, decode_field, decode_payload, unpack_complex,
-        unpack_simple, ComplexPackingParams, DataRepresentation, ImagePackingParams,
-        PngPackingParams, SimplePackingParams, SpatialDifferencingParams,
+        unpack_simple, CcsdsBlockSize, CcsdsFlags, CcsdsPackingParams, ComplexPackingParams,
+        DataRepresentation, PngPackingParams, ScaledPackingParams, SpatialDifferencingParams,
     };
     use crate::error::Error;
     use grib_core::bit::BitWriter;
 
     #[test]
     fn unpack_simple_constant() {
-        let params = SimplePackingParams {
+        let params = ScaledPackingParams {
             encoded_values: 5,
             reference_value: 42.0,
             binary_scale: 0,
@@ -1449,7 +1607,7 @@ mod tests {
 
     #[test]
     fn unpack_simple_basic() {
-        let params = SimplePackingParams {
+        let params = ScaledPackingParams {
             encoded_values: 5,
             reference_value: 0.0,
             binary_scale: 0,
@@ -1476,7 +1634,7 @@ mod tests {
             for &value in packed_values {
                 packed.write(value, bits).unwrap();
             }
-            let params = SimplePackingParams {
+            let params = ScaledPackingParams {
                 encoded_values: packed_values.len(),
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1493,7 +1651,7 @@ mod tests {
 
     #[test]
     fn unpack_simple_applies_decimal_scale_to_reference_and_values() {
-        let params = SimplePackingParams {
+        let params = ScaledPackingParams {
             encoded_values: 2,
             reference_value: 10.0,
             binary_scale: 0,
@@ -1511,7 +1669,7 @@ mod tests {
     fn decodes_bitmap_masked_field() {
         let data_section = [0, 0, 0, 8, 7, 10, 20, 30];
         let bitmap_section = [0, 0, 0, 7, 6, 0, 0b1011_0000];
-        let representation = DataRepresentation::SimplePacking(SimplePackingParams {
+        let representation = DataRepresentation::SimplePacking(ScaledPackingParams {
             encoded_values: 3,
             reference_value: 0.0,
             binary_scale: 0,
@@ -1532,7 +1690,7 @@ mod tests {
     fn decodes_bitmap_across_empty_bytes_and_a_partial_final_byte() {
         let data_section = [0, 0, 0, 7, 7, 11, 22];
         let bitmap_section = [0, 0, 0, 9, 6, 0, 0b0000_0000, 0b0010_0000, 0b1000_0000];
-        let representation = DataRepresentation::SimplePacking(SimplePackingParams {
+        let representation = DataRepresentation::SimplePacking(ScaledPackingParams {
             encoded_values: 2,
             reference_value: 0.0,
             binary_scale: 0,
@@ -1550,6 +1708,143 @@ mod tests {
         assert!(decoded[17..].iter().all(|value| value.is_nan()));
     }
 
+    #[cfg(feature = "ccsds")]
+    #[test]
+    fn decodes_ccsds_unsigned_samples_across_container_widths() {
+        for (bits, values) in [
+            (8, vec![0, 1, 17, 255]),
+            (16, vec![0, 1, 0x1234, 0xffff]),
+            (20, vec![0, 1, 0x54321, 0xfffff]),
+            (24, vec![0, 1, 0x654321, 0xffffff]),
+            (32, vec![0, 1, 0x76543210, u32::MAX as i64]),
+        ] {
+            let flags = CcsdsFlags::PREPROCESS;
+            let (payload, representation) = encode_ccsds_test_values(&values, bits, flags, 16);
+            let decoded = decode_payload(&payload, &representation, None, values.len()).unwrap();
+            let expected = values.iter().map(|value| *value as f64).collect::<Vec<_>>();
+            assert_eq!(decoded, expected, "bits_per_value={bits}");
+        }
+    }
+
+    #[cfg(feature = "ccsds")]
+    #[test]
+    fn decodes_ccsds_signed_preprocessing_as_unsigned_grib_differences() {
+        let values = [0, 1, 2047, 2048, 4095];
+        let flags = CcsdsFlags::SIGNED | CcsdsFlags::PREPROCESS;
+        let (payload, mut representation) = encode_ccsds_test_values(&values, 12, flags, 16);
+        let DataRepresentation::CcsdsPacking(params) = &mut representation else {
+            unreachable!();
+        };
+        *params = CcsdsPackingParams::new(
+            ScaledPackingParams {
+                encoded_values: values.len(),
+                reference_value: 10.0,
+                binary_scale: 1,
+                decimal_scale: 1,
+                bits_per_value: 12,
+                original_field_type: 0,
+            },
+            flags,
+            CcsdsBlockSize::SIXTEEN,
+            128,
+        )
+        .unwrap();
+
+        let decoded = decode_payload(&payload, &representation, None, values.len()).unwrap();
+        let expected = values
+            .iter()
+            .map(|value| (10.0 + *value as f64 * 2.0) / 10.0)
+            .collect::<Vec<_>>();
+        assert_float_values(&decoded, &expected);
+    }
+
+    #[cfg(feature = "ccsds")]
+    #[test]
+    fn decodes_ccsds_restricted_stream_with_wire_to_codec_flag_mapping() {
+        let values = [0, 1, 2, 3, 15, 7, 4, 0];
+        let flags = CcsdsFlags::RESTRICTED | CcsdsFlags::PREPROCESS;
+        let (payload, representation) = encode_ccsds_test_values(&values, 4, flags, 16);
+
+        let decoded = decode_payload(&payload, &representation, None, values.len()).unwrap();
+        assert_eq!(
+            decoded,
+            values.iter().map(|value| *value as f64).collect::<Vec<_>>()
+        );
+        assert!(super::ccsds_decoder_flags(flags).contains(grib_aec::AecFlags::RESTRICTED));
+    }
+
+    #[cfg(feature = "ccsds")]
+    #[test]
+    fn decodes_ccsds_nonstandard_even_block_when_not_enforced() {
+        let values = (0..24).collect::<Vec<_>>();
+        let flags = CcsdsFlags::PREPROCESS | CcsdsFlags::NOT_ENFORCE;
+        let (payload, representation) = encode_ccsds_test_values(&values, 8, flags, 12);
+
+        let decoded = decode_payload(&payload, &representation, None, values.len()).unwrap();
+        assert_eq!(
+            decoded,
+            values.iter().map(|value| *value as f64).collect::<Vec<_>>()
+        );
+    }
+
+    #[cfg(feature = "ccsds")]
+    #[test]
+    fn decodes_constant_ccsds_field_with_bitmap() {
+        let bitmap_section = [0, 0, 0, 7, 6, 0, 0b1011_0000];
+        let representation = DataRepresentation::CcsdsPacking(
+            CcsdsPackingParams::new(
+                ScaledPackingParams {
+                    encoded_values: 3,
+                    reference_value: 42.0,
+                    binary_scale: 0,
+                    decimal_scale: 1,
+                    bits_per_value: 0,
+                    original_field_type: 0,
+                },
+                CcsdsFlags::DEFAULT,
+                CcsdsBlockSize::THIRTY_TWO,
+                128,
+            )
+            .unwrap(),
+        );
+
+        let decoded = decode_payload(
+            &[],
+            &representation,
+            bitmap_payload(&bitmap_section).unwrap(),
+            4,
+        )
+        .unwrap();
+        assert_eq!(decoded[0], 42.0);
+        assert!(decoded[1].is_nan());
+        assert_eq!(decoded[2], 42.0);
+        assert_eq!(decoded[3], 42.0);
+    }
+
+    #[cfg(not(feature = "ccsds"))]
+    #[test]
+    fn ccsds_packing_requires_ccsds_feature() {
+        let representation = DataRepresentation::CcsdsPacking(
+            CcsdsPackingParams::new(
+                ScaledPackingParams {
+                    encoded_values: 1,
+                    reference_value: 0.0,
+                    binary_scale: 0,
+                    decimal_scale: 0,
+                    bits_per_value: 8,
+                    original_field_type: 0,
+                },
+                CcsdsFlags::DEFAULT,
+                CcsdsBlockSize::THIRTY_TWO,
+                128,
+            )
+            .unwrap(),
+        );
+
+        let error = decode_payload(&[], &representation, None, 1).unwrap_err();
+        assert!(matches!(error, Error::UnsupportedDataTemplate(42)));
+    }
+
     #[cfg(feature = "png")]
     #[test]
     fn decodes_png_packing_grayscale8() {
@@ -1561,7 +1856,7 @@ mod tests {
             &[1, 2, 3, 4],
         );
         let representation = DataRepresentation::PngPacking(PngPackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 4,
                 reference_value: 10.0,
                 binary_scale: 1,
@@ -1586,7 +1881,7 @@ mod tests {
             &[0x01, 0x00, 0x02, 0x00],
         );
         let representation = DataRepresentation::PngPacking(PngPackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 2,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1611,7 +1906,7 @@ mod tests {
             &[0x12, 0x34],
         );
         let representation = DataRepresentation::PngPacking(PngPackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 4,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1636,7 +1931,7 @@ mod tests {
             &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
         );
         let representation = DataRepresentation::PngPacking(PngPackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 2,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1661,7 +1956,7 @@ mod tests {
             &[0x01, 0x02, 0x03, 0x04],
         );
         let representation = DataRepresentation::PngPacking(PngPackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 1,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1687,7 +1982,7 @@ mod tests {
         );
         let bitmap_section = [0, 0, 0, 7, 6, 0, 0b1011_0000];
         let representation = DataRepresentation::PngPacking(PngPackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 3,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1720,7 +2015,7 @@ mod tests {
         payload[29..33].copy_from_slice(&crc.to_be_bytes());
 
         let representation = DataRepresentation::PngPacking(PngPackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 1,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1754,7 +2049,7 @@ mod tests {
         payload[44] = 1;
 
         let representation = DataRepresentation::Jpeg2000Packing(super::Jpeg2000PackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 1,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1780,7 +2075,7 @@ mod tests {
     #[test]
     fn png_packing_requires_png_feature() {
         let representation = DataRepresentation::PngPacking(PngPackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 1,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1798,7 +2093,7 @@ mod tests {
     #[test]
     fn jpeg2000_packing_requires_jpeg2000_feature() {
         let representation = DataRepresentation::Jpeg2000Packing(super::Jpeg2000PackingParams {
-            packing: ImagePackingParams {
+            packing: ScaledPackingParams {
                 encoded_values: 1,
                 reference_value: 0.0,
                 binary_scale: 0,
@@ -1816,7 +2111,7 @@ mod tests {
 
     #[test]
     fn rejects_simple_packing_wider_than_u64() {
-        let params = SimplePackingParams {
+        let params = ScaledPackingParams {
             encoded_values: 1,
             reference_value: 0.0,
             binary_scale: 0,
@@ -1831,7 +2126,7 @@ mod tests {
     #[test]
     fn rejects_encoded_value_count_mismatch_without_bitmap() {
         let data_section = [0, 0, 0, 8, 7, 10, 20, 30];
-        let representation = DataRepresentation::SimplePacking(SimplePackingParams {
+        let representation = DataRepresentation::SimplePacking(ScaledPackingParams {
             encoded_values: 3,
             reference_value: 0.0,
             binary_scale: 0,
@@ -1854,7 +2149,7 @@ mod tests {
     fn rejects_bitmap_present_count_mismatch() {
         let data_section = [0, 0, 0, 7, 7, 10, 20];
         let bitmap_section = [0, 0, 0, 7, 6, 0, 0b1011_0000];
-        let representation = DataRepresentation::SimplePacking(SimplePackingParams {
+        let representation = DataRepresentation::SimplePacking(ScaledPackingParams {
             encoded_values: 2,
             reference_value: 0.0,
             binary_scale: 0,
@@ -1878,6 +2173,53 @@ mod tests {
     fn counts_bitmap_present_points_with_partial_bytes() {
         let present = count_bitmap_present_points(&[0b1011_1111], 3).unwrap();
         assert_eq!(present, 2);
+    }
+
+    #[cfg(feature = "ccsds")]
+    fn encode_ccsds_test_values(
+        values: &[i64],
+        bits_per_value: u8,
+        flags: CcsdsFlags,
+        block_size: u8,
+    ) -> (Vec<u8>, DataRepresentation) {
+        let bytes_per_sample = usize::from(bits_per_value).div_ceil(8);
+        let mask = if bits_per_value == 32 {
+            u32::MAX
+        } else {
+            (1u32 << bits_per_value) - 1
+        };
+        let mut unpacked = Vec::with_capacity(values.len() * bytes_per_sample);
+        for &value in values {
+            let raw = (value as u32) & mask;
+            let bytes = raw.to_be_bytes();
+            unpacked.extend_from_slice(&bytes[4 - bytes_per_sample..]);
+        }
+
+        let codec_params = grib_aec::AecParams::new(
+            bits_per_value,
+            block_size,
+            128,
+            super::ccsds_decoder_flags(flags),
+        )
+        .unwrap();
+        let payload = grib_aec::encode(&unpacked, codec_params).unwrap();
+        let representation = DataRepresentation::CcsdsPacking(
+            CcsdsPackingParams::new(
+                ScaledPackingParams {
+                    encoded_values: values.len(),
+                    reference_value: 0.0,
+                    binary_scale: 0,
+                    decimal_scale: 0,
+                    bits_per_value,
+                    original_field_type: 0,
+                },
+                flags,
+                CcsdsBlockSize::new(block_size).unwrap(),
+                128,
+            )
+            .unwrap(),
+        );
+        (payload, representation)
     }
 
     #[test]

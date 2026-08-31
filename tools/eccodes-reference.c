@@ -338,6 +338,17 @@ static decode_totals decode_file(const char *path, int emit_json) {
         long ni = get_grid_dimension(handle, "Ni", "Nx", path);
         long nj = get_grid_dimension(handle, "Nj", "Ny", path);
         optional_long_field product_metadata[] = {
+            {"discipline", "discipline", 0, 0},
+            {"parameterCategory", "parameter_category", 0, 0},
+            {"parameterNumber", "parameter_number", 0, 0},
+            {"dataRepresentationTemplateNumber", "data_representation_template_number", 0, 0},
+            {"numberOfValues", "number_of_values", 0, 0},
+            {"bitsPerValue", "bits_per_value", 0, 0},
+            {"binaryScaleFactor", "binary_scale_factor", 0, 0},
+            {"decimalScaleFactor", "decimal_scale_factor", 0, 0},
+            {"ccsdsFlags", "ccsds_flags", 0, 0},
+            {"ccsdsBlockSize", "ccsds_block_size", 0, 0},
+            {"ccsdsRsi", "ccsds_rsi", 0, 0},
             {"productDefinitionTemplateNumber", "product_definition_template_number", 0, 0},
             {"derivedForecast", "derived_forecast", 0, 0},
             {"numberOfForecastsInEnsemble", "number_of_forecasts_in_ensemble", 0, 0},
@@ -451,6 +462,132 @@ static void command_dump(const char *path) {
     fputs("]}\n", stdout);
 }
 
+static void command_generate_ccsds(const char *profile, const char *path) {
+    codes_handle *handle = codes_grib_handle_new_from_samples(NULL, "ccsds_grib2");
+    if (handle == NULL) {
+        fprintf(stderr, "failed loading ecCodes ccsds_grib2 sample\n");
+        exit(1);
+    }
+
+    long point_count_long = get_long(handle, "numberOfPoints", path);
+    if (point_count_long <= 0) {
+        codes_handle_delete(handle);
+        fprintf(stderr, "ccsds_grib2 sample has invalid point count %ld\n", point_count_long);
+        exit(1);
+    }
+    size_t point_count = (size_t)point_count_long;
+    double *values = (double *)malloc(point_count * sizeof(double));
+    if (values == NULL) {
+        codes_handle_delete(handle);
+        fprintf(stderr, "failed allocating %zu generated CCSDS values\n", point_count);
+        exit(1);
+    }
+    long bits_per_value = 20;
+    long decimal_scale = 2;
+    long flags = 14;
+    long block_size = 32;
+    if (strcmp(profile, "default") == 0) {
+        for (size_t i = 0; i < point_count; ++i) {
+            values[i] = 250.0 + (double)(i / 16) * 0.5 + (double)(i % 16) * 0.25;
+        }
+    } else if (strcmp(profile, "constant") == 0) {
+        bits_per_value = 0;
+        decimal_scale = 1;
+        for (size_t i = 0; i < point_count; ++i) {
+            values[i] = 42.0;
+        }
+    } else if (strcmp(profile, "restricted") == 0) {
+        bits_per_value = 4;
+        decimal_scale = 0;
+        flags |= 16;
+        for (size_t i = 0; i < point_count; ++i) {
+            values[i] = (double)(i % 16);
+        }
+    } else if (strcmp(profile, "signed") == 0) {
+        bits_per_value = 8;
+        decimal_scale = 0;
+        flags |= 1;
+        for (size_t i = 0; i < point_count; ++i) {
+            values[i] = (double)(i % 256);
+        }
+    } else if (strcmp(profile, "incompressible32") == 0) {
+        bits_per_value = 32;
+        decimal_scale = 0;
+        flags = 4;
+        for (size_t i = 0; i < point_count; ++i) {
+            values[i] = (double)((uint32_t)i * UINT32_C(2654435761));
+        }
+    } else if (strcmp(profile, "unenforced") == 0) {
+        bits_per_value = 8;
+        decimal_scale = 0;
+        flags |= 64;
+        block_size = 12;
+        for (size_t i = 0; i < point_count; ++i) {
+            values[i] = (double)(i % 251);
+        }
+    } else {
+        free(values);
+        codes_handle_delete(handle);
+        fprintf(stderr, "unknown CCSDS generation profile: %s\n", profile);
+        exit(1);
+    }
+
+    int err = codes_set_long(handle, "bitsPerValue", bits_per_value);
+    if (err != CODES_SUCCESS) {
+        free(values);
+        codes_handle_delete(handle);
+        die_codes(err, "bitsPerValue", path);
+    }
+    err = codes_set_long(handle, "decimalScaleFactor", decimal_scale);
+    if (err != CODES_SUCCESS) {
+        free(values);
+        codes_handle_delete(handle);
+        die_codes(err, "decimalScaleFactor", path);
+    }
+    err = codes_set_long(handle, "ccsdsFlags", flags);
+    if (err != CODES_SUCCESS) {
+        free(values);
+        codes_handle_delete(handle);
+        die_codes(err, "ccsdsFlags", path);
+    }
+    err = codes_set_long(handle, "ccsdsBlockSize", block_size);
+    if (err != CODES_SUCCESS) {
+        free(values);
+        codes_handle_delete(handle);
+        die_codes(err, "ccsdsBlockSize", path);
+    }
+    err = codes_set_double_array(handle, "values", values, point_count);
+    free(values);
+    if (err != CODES_SUCCESS) {
+        codes_handle_delete(handle);
+        die_codes(err, "values", path);
+    }
+
+    const void *message = NULL;
+    size_t message_size = 0;
+    err = codes_get_message(handle, &message, &message_size);
+    if (err != CODES_SUCCESS) {
+        codes_handle_delete(handle);
+        die_codes(err, "codes_get_message", path);
+    }
+
+    FILE *fp = fopen(path, "wb");
+    if (fp == NULL) {
+        codes_handle_delete(handle);
+        die_errno("failed opening", path);
+    }
+    if (fwrite(message, 1, message_size, fp) != message_size) {
+        fclose(fp);
+        codes_handle_delete(handle);
+        die_errno("failed writing", path);
+    }
+    if (fclose(fp) != 0) {
+        codes_handle_delete(handle);
+        die_errno("failed closing", path);
+    }
+    codes_handle_delete(handle);
+}
+
 static void command_benchmark(int iterations, int path_count, char **paths) {
     struct timespec start;
     struct timespec end;
@@ -485,7 +622,11 @@ static void command_benchmark(int iterations, int path_count, char **paths) {
 
 int main(int argc, char **argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s dump <file> | benchmark <iterations> <file> [file...]\n", argv[0]);
+        fprintf(
+            stderr,
+            "usage: %s dump <file> | generate-ccsds <profile> <file> | benchmark <iterations> <file> [file...]\n",
+            argv[0]
+        );
         return 1;
     }
 
@@ -505,6 +646,15 @@ int main(int argc, char **argv) {
             return 1;
         }
         command_benchmark(iterations, argc - 3, &argv[3]);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "generate-ccsds") == 0) {
+        if (argc != 4) {
+            fprintf(stderr, "usage: %s generate-ccsds <profile> <file>\n", argv[0]);
+            return 1;
+        }
+        command_generate_ccsds(argv[2], argv[3]);
         return 0;
     }
 

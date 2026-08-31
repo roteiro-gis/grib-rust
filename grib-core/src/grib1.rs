@@ -1,7 +1,7 @@
 //! GRIB Edition 1 shared metadata and section models.
 
 use crate::binary::{decode_ibm_f32, decode_wmo_i16, decode_wmo_i24};
-use crate::data::{DataRepresentation, SimplePackingParams};
+use crate::data::{DataRepresentation, ScaledPackingParams};
 use crate::error::{Error, Result};
 use crate::grid::{GridDefinition, LatLonGrid};
 use crate::metadata::{Parameter, ReferenceTime};
@@ -156,7 +156,7 @@ impl BinaryDataSection {
         let binary_scale = decode_wmo_i16(&section_bytes[4..6]).unwrap();
         let reference_value = decode_ibm_f32(section_bytes[6..10].try_into().unwrap());
         let bits_per_value = section_bytes[10];
-        let simple = SimplePackingParams {
+        let simple = ScaledPackingParams {
             encoded_values,
             reference_value,
             binary_scale,
