@@ -67,13 +67,22 @@
   precision above the backend's 25-bit lossless numeric limit
 - document `NaN` as the default decode result for embedded complex-packing
   missing values and expose active primary and secondary substitute metadata
-- build the parity image from SHA-256-verified ecCodes 2.47.0 and libaec 1.1.7
-  source archives, limit native builds to two compile jobs, and default parity
-  containers to two CPUs and two Cargo build jobs without sharing incompatible
-  native target artifacts on non-Linux hosts
+- build the reference image from SHA-256-verified ecCodes 2.47.0 and libaec
+  1.1.7 source archives, limit native builds to two compile jobs, and run
+  uniquely named parity and benchmark containers with two CPUs, four GiB of
+  memory, two Cargo build jobs, and isolated native artifacts on non-Linux
+  hosts
 - compare numeric GRIB2 parameter identities in parity tests so ecCodes label
   wording changes do not masquerade as format incompatibilities
 - raise the workspace MSRV to Rust 1.87 for the coordinated breaking release
+- test the MSRV, macOS, Windows, all four fuzz targets, and an 85% line-coverage
+  floor in CI
+- reject known advisories, unapproved licenses and sources, wildcard
+  dependencies, and duplicate major versions through committed dependency
+  policy
+- add projected-grid reader fixtures, assert coordinates and decoded values on
+  real interoperability samples, and seed the fuzzers with GRIB1 second-order
+  and large-message fields
 
 ## 0.6.0 - 2026-06-25
 

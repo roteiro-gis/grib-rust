@@ -27,6 +27,63 @@ fn interop_corpus_decodes_when_present() {
 }
 
 #[test]
+#[cfg(feature = "jpeg2000")]
+fn eccc_jpeg2000_interop_sample_decodes_values_and_axes() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/corpus/interop/samples/eccc-gem-global-latlon-albedo-jpeg2000.grib2");
+    let bytes =
+        fs::read(&path).unwrap_or_else(|err| panic!("failed reading {}: {err}", path.display()));
+    let file = GribFile::from_bytes(bytes)
+        .unwrap_or_else(|err| panic!("failed opening {}: {err}", path.display()));
+    let message = file.message(0).unwrap();
+
+    assert!(matches!(
+        message.metadata().data_representation,
+        DataRepresentation::Jpeg2000Packing(_)
+    ));
+    assert_eq!(message.grid_shape(), (2400, 1201));
+    match message.grid_definition() {
+        GridDefinition::LatLon(grid) => {
+            assert_eq!(grid.ni, 2400);
+            assert_eq!(grid.nj, 1201);
+            assert_eq!(grid.lat_first, -90_000_000);
+            assert_eq!(grid.lon_first, 180_000_000);
+            assert_eq!(grid.lat_last, 90_000_000);
+            assert_eq!(grid.lon_last, 179_850_000);
+            assert_eq!(grid.di, 150_000);
+            assert_eq!(grid.dj, 150_000);
+            assert_eq!(grid.scanning_mode, 64);
+        }
+        other => panic!("expected latitude/longitude grid, got {other:?}"),
+    }
+
+    let latitudes = message.latitudes().unwrap().unwrap();
+    assert_eq!(latitudes.len(), 1201);
+    assert_eq!(latitudes[0], -90.0);
+    assert!((latitudes[1] - -89.85).abs() < 1e-12);
+    assert_eq!(latitudes[1200], 90.0);
+
+    let longitudes = message.longitudes().unwrap().unwrap();
+    assert_eq!(longitudes.len(), 2400);
+    assert_eq!(longitudes[0], 180.0);
+    assert!((longitudes[1] - 180.15).abs() < 1e-12);
+    assert!((longitudes[2399] - 539.85).abs() < 1e-12);
+
+    let values = message.read_flat_data_as_f64().unwrap();
+    assert_eq!(values.len(), 2_882_400);
+    assert_eq!(
+        [
+            values[0],
+            values[values.len() / 4],
+            values[values.len() / 2],
+            values[values.len() * 3 / 4],
+            values[values.len() - 1],
+        ],
+        [82.0, 0.0, 0.0, 30.0, 82.0]
+    );
+}
+
+#[test]
 fn hrrr_lambert_interop_sample_has_expected_grid() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/corpus/interop/samples/noaa-hrrr-conus-lambert-refc.grib2");
@@ -61,6 +118,14 @@ fn hrrr_lambert_interop_sample_has_expected_grid() {
         }
         other => panic!("expected Lambert conformal grid, got {other:?}"),
     }
+    assert_eq!(message.latitudes().unwrap(), None);
+    assert_eq!(message.longitudes().unwrap(), None);
+    let x = message.projected_x_coordinates().unwrap().unwrap();
+    assert_eq!(x.len(), 1799);
+    assert_eq!([x[0], x[1], x[1798]], [0.0, 3_000.0, 5_394_000.0]);
+    let y = message.projected_y_coordinates().unwrap().unwrap();
+    assert_eq!(y.len(), 1059);
+    assert_eq!([y[0], y[1], y[1058]], [0.0, 3_000.0, 3_174_000.0]);
 
     assert_eq!(
         message.read_flat_data_as_f64().unwrap().len(),
@@ -107,6 +172,14 @@ fn hrrr_alaska_polar_interop_sample_has_expected_grid() {
         }
         other => panic!("expected polar stereographic grid, got {other:?}"),
     }
+    assert_eq!(message.latitudes().unwrap(), None);
+    assert_eq!(message.longitudes().unwrap(), None);
+    let x = message.projected_x_coordinates().unwrap().unwrap();
+    assert_eq!(x.len(), 1299);
+    assert_eq!([x[0], x[1], x[1298]], [0.0, 3_000.0, 3_894_000.0]);
+    let y = message.projected_y_coordinates().unwrap().unwrap();
+    assert_eq!(y.len(), 919);
+    assert_eq!([y[0], y[1], y[918]], [0.0, 3_000.0, 2_754_000.0]);
 
     assert_eq!(
         message.read_flat_data_as_f64().unwrap().len(),

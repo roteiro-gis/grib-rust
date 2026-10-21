@@ -1,0 +1,63 @@
+name: Fuzz Smoke
+
+on:
+  pull_request:
+  schedule:
+    - cron: "23 4 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_BUILD_JOBS: 2
+  CARGO_TERM_COLOR: always
+  FUZZ_TOOLCHAIN: nightly-2026-07-11
+  RUSTFLAGS: -D warnings
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.91.0 --profile minimal --no-self-update
+          rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal --no-self-update
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: grib-reader/fuzz -> target
+
+      - name: Install cargo-fuzz
+        env:
+          RUSTFLAGS: ""
+        run: cargo +1.91.0 install cargo-fuzz --version 0.13.1 --locked
+
+      - name: Verify corpus fixtures are up to date
+        run: |
+          cargo +1.91.0 run -p grib-reader --example sync_corpus --locked
+          git diff --exit-code
+
+      - name: Run every fuzz target for 60 seconds
+        run: ./scripts/run-fuzz-smoke.sh 60
+
+      - name: Upload failing fuzz inputs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-artifacts-${{ github.sha }}
+          path: grib-reader/fuzz/artifacts
+          if-no-files-found: ignore
+          retention-days: 14

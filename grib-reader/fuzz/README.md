@@ -5,10 +5,16 @@ Seed corpora live in `corpus/` and are generated from the crate's canonical fixt
 Regenerate the corpus:
 
 ```sh
-cargo run -p grib-reader --example sync_corpus
+cargo run -p grib-reader --example sync_corpus --locked
 ```
 
-Run fuzzers:
+From the workspace root, run the same bounded smoke suite as CI:
+
+```sh
+./scripts/run-fuzz-smoke.sh 60
+```
+
+For an individual target, run from this directory:
 
 ```sh
 cargo fuzz run fuzz_grib_open

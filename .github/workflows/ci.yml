@@ -24,16 +24,19 @@ env:
 jobs:
   checks:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy --no-self-update
 
       - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -58,6 +61,11 @@ jobs:
       - name: Lint fuzz targets
         run: cargo clippy --manifest-path grib-reader/fuzz/Cargo.toml --bins --locked -- -D warnings
 
+      - name: Build warning-free documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --all-features --no-deps --locked
+
       - name: Verify crate packaging
         run: ./scripts/verify-packages.sh
 
@@ -65,3 +73,112 @@ jobs:
         # The preceding step compiles the normalized tarballs. Stable Cargo's
         # workspace verifier cannot resolve unpublished workspace dependencies.
         run: cargo publish --workspace --dry-run --no-verify --locked
+
+  msrv:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.87
+        run: rustup toolchain install 1.87.0 --profile minimal --no-self-update
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: msrv-1.87
+
+      - name: Check every target with the minimum supported Rust
+        run: cargo +1.87.0 check --workspace --all-targets --all-features --locked
+
+  platforms:
+    name: Test ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-15
+          - windows-2025
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup toolchain install 1.91.0 --profile minimal --no-self-update
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Run the full test suite
+        run: cargo +1.91.0 test --workspace --all-features --locked
+
+      - name: Test the reader without default features
+        run: cargo +1.91.0 test -p grib-reader --no-default-features --locked
+
+  dependency-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup toolchain install 1.91.0 --profile minimal --no-self-update
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install cargo-deny
+        env:
+          RUSTFLAGS: ""
+        run: cargo +1.91.0 install cargo-deny --version 0.19.4 --locked
+
+      - name: Check workspace dependencies
+        run: cargo +1.91.0 deny --locked check
+
+      - name: Check fuzz dependencies
+        run: cargo +1.91.0 deny --manifest-path grib-reader/fuzz/Cargo.toml --locked check -A unmatched-skip
+
+  coverage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust and LLVM tools
+        run: rustup toolchain install 1.91.0 --profile minimal --component llvm-tools-preview --no-self-update
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install cargo-llvm-cov
+        env:
+          RUSTFLAGS: ""
+        run: cargo +1.91.0 install cargo-llvm-cov --version 0.8.6 --locked
+
+      - name: Enforce line coverage
+        run: cargo +1.91.0 llvm-cov --workspace --all-features --locked --lcov --output-path lcov.info --fail-under-lines 85
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rust-lcov-${{ github.sha }}
+          path: lcov.info
+          if-no-files-found: error
+          retention-days: 14
