@@ -43,10 +43,10 @@ pub(crate) fn pack_complex_auto(
         .max()
         .unwrap_or(0);
     let max_group_width = groups.iter().map(|group| group.width).max().unwrap_or(0);
-    let group_reference_bits = bits_needed(max_group_reference)?;
-    let group_width_bits = bits_needed(u64::from(max_group_width))?;
-    let group_length_reference = complex_group_length_reference(present_count)?;
-    let true_length_last_group = complex_true_length_last_group(present_count)?;
+    let group_reference_bits = bits_needed(max_group_reference);
+    let group_width_bits = bits_needed(u64::from(max_group_width));
+    let group_length_reference = complex_group_length_reference(present_count);
+    let true_length_last_group = complex_true_length_last_group(present_count);
 
     let mut writer = BitWriter::new();
     if let Some(spatial) = &spatial_packing {
@@ -65,7 +65,9 @@ pub(crate) fn pack_complex_auto(
             writer.write(
                 value
                     .checked_sub(group.reference)
-                    .ok_or_else(|| Error::Other("complex group value underflow".into()))?,
+                    .ok_or(Error::ArithmeticOverflow {
+                        operation: "subtracting a complex-packing group reference",
+                    })?,
                 usize::from(group.width),
             )?;
         }

@@ -13,6 +13,16 @@
 - centralize allocation failures and resource-limit checks in `grib-core`,
   mark the public error enum non-exhaustive, and remove duplicate signed-integer
   aliases
+- report unsigned 24-bit range violations and invalid local parameter tables
+  through dedicated error variants instead of the catch-all string error
+- report image-codec failures, malformed image layouts, packing arithmetic,
+  and decoded grid-shape failures through structured reader error variants
+- report missing writer fields, unsupported edition/packing combinations, and
+  GRIB1 representation limits through dedicated error variants
+- report GRIB2 section coordinate, scale, count, and length failures through
+  typed range, overflow, and data-length errors
+- report packing-value, image-codec, grouping, and spatial-differencing
+  failures through typed errors and remove the catch-all error variant
 - remove the unused reader `flate2` dependency
 - replace byte-at-a-time bit reads and bit-at-a-time writes with buffered
   64-bit reads and byte-chunked writes
@@ -42,6 +52,11 @@
 - write CCSDS/AEC template 5.42 with automatic bit-width selection, bitmap and
   constant-field handling, configurable codec parameters, and ecCodes parity
   for default, restricted, signed, 32-bit, and nonstandard-block streams
+- encode JPEG2000 payloads directly into memory through an isolated OpenJPEG
+  interface, remove writer runtime temporary-file I/O, and reject component
+  precision above the backend's 25-bit lossless numeric limit
+- document `NaN` as the default decode result for embedded complex-packing
+  missing values and expose active primary and secondary substitute metadata
 - build the parity image from SHA-256-verified ecCodes 2.47.0 and libaec 1.1.7
   source archives, limit native builds to two compile jobs, and default parity
   containers to two CPUs and two Cargo build jobs without sharing incompatible

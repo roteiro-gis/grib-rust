@@ -25,11 +25,11 @@ pub(super) fn complex_groups(deltas: &[u64]) -> Result<Vec<ComplexGroup>> {
         let reference = chunk.iter().copied().min().unwrap_or(0);
         let max_value = chunk.iter().copied().max().unwrap_or(reference);
         if max_value > i64::MAX as u64 {
-            return Err(Error::Other(
+            return Err(Error::ValueOutOfRange(
                 "complex packing value exceeds i64 decoder range".into(),
             ));
         }
-        let width = bits_needed(max_value - reference)?;
+        let width = bits_needed(max_value - reference);
         groups.push(ComplexGroup {
             reference,
             width,
@@ -39,20 +39,19 @@ pub(super) fn complex_groups(deltas: &[u64]) -> Result<Vec<ComplexGroup>> {
     Ok(groups)
 }
 
-pub(super) fn complex_group_length_reference(value_count: usize) -> Result<u32> {
-    u32::try_from(complex_group_len(value_count))
-        .map_err(|_| Error::Other("complex group length exceeds u32".into()))
+pub(super) fn complex_group_length_reference(value_count: usize) -> u32 {
+    complex_group_len(value_count) as u32
 }
 
-pub(super) fn complex_true_length_last_group(value_count: usize) -> Result<u32> {
+pub(super) fn complex_true_length_last_group(value_count: usize) -> u32 {
     if value_count == 0 {
-        return Ok(0);
+        return 0;
     }
 
     let group_len = complex_group_len(value_count);
     let remainder = value_count % group_len;
     let length = if remainder == 0 { group_len } else { remainder };
-    u32::try_from(length).map_err(|_| Error::Other("complex group length exceeds u32".into()))
+    length as u32
 }
 
 fn complex_group_len(value_count: usize) -> usize {

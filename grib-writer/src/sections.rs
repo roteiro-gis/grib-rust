@@ -14,6 +14,25 @@ use grib_core::{
 use crate::packing::PackedField;
 use crate::{Error, Result};
 
+fn encode_grib_i32(value: i32, field: &str) -> Result<[u8; 4]> {
+    encode_wmo_i32(value)
+        .ok_or_else(|| Error::ValueOutOfRange(format!("{field} does not fit GRIB signed i32")))
+}
+
+fn encode_grib_i16(value: i16, field: &str) -> Result<[u8; 2]> {
+    encode_wmo_i16(value)
+        .ok_or_else(|| Error::ValueOutOfRange(format!("{field} does not fit GRIB signed i16")))
+}
+
+fn encode_grib_i8(value: i16, field: &str) -> Result<u8> {
+    encode_wmo_i8(value)
+        .ok_or_else(|| Error::ValueOutOfRange(format!("{field} does not fit GRIB signed i8")))
+}
+
+fn checked_u32(value: usize, field: &str) -> Result<u32> {
+    u32::try_from(value).map_err(|_| Error::ValueOutOfRange(format!("{field} {value} exceeds u32")))
+}
+
 pub(crate) fn write_indicator_placeholder(out: &mut Vec<u8>, discipline: u8) -> Result<()> {
     out.extend_from_slice(b"GRIB");
     write_u16_be(out, 0)?;
@@ -64,18 +83,22 @@ fn write_latlon_grid_section(out: &mut Vec<u8>, grid: &LatLonGrid) -> Result<()>
     section[12..14].copy_from_slice(&0u16.to_be_bytes());
     section[30..34].copy_from_slice(&grid.ni.to_be_bytes());
     section[34..38].copy_from_slice(&grid.nj.to_be_bytes());
-    section[46..50].copy_from_slice(&encode_wmo_i32(grid.lat_first).ok_or_else(|| {
-        Error::Other("latitude of first grid point does not fit GRIB signed i32".into())
-    })?);
-    section[50..54].copy_from_slice(&encode_wmo_i32(grid.lon_first).ok_or_else(|| {
-        Error::Other("longitude of first grid point does not fit GRIB signed i32".into())
-    })?);
-    section[55..59].copy_from_slice(&encode_wmo_i32(grid.lat_last).ok_or_else(|| {
-        Error::Other("latitude of last grid point does not fit GRIB signed i32".into())
-    })?);
-    section[59..63].copy_from_slice(&encode_wmo_i32(grid.lon_last).ok_or_else(|| {
-        Error::Other("longitude of last grid point does not fit GRIB signed i32".into())
-    })?);
+    section[46..50].copy_from_slice(&encode_grib_i32(
+        grid.lat_first,
+        "latitude of first grid point",
+    )?);
+    section[50..54].copy_from_slice(&encode_grib_i32(
+        grid.lon_first,
+        "longitude of first grid point",
+    )?);
+    section[55..59].copy_from_slice(&encode_grib_i32(
+        grid.lat_last,
+        "latitude of last grid point",
+    )?);
+    section[59..63].copy_from_slice(&encode_grib_i32(
+        grid.lon_last,
+        "longitude of last grid point",
+    )?);
     section[63..67].copy_from_slice(&grid.di.to_be_bytes());
     section[67..71].copy_from_slice(&grid.dj.to_be_bytes());
     section[71] = grid.scanning_mode;
@@ -96,22 +119,22 @@ fn write_mercator_grid_section(out: &mut Vec<u8>, grid: &MercatorGrid) -> Result
     section[4] = 3;
     section[12..14].copy_from_slice(&10u16.to_be_bytes());
     write_projected_grid_core(&mut section, &grid.core, 64, 59)?;
-    section[47..51].copy_from_slice(&encode_wmo_i32(grid.lat_d).ok_or_else(|| {
-        Error::Other(
-            "latitude where grid lengths are specified does not fit GRIB signed i32".into(),
-        )
-    })?);
-    section[51..55].copy_from_slice(&encode_wmo_i32(grid.lat_last).ok_or_else(|| {
-        Error::Other("latitude of last grid point does not fit GRIB signed i32".into())
-    })?);
-    section[55..59].copy_from_slice(&encode_wmo_i32(grid.lon_last).ok_or_else(|| {
-        Error::Other("longitude of last grid point does not fit GRIB signed i32".into())
-    })?);
-    section[60..64].copy_from_slice(
-        &encode_wmo_i32(grid.orientation_of_grid).ok_or_else(|| {
-            Error::Other("Mercator orientation does not fit GRIB signed i32".into())
-        })?,
-    );
+    section[47..51].copy_from_slice(&encode_grib_i32(
+        grid.lat_d,
+        "latitude where grid lengths are specified",
+    )?);
+    section[51..55].copy_from_slice(&encode_grib_i32(
+        grid.lat_last,
+        "latitude of last grid point",
+    )?);
+    section[55..59].copy_from_slice(&encode_grib_i32(
+        grid.lon_last,
+        "longitude of last grid point",
+    )?);
+    section[60..64].copy_from_slice(&encode_grib_i32(
+        grid.orientation_of_grid,
+        "Mercator orientation",
+    )?);
     out.extend_from_slice(&section);
     Ok(())
 }
@@ -132,16 +155,11 @@ fn write_polar_stereographic_grid_section(
     section[4] = 3;
     section[12..14].copy_from_slice(&20u16.to_be_bytes());
     write_projected_grid_core(&mut section, &grid.core, 55, 64)?;
-    section[47..51].copy_from_slice(&encode_wmo_i32(grid.lat_d).ok_or_else(|| {
-        Error::Other(
-            "latitude where grid lengths are specified does not fit GRIB signed i32".into(),
-        )
-    })?);
-    section[51..55].copy_from_slice(
-        &encode_wmo_i32(grid.lon_v).ok_or_else(|| {
-            Error::Other("projection longitude does not fit GRIB signed i32".into())
-        })?,
-    );
+    section[47..51].copy_from_slice(&encode_grib_i32(
+        grid.lat_d,
+        "latitude where grid lengths are specified",
+    )?);
+    section[51..55].copy_from_slice(&encode_grib_i32(grid.lon_v, "projection longitude")?);
     section[63] = grid.projection_center_flag;
     out.extend_from_slice(&section);
     Ok(())
@@ -163,31 +181,22 @@ fn write_albers_equal_area_grid_section(
     section[4] = 3;
     section[12..14].copy_from_slice(&31u16.to_be_bytes());
     write_projected_grid_core(&mut section, &grid.core, 55, 64)?;
-    section[47..51].copy_from_slice(&encode_wmo_i32(grid.lat_d).ok_or_else(|| {
-        Error::Other(
-            "latitude where grid lengths are specified does not fit GRIB signed i32".into(),
-        )
-    })?);
-    section[51..55].copy_from_slice(
-        &encode_wmo_i32(grid.lon_v).ok_or_else(|| {
-            Error::Other("projection longitude does not fit GRIB signed i32".into())
-        })?,
-    );
+    section[47..51].copy_from_slice(&encode_grib_i32(
+        grid.lat_d,
+        "latitude where grid lengths are specified",
+    )?);
+    section[51..55].copy_from_slice(&encode_grib_i32(grid.lon_v, "projection longitude")?);
     section[63] = grid.projection_center_flag;
-    section[65..69].copy_from_slice(
-        &encode_wmo_i32(grid.latin1).ok_or_else(|| {
-            Error::Other("first Latin latitude does not fit GRIB signed i32".into())
-        })?,
-    );
-    section[69..73].copy_from_slice(&encode_wmo_i32(grid.latin2).ok_or_else(|| {
-        Error::Other("second Latin latitude does not fit GRIB signed i32".into())
-    })?);
-    section[73..77].copy_from_slice(&encode_wmo_i32(grid.lat_southern_pole).ok_or_else(|| {
-        Error::Other("latitude of southern pole does not fit GRIB signed i32".into())
-    })?);
-    section[77..81].copy_from_slice(&encode_wmo_i32(grid.lon_southern_pole).ok_or_else(|| {
-        Error::Other("longitude of southern pole does not fit GRIB signed i32".into())
-    })?);
+    section[65..69].copy_from_slice(&encode_grib_i32(grid.latin1, "first Latin latitude")?);
+    section[69..73].copy_from_slice(&encode_grib_i32(grid.latin2, "second Latin latitude")?);
+    section[73..77].copy_from_slice(&encode_grib_i32(
+        grid.lat_southern_pole,
+        "latitude of southern pole",
+    )?);
+    section[77..81].copy_from_slice(&encode_grib_i32(
+        grid.lon_southern_pole,
+        "longitude of southern pole",
+    )?);
     out.extend_from_slice(&section);
     Ok(())
 }
@@ -208,31 +217,22 @@ fn write_lambert_conformal_grid_section(
     section[4] = 3;
     section[12..14].copy_from_slice(&30u16.to_be_bytes());
     write_projected_grid_core(&mut section, &grid.core, 55, 64)?;
-    section[47..51].copy_from_slice(&encode_wmo_i32(grid.lat_d).ok_or_else(|| {
-        Error::Other(
-            "latitude where grid lengths are specified does not fit GRIB signed i32".into(),
-        )
-    })?);
-    section[51..55].copy_from_slice(
-        &encode_wmo_i32(grid.lon_v).ok_or_else(|| {
-            Error::Other("projection longitude does not fit GRIB signed i32".into())
-        })?,
-    );
+    section[47..51].copy_from_slice(&encode_grib_i32(
+        grid.lat_d,
+        "latitude where grid lengths are specified",
+    )?);
+    section[51..55].copy_from_slice(&encode_grib_i32(grid.lon_v, "projection longitude")?);
     section[63] = grid.projection_center_flag;
-    section[65..69].copy_from_slice(
-        &encode_wmo_i32(grid.latin1).ok_or_else(|| {
-            Error::Other("first Latin latitude does not fit GRIB signed i32".into())
-        })?,
-    );
-    section[69..73].copy_from_slice(&encode_wmo_i32(grid.latin2).ok_or_else(|| {
-        Error::Other("second Latin latitude does not fit GRIB signed i32".into())
-    })?);
-    section[73..77].copy_from_slice(&encode_wmo_i32(grid.lat_southern_pole).ok_or_else(|| {
-        Error::Other("latitude of southern pole does not fit GRIB signed i32".into())
-    })?);
-    section[77..81].copy_from_slice(&encode_wmo_i32(grid.lon_southern_pole).ok_or_else(|| {
-        Error::Other("longitude of southern pole does not fit GRIB signed i32".into())
-    })?);
+    section[65..69].copy_from_slice(&encode_grib_i32(grid.latin1, "first Latin latitude")?);
+    section[69..73].copy_from_slice(&encode_grib_i32(grid.latin2, "second Latin latitude")?);
+    section[73..77].copy_from_slice(&encode_grib_i32(
+        grid.lat_southern_pole,
+        "latitude of southern pole",
+    )?);
+    section[77..81].copy_from_slice(&encode_grib_i32(
+        grid.lon_southern_pole,
+        "longitude of southern pole",
+    )?);
     out.extend_from_slice(&section);
     Ok(())
 }
@@ -278,12 +278,14 @@ fn write_projected_grid_core(
     );
     section[30..34].copy_from_slice(&core.nx.to_be_bytes());
     section[34..38].copy_from_slice(&core.ny.to_be_bytes());
-    section[38..42].copy_from_slice(&encode_wmo_i32(core.lat_first).ok_or_else(|| {
-        Error::Other("latitude of first grid point does not fit GRIB signed i32".into())
-    })?);
-    section[42..46].copy_from_slice(&encode_wmo_i32(core.lon_first).ok_or_else(|| {
-        Error::Other("longitude of first grid point does not fit GRIB signed i32".into())
-    })?);
+    section[38..42].copy_from_slice(&encode_grib_i32(
+        core.lat_first,
+        "latitude of first grid point",
+    )?);
+    section[42..46].copy_from_slice(&encode_grib_i32(
+        core.lon_first,
+        "longitude of first grid point",
+    )?);
     section[46] = core.resolution_and_component_flags;
     section[spacing_offset..spacing_offset + 4].copy_from_slice(&core.dx.to_be_bytes());
     section[spacing_offset + 4..spacing_offset + 8].copy_from_slice(&core.dy.to_be_bytes());
@@ -565,7 +567,7 @@ fn validate_reference_time(reference_time: ReferenceTime) -> Result<()> {
 
 fn checked_time_range_count(range_count: usize) -> Result<u8> {
     u8::try_from(range_count).map_err(|_| {
-        Error::Other(format!(
+        Error::ValueOutOfRange(format!(
             "statistical product time-range count ({range_count}) exceeds GRIB2 u8 limit"
         ))
     })
@@ -575,7 +577,9 @@ fn statistical_product_section_len(base_len: u32, range_count: u8) -> Result<u32
     u32::from(range_count)
         .checked_mul(12)
         .and_then(|ranges_len| base_len.checked_add(ranges_len))
-        .ok_or_else(|| Error::Other("statistical product section length overflow".into()))
+        .ok_or(Error::ArithmeticOverflow {
+            operation: "computing statistical product section length",
+        })
 }
 
 fn write_statistical_time_ranges(out: &mut Vec<u8>, ranges: &[StatisticalTimeRange]) -> Result<()> {
@@ -598,18 +602,11 @@ fn write_surface(out: &mut Vec<u8>, surface: Option<&FixedSurface>) -> Result<()
                 Some(value) => {
                     write_u8_be(
                         out,
-                        encode_wmo_i8(value.scale_factor).ok_or_else(|| {
-                            Error::Other(
-                                "fixed-surface scale factor does not fit GRIB signed i8".into(),
-                            )
-                        })?,
+                        encode_grib_i8(value.scale_factor, "fixed-surface scale factor")?,
                     )?;
-                    out.extend_from_slice(&encode_wmo_i32(value.scaled_value).ok_or_else(
-                        || {
-                            Error::Other(
-                                "fixed-surface scaled value does not fit GRIB signed i32".into(),
-                            )
-                        },
+                    out.extend_from_slice(&encode_grib_i32(
+                        value.scaled_value,
+                        "fixed-surface scaled value",
                     )?);
                 }
                 None => out.extend_from_slice(&[0xff; 5]),
@@ -644,9 +641,8 @@ pub(crate) fn write_data_representation_section(
         DataRepresentation::CcsdsPacking(params) => {
             write_ccsds_data_representation_section(out, params)
         }
-        DataRepresentation::Unsupported(template) => Err(Error::UnsupportedDataTemplate(*template)),
-        _ => Err(Error::Other(
-            "data representation variant is not supported by this writer".into(),
+        representation => Err(Error::UnsupportedDataTemplate(
+            representation.template_number(),
         )),
     }
 }
@@ -655,21 +651,14 @@ fn write_simple_data_representation_section(
     out: &mut Vec<u8>,
     params: &ScaledPackingParams,
 ) -> Result<()> {
-    let encoded_values = u32::try_from(params.encoded_values)
-        .map_err(|_| Error::Other("encoded value count exceeds u32".into()))?;
+    let encoded_values = checked_u32(params.encoded_values, "encoded value count")?;
     write_u32_be(out, 21)?;
     write_u8_be(out, 5)?;
     write_u32_be(out, encoded_values)?;
     write_u16_be(out, 0)?;
     out.extend_from_slice(&params.reference_value.to_be_bytes());
-    out.extend_from_slice(
-        &encode_wmo_i16(params.binary_scale)
-            .ok_or_else(|| Error::Other("binary scale does not fit GRIB signed i16".into()))?,
-    );
-    out.extend_from_slice(
-        &encode_wmo_i16(params.decimal_scale)
-            .ok_or_else(|| Error::Other("decimal scale does not fit GRIB signed i16".into()))?,
-    );
+    out.extend_from_slice(&encode_grib_i16(params.binary_scale, "binary scale")?);
+    out.extend_from_slice(&encode_grib_i16(params.decimal_scale, "decimal scale")?);
     write_u8_be(out, params.bits_per_value)?;
     write_u8_be(out, params.original_field_type)
 }
@@ -678,10 +667,8 @@ fn write_complex_data_representation_section(
     out: &mut Vec<u8>,
     params: &ComplexPackingParams,
 ) -> Result<()> {
-    let encoded_values = u32::try_from(params.encoded_values)
-        .map_err(|_| Error::Other("encoded value count exceeds u32".into()))?;
-    let num_groups = u32::try_from(params.num_groups)
-        .map_err(|_| Error::Other("complex group count exceeds u32".into()))?;
+    let encoded_values = checked_u32(params.encoded_values, "encoded value count")?;
+    let num_groups = checked_u32(params.num_groups, "complex group count")?;
     let template = if params.spatial_differencing.is_some() {
         3
     } else {
@@ -698,14 +685,8 @@ fn write_complex_data_representation_section(
     write_u32_be(out, encoded_values)?;
     write_u16_be(out, template)?;
     out.extend_from_slice(&params.reference_value.to_be_bytes());
-    out.extend_from_slice(
-        &encode_wmo_i16(params.binary_scale)
-            .ok_or_else(|| Error::Other("binary scale does not fit GRIB signed i16".into()))?,
-    );
-    out.extend_from_slice(
-        &encode_wmo_i16(params.decimal_scale)
-            .ok_or_else(|| Error::Other("decimal scale does not fit GRIB signed i16".into()))?,
-    );
+    out.extend_from_slice(&encode_grib_i16(params.binary_scale, "binary scale")?);
+    out.extend_from_slice(&encode_grib_i16(params.decimal_scale, "decimal scale")?);
     write_u8_be(out, params.group_reference_bits)?;
     write_u8_be(out, params.original_field_type)?;
     write_u8_be(out, params.group_splitting_method)?;
@@ -758,21 +739,14 @@ fn write_scaled_data_representation_base(
     template: u16,
     params: &ScaledPackingParams,
 ) -> Result<()> {
-    let encoded_values = u32::try_from(params.encoded_values)
-        .map_err(|_| Error::Other("encoded value count exceeds u32".into()))?;
+    let encoded_values = checked_u32(params.encoded_values, "encoded value count")?;
     write_u32_be(out, section_length)?;
     write_u8_be(out, 5)?;
     write_u32_be(out, encoded_values)?;
     write_u16_be(out, template)?;
     out.extend_from_slice(&params.reference_value.to_be_bytes());
-    out.extend_from_slice(
-        &encode_wmo_i16(params.binary_scale)
-            .ok_or_else(|| Error::Other("binary scale does not fit GRIB signed i16".into()))?,
-    );
-    out.extend_from_slice(
-        &encode_wmo_i16(params.decimal_scale)
-            .ok_or_else(|| Error::Other("decimal scale does not fit GRIB signed i16".into()))?,
-    );
+    out.extend_from_slice(&encode_grib_i16(params.binary_scale, "binary scale")?);
+    out.extend_from_slice(&encode_grib_i16(params.decimal_scale, "decimal scale")?);
     write_u8_be(out, params.bits_per_value)?;
     write_u8_be(out, params.original_field_type)
 }
@@ -833,10 +807,14 @@ pub(crate) fn checked_grid_point_count(grid: &GridDefinition) -> Result<usize> {
 }
 
 fn checked_latlon_point_count(grid: &LatLonGrid) -> Result<u32> {
-    let count = u64::from(grid.ni)
-        .checked_mul(u64::from(grid.nj))
-        .ok_or_else(|| Error::Other("grid point count overflow".into()))?;
-    u32::try_from(count).map_err(|_| Error::Other("grid point count exceeds u32".into()))
+    let count =
+        u64::from(grid.ni)
+            .checked_mul(u64::from(grid.nj))
+            .ok_or(Error::ArithmeticOverflow {
+                operation: "computing latitude-longitude grid point count",
+            })?;
+    u32::try_from(count)
+        .map_err(|_| Error::ValueOutOfRange(format!("grid point count {count} exceeds u32")))
 }
 
 fn checked_projected_point_count(
@@ -847,16 +825,28 @@ fn checked_projected_point_count(
 ) -> Result<usize> {
     let expected = u64::from(nx)
         .checked_mul(u64::from(ny))
-        .ok_or_else(|| Error::Other(format!("{grid_name} point count overflow")))?;
-    let expected = u32::try_from(expected)
-        .map_err(|_| Error::Other(format!("{grid_name} point count exceeds u32")))?;
+        .ok_or(Error::ArithmeticOverflow {
+            operation: "computing projected grid point count",
+        })?;
+    let expected = u32::try_from(expected).map_err(|_| {
+        Error::ValueOutOfRange(format!("{grid_name} point count {expected} exceeds u32"))
+    })?;
     if number_of_points != expected {
-        return Err(Error::Other(format!(
-            "{grid_name} number_of_points ({number_of_points}) does not match Nx*Ny ({expected})"
-        )));
+        let expected = usize::try_from(expected).map_err(|_| {
+            Error::ValueOutOfRange(format!("{grid_name} point count {expected} exceeds usize"))
+        })?;
+        let actual = usize::try_from(number_of_points).map_err(|_| {
+            Error::ValueOutOfRange(format!(
+                "{grid_name} number_of_points {number_of_points} exceeds usize"
+            ))
+        })?;
+        return Err(Error::DataLengthMismatch { expected, actual });
     }
-    usize::try_from(number_of_points)
-        .map_err(|_| Error::Other(format!("{grid_name} point count exceeds usize")))
+    usize::try_from(number_of_points).map_err(|_| {
+        Error::ValueOutOfRange(format!(
+            "{grid_name} point count {number_of_points} exceeds usize"
+        ))
+    })
 }
 
 pub(crate) fn validate_supported_grid(grid: &GridDefinition) -> Result<()> {

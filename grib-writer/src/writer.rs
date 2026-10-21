@@ -91,7 +91,7 @@ impl<'a, W: Write> GribWriter<'a, W> {
         message.extend_from_slice(b"7777");
 
         let total_len = u64::try_from(message.len())
-            .map_err(|_| Error::Other("GRIB2 message length exceeds u64".into()))?;
+            .map_err(|_| Error::ValueOutOfRange("GRIB2 message length exceeds u64".into()))?;
         message[8..16].copy_from_slice(&total_len.to_be_bytes());
 
         self.out

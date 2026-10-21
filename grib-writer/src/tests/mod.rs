@@ -6,6 +6,8 @@ use std::process::Command;
 
 use grib_core::binary::decode_ibm_f32;
 use grib_core::metadata::ReferenceTime;
+#[cfg(feature = "jpeg2000")]
+use grib_core::Error;
 use grib_core::{
     AlbersEqualAreaGrid, AnalysisOrForecastTemplate, CcsdsBlockSize, CcsdsFlags,
     DataRepresentation, DerivedForecastTemplate, DerivedStatisticalProcessTemplate,
@@ -339,6 +341,22 @@ fn grib1_simple_field(values: &[f64]) -> super::Grib1Field {
 }
 
 #[test]
+fn reports_missing_builder_fields_with_typed_errors() {
+    assert!(matches!(
+        Grib1FieldBuilder::new().build().unwrap_err(),
+        grib_core::Error::MissingRequiredField {
+            field: "GRIB1 product definition",
+        }
+    ));
+    assert!(matches!(
+        Grib2FieldBuilder::new().build().unwrap_err(),
+        grib_core::Error::MissingRequiredField {
+            field: "GRIB2 identification",
+        }
+    ));
+}
+
+#[test]
 fn writes_simple_grib1_field_readable_by_reader() {
     let values = [1.0, 2.0, 3.0, 4.0];
     let bytes = write_grib1_message(grib1_simple_field(&values));
@@ -444,7 +462,9 @@ fn rejects_zero_grib1_predefined_bitmap_reference() {
         .build()
         .unwrap_err();
 
-    assert!(matches!(err, grib_core::Error::Other(message) if message.contains("must be nonzero")));
+    assert!(
+        matches!(err, grib_core::Error::ValueOutOfRange(message) if message.contains("must be nonzero"))
+    );
 }
 
 #[test]
@@ -499,7 +519,9 @@ fn rejects_grib1_grid_dimensions_beyond_u16() {
         .values(&[1.0])
         .build()
         .unwrap_err();
-    assert!(matches!(err, grib_core::Error::Other(message) if message.contains("Ni exceeds")));
+    assert!(
+        matches!(err, grib_core::Error::ValueOutOfRange(message) if message.contains("Ni exceeds"))
+    );
 }
 
 #[test]
@@ -1010,9 +1032,10 @@ fn rejects_too_many_statistical_time_ranges() {
         .build()
         .unwrap_err();
 
-    assert!(
-        matches!(err, grib_core::Error::Other(message) if message.contains("time-range count"))
-    );
+    assert!(matches!(
+        err,
+        grib_core::Error::ValueOutOfRange(message) if message.contains("time-range count")
+    ));
 }
 
 #[test]
@@ -1253,9 +1276,74 @@ fn rejects_projected_grid_point_count_mismatch_before_writing() {
         .build()
         .unwrap_err();
 
-    assert!(
-        matches!(err, grib_core::Error::Other(message) if message.contains("number_of_points"))
-    );
+    assert!(matches!(
+        err,
+        grib_core::Error::DataLengthMismatch {
+            expected: 6,
+            actual: 5,
+        }
+    ));
+}
+
+#[test]
+fn reports_unrepresentable_grid_coordinates_with_typed_errors() {
+    let mut invalid_grid = match grid() {
+        GridDefinition::LatLon(grid) => grid,
+        other => panic!("expected latitude-longitude grid, got {other:?}"),
+    };
+    invalid_grid.lat_first = i32::MIN;
+    let field = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(GridDefinition::LatLon(invalid_grid))
+        .product(product(0, 0))
+        .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+        .values(&[1.0, 2.0, 3.0, 4.0])
+        .build()
+        .unwrap();
+
+    let mut bytes = Vec::new();
+    let err = GribWriter::new(&mut bytes)
+        .write_grib2_message([field])
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        grib_core::Error::ValueOutOfRange(message)
+            if message.contains("latitude of first grid point")
+    ));
+}
+
+#[test]
+fn reports_invalid_packing_inputs_with_typed_errors() {
+    let infinite_value = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(grid())
+        .product(product(0, 0))
+        .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+        .values(&[f64::INFINITY, 2.0, 3.0, 4.0])
+        .build()
+        .unwrap_err();
+    assert!(matches!(
+        infinite_value,
+        grib_core::Error::ValueOutOfRange(message)
+            if message.contains("infinite values")
+    ));
+
+    let invalid_scale = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(grid())
+        .product(product(0, 0))
+        .packing(PackingStrategy::SimpleAuto {
+            decimal_scale: i16::MAX,
+        })
+        .values(&[1.0, 2.0, 3.0, 4.0])
+        .build()
+        .unwrap_err();
+    assert!(matches!(
+        invalid_scale,
+        grib_core::Error::ValueOutOfRange(message)
+            if message.contains("decimal scale")
+    ));
 }
 
 #[cfg(not(feature = "png"))]
@@ -1426,6 +1514,58 @@ fn writes_jpeg2000_grib2_field() {
 
     let payload = section_payload(&bytes, 7);
     assert!(payload.starts_with(&[0xff, 0x4f, 0xff, 0x51]));
+}
+
+#[cfg(feature = "jpeg2000")]
+#[test]
+fn writes_lossless_jpeg2000_fields_through_the_maximum_supported_precision() {
+    for bits_per_value in [1u8, 8, 16, 20, 22, 24, 25] {
+        let maximum = ((1u64 << bits_per_value) - 1) as f64;
+        let values = (0..64)
+            .map(|index| {
+                if (index + index / 8) % 2 == 0 {
+                    0.0
+                } else {
+                    maximum
+                }
+            })
+            .collect::<Vec<_>>();
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid_with_shape_and_scanning_mode(8, 8, 0))
+            .product(product(0, 0))
+            .packing(PackingStrategy::Jpeg2000Auto { decimal_scale: 0 })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        let DataRepresentation::Jpeg2000Packing(params) = field.data_representation() else {
+            panic!("expected JPEG2000 packing");
+        };
+        assert_eq!(params.packing.bits_per_value, bits_per_value);
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        let decoded = file.message(0).unwrap().read_flat_data_as_f64().unwrap();
+        assert_eq!(
+            decoded, values,
+            "precision failure at {bits_per_value} bits"
+        );
+    }
+}
+
+#[cfg(feature = "jpeg2000")]
+#[test]
+fn rejects_jpeg2000_values_that_need_more_than_25_bits() {
+    let error = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(grid_with_shape_and_scanning_mode(2, 1, 0))
+        .product(product(0, 0))
+        .packing(PackingStrategy::Jpeg2000Auto { decimal_scale: 0 })
+        .values(&[0.0, (1u64 << 25) as f64])
+        .build()
+        .unwrap_err();
+
+    assert!(matches!(error, Error::UnsupportedPackingWidth(26)));
 }
 
 #[cfg(feature = "ccsds")]
@@ -1961,9 +2101,13 @@ fn rejects_complex_packing_for_grib1() {
         .build()
         .unwrap_err();
 
-    assert!(
-        matches!(err, grib_core::Error::Other(message) if message.contains("GRIB1 writer does not support complex packing"))
-    );
+    assert!(matches!(
+        err,
+        grib_core::Error::UnsupportedPackingForEdition {
+            edition: 1,
+            packing: "complex",
+        }
+    ));
 }
 
 #[test]

@@ -68,7 +68,13 @@ pub enum Error {
     #[error("data truncated at offset {offset}")]
     Truncated { offset: u64 },
 
-    #[error("decoded data length mismatch: expected {expected}, got {actual}")]
+    #[error("missing required field: {field}")]
+    MissingRequiredField { field: &'static str },
+
+    #[error("GRIB{edition} does not support {packing} packing")]
+    UnsupportedPackingForEdition { edition: u8, packing: &'static str },
+
+    #[error("data length mismatch: expected {expected}, got {actual}")]
     DataLengthMismatch { expected: usize, actual: usize },
 
     #[error("{what} limit exceeded: requested {requested}, limit {limit}")]
@@ -90,6 +96,9 @@ pub enum Error {
     #[error("value out of range: {0}")]
     ValueOutOfRange(String),
 
+    #[error("invalid local parameter table: {0}")]
+    InvalidLocalParameterTable(String),
+
     #[error("{codec} {operation} failed: {reason}")]
     Codec {
         codec: &'static str,
@@ -103,9 +112,6 @@ pub enum Error {
         requested: usize,
         reason: String,
     },
-
-    #[error("{0}")]
-    Other(String),
 }
 
 impl Error {

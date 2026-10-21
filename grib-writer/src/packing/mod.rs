@@ -23,7 +23,11 @@ pub enum PackingStrategy {
         decimal_scale: i16,
         spatial_differencing: Option<SpatialDifferencingOrder>,
     },
-    /// GRIB2 JPEG 2000 code stream packing template 5.40.
+    /// GRIB2 lossless JPEG 2000 code stream packing template 5.40.
+    ///
+    /// The OpenJPEG encoder supports automatically selected component
+    /// precision through 25 bits. Wider fields return
+    /// [`Error::UnsupportedPackingWidth`].
     Jpeg2000Auto { decimal_scale: i16 },
     /// GRIB2 PNG image packing template 5.41.
     PngAuto { decimal_scale: i16 },
@@ -64,7 +68,7 @@ fn quantize_present_values(
 ) -> Result<Vec<f64>> {
     let decimal_factor = 10.0_f64.powi(i32::from(decimal_scale));
     if !decimal_factor.is_finite() || decimal_factor <= 0.0 {
-        return Err(Error::Other(format!(
+        return Err(Error::ValueOutOfRange(format!(
             "invalid decimal scale for {packing_name}: {decimal_scale}"
         )));
     }
@@ -75,15 +79,15 @@ fn quantize_present_values(
         .filter_map(|(value, present)| present.then_some(*value))
         .map(|value| {
             if !value.is_finite() {
-                return Err(Error::Other(format!(
+                return Err(Error::ValueOutOfRange(format!(
                     "present values must be finite for {packing_name}"
                 )));
             }
             let scaled = value * decimal_factor;
             if !scaled.is_finite() {
-                return Err(Error::Other(format!(
-                    "scaled value overflow during {packing_name}"
-                )));
+                return Err(Error::ArithmeticOverflow {
+                    operation: "applying a decimal packing scale",
+                });
             }
             Ok(scaled.round())
         })
@@ -109,7 +113,7 @@ fn present_mask(values: &[f64], explicit_bitmap: Option<&[bool]>) -> Result<Vec<
             .zip(bitmap)
             .map(|(value, present)| {
                 if *present && !value.is_finite() {
-                    return Err(Error::Other(
+                    return Err(Error::ValueOutOfRange(
                         "explicit bitmap marks a non-finite value as present".into(),
                     ));
                 }
@@ -124,7 +128,7 @@ fn present_mask(values: &[f64], explicit_bitmap: Option<&[bool]>) -> Result<Vec<
                 } else if value.is_finite() {
                     Ok(true)
                 } else {
-                    Err(Error::Other(
+                    Err(Error::ValueOutOfRange(
                         "infinite values cannot be written as packed data".into(),
                     ))
                 }
@@ -139,15 +143,18 @@ fn simple_packing_deltas(quantized: &[f64]) -> Result<(f32, Vec<u64>)> {
     }
 
     let min_value = quantized.iter().copied().fold(f64::INFINITY, f64::min);
-    let reference_value = f32_not_greater_than(min_value)
-        .ok_or_else(|| Error::Other("failed to choose simple-packing reference value".into()))?;
+    let reference_value = f32_not_greater_than(min_value).ok_or_else(|| {
+        Error::ValueOutOfRange(format!(
+            "simple-packing reference value {min_value} does not fit IEEE f32"
+        ))
+    })?;
     let reference = f64::from(reference_value);
 
     let mut deltas = Vec::with_capacity(quantized.len());
     for value in quantized {
         let delta = (value - reference).round();
         if !delta.is_finite() || delta < 0.0 || delta > u64::MAX as f64 {
-            return Err(Error::Other(
+            return Err(Error::ValueOutOfRange(
                 "packed simple-packing delta does not fit in u64".into(),
             ));
         }
@@ -157,13 +164,13 @@ fn simple_packing_deltas(quantized: &[f64]) -> Result<(f32, Vec<u64>)> {
     Ok((reference_value, deltas))
 }
 
-fn bits_needed(value: u64) -> Result<u8> {
+fn bits_needed(value: u64) -> u8 {
     let bits = if value == 0 {
         0
     } else {
         u64::BITS - value.leading_zeros()
     };
-    u8::try_from(bits).map_err(|_| Error::Other("bit width exceeds u8".into()))
+    bits as u8
 }
 
 fn f32_not_greater_than(value: f64) -> Option<f32> {

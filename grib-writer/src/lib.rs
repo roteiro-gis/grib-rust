@@ -1,6 +1,6 @@
 //! GRIB writer crate.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 mod builder;
 mod grib1;

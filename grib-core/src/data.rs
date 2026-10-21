@@ -218,6 +218,11 @@ impl CcsdsPackingParams {
 }
 
 /// Parameters for complex packing (Templates 5.2 and 5.3).
+///
+/// Decoders represent embedded primary and secondary missing codes as `NaN`.
+/// The template's substitute metadata is preserved separately and can be
+/// queried with [`ComplexPackingParams::primary_missing_substitute`] and
+/// [`ComplexPackingParams::secondary_missing_substitute`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComplexPackingParams {
     pub encoded_values: usize,
@@ -240,6 +245,36 @@ pub struct ComplexPackingParams {
     pub spatial_differencing: Option<SpatialDifferencingParams>,
 }
 
+impl ComplexPackingParams {
+    /// Returns the raw four-octet primary substitute when primary missing
+    /// values are enabled by Code Table 5.5.
+    ///
+    /// The decoder intentionally emits `NaN` instead of applying this value.
+    /// Callers that need producer-specific substitution can inspect
+    /// [`ComplexPackingParams::original_field_type`] and interpret this raw
+    /// Template 5.2/5.3 value accordingly.
+    pub const fn primary_missing_substitute(&self) -> Option<u32> {
+        match self.missing_value_management {
+            1 | 2 => Some(self.primary_missing_substitute),
+            _ => None,
+        }
+    }
+
+    /// Returns the raw four-octet secondary substitute when both primary and
+    /// secondary missing values are enabled by Code Table 5.5.
+    ///
+    /// The decoder intentionally emits `NaN` instead of applying this value.
+    /// Callers that need producer-specific substitution can inspect
+    /// [`ComplexPackingParams::original_field_type`] and interpret this raw
+    /// Template 5.2/5.3 value accordingly.
+    pub const fn secondary_missing_substitute(&self) -> Option<u32> {
+        match self.missing_value_management {
+            2 => Some(self.secondary_missing_substitute),
+            _ => None,
+        }
+    }
+}
+
 /// Parameters specific to template 5.3 spatial differencing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpatialDifferencingParams {
@@ -248,6 +283,24 @@ pub struct SpatialDifferencingParams {
 }
 
 impl DataRepresentation {
+    /// Returns the GRIB2 data representation template number.
+    pub const fn template_number(&self) -> u16 {
+        match self {
+            Self::SimplePacking(_) => 0,
+            Self::ComplexPacking(params) => {
+                if params.spatial_differencing.is_some() {
+                    3
+                } else {
+                    2
+                }
+            }
+            Self::Jpeg2000Packing(_) => 40,
+            Self::PngPacking(_) => 41,
+            Self::CcsdsPacking(_) => 42,
+            Self::Unsupported(template) => *template,
+        }
+    }
+
     pub fn parse(section_bytes: &[u8]) -> Result<Self> {
         if section_bytes.len() < 11 {
             return Err(Error::InvalidSection {
@@ -466,8 +519,8 @@ fn parse_complex_packing(
 #[cfg(test)]
 mod tests {
     use super::{
-        CcsdsBlockSize, CcsdsFlags, CcsdsPackingParams, DataRepresentation, Jpeg2000PackingParams,
-        PngPackingParams, ScaledPackingParams,
+        CcsdsBlockSize, CcsdsFlags, CcsdsPackingParams, ComplexPackingParams, DataRepresentation,
+        Jpeg2000PackingParams, PngPackingParams, ScaledPackingParams, SpatialDifferencingParams,
     };
     use crate::binary::encode_wmo_i16;
 
@@ -484,8 +537,10 @@ mod tests {
         section[19] = 8;
         section[20] = 0;
 
+        let representation = DataRepresentation::parse(&section).unwrap();
+        assert_eq!(representation.template_number(), 0);
         assert_eq!(
-            DataRepresentation::parse(&section).unwrap(),
+            representation,
             DataRepresentation::SimplePacking(ScaledPackingParams {
                 encoded_values: 3,
                 reference_value: 10.0,
@@ -512,8 +567,10 @@ mod tests {
         section[21] = 1;
         section[22] = 255;
 
+        let representation = DataRepresentation::parse(&section).unwrap();
+        assert_eq!(representation.template_number(), 40);
         assert_eq!(
-            DataRepresentation::parse(&section).unwrap(),
+            representation,
             DataRepresentation::Jpeg2000Packing(Jpeg2000PackingParams {
                 packing: ScaledPackingParams {
                     encoded_values: 4,
@@ -542,8 +599,10 @@ mod tests {
         section[19] = 16;
         section[20] = 1;
 
+        let representation = DataRepresentation::parse(&section).unwrap();
+        assert_eq!(representation.template_number(), 41);
         assert_eq!(
-            DataRepresentation::parse(&section).unwrap(),
+            representation,
             DataRepresentation::PngPacking(PngPackingParams {
                 packing: ScaledPackingParams {
                     encoded_values: 6,
@@ -558,11 +617,86 @@ mod tests {
     }
 
     #[test]
+    fn exposes_only_enabled_complex_missing_value_substitutes() {
+        let mut params = ComplexPackingParams {
+            encoded_values: 1,
+            reference_value: 0.0,
+            binary_scale: 0,
+            decimal_scale: 0,
+            group_reference_bits: 1,
+            original_field_type: 0,
+            group_splitting_method: 1,
+            missing_value_management: 0,
+            primary_missing_substitute: 0x1122_3344,
+            secondary_missing_substitute: 0x5566_7788,
+            num_groups: 1,
+            group_width_reference: 0,
+            group_width_bits: 0,
+            group_length_reference: 1,
+            group_length_increment: 1,
+            true_length_last_group: 1,
+            scaled_group_length_bits: 0,
+            spatial_differencing: None,
+        };
+
+        assert_eq!(params.primary_missing_substitute(), None);
+        assert_eq!(params.secondary_missing_substitute(), None);
+
+        params.missing_value_management = 1;
+        assert_eq!(params.primary_missing_substitute(), Some(0x1122_3344));
+        assert_eq!(params.secondary_missing_substitute(), None);
+
+        params.missing_value_management = 2;
+        assert_eq!(params.primary_missing_substitute(), Some(0x1122_3344));
+        assert_eq!(params.secondary_missing_substitute(), Some(0x5566_7788));
+    }
+
+    #[test]
+    fn reports_complex_and_unknown_template_numbers() {
+        let mut params = ComplexPackingParams {
+            encoded_values: 0,
+            reference_value: 0.0,
+            binary_scale: 0,
+            decimal_scale: 0,
+            group_reference_bits: 0,
+            original_field_type: 0,
+            group_splitting_method: 1,
+            missing_value_management: 0,
+            primary_missing_substitute: 0,
+            secondary_missing_substitute: 0,
+            num_groups: 0,
+            group_width_reference: 0,
+            group_width_bits: 0,
+            group_length_reference: 0,
+            group_length_increment: 0,
+            true_length_last_group: 0,
+            scaled_group_length_bits: 0,
+            spatial_differencing: None,
+        };
+
+        assert_eq!(
+            DataRepresentation::ComplexPacking(params.clone()).template_number(),
+            2
+        );
+        params.spatial_differencing = Some(SpatialDifferencingParams {
+            order: 1,
+            descriptor_octets: 1,
+        });
+        assert_eq!(
+            DataRepresentation::ComplexPacking(params).template_number(),
+            3
+        );
+        assert_eq!(DataRepresentation::Unsupported(500).template_number(), 500);
+    }
+
+    #[test]
     fn parses_ccsds_packing_template() {
         let section = ccsds_section(20, CcsdsFlags::DEFAULT.bits(), 32, 128);
 
+        let representation = DataRepresentation::parse(&section).unwrap();
+        assert_eq!(representation.template_number(), 42);
         assert_eq!(
-            DataRepresentation::parse(&section).unwrap(),
+            representation,
             DataRepresentation::CcsdsPacking(
                 CcsdsPackingParams::new(
                     ScaledPackingParams {

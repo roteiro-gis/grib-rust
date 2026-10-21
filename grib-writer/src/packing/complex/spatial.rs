@@ -49,8 +49,9 @@ pub(super) fn spatially_difference_values(
         .iter()
         .copied()
         .map(|value| {
-            i64::try_from(value)
-                .map_err(|_| Error::Other("spatial differencing value exceeds i64".into()))
+            i64::try_from(value).map_err(|_| {
+                Error::ValueOutOfRange(format!("spatial differencing value {value} exceeds i64"))
+            })
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -76,7 +77,9 @@ fn first_order_spatial_difference(values: &[i64]) -> Result<(SpatialDescriptors,
         differences.push(
             pair[1]
                 .checked_sub(pair[0])
-                .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?,
+                .ok_or(Error::ArithmeticOverflow {
+                    operation: "computing a first-order spatial difference",
+                })?,
         );
     }
     let overall_minimum = differences.iter().copied().min().unwrap_or(0);
@@ -100,20 +103,26 @@ fn first_order_spatial_difference(values: &[i64]) -> Result<(SpatialDescriptors,
 fn second_order_spatial_difference(values: &[i64]) -> Result<(SpatialDescriptors, Vec<u64>)> {
     let first_value = values[0];
     let second_value = values[1];
-    let mut previous_difference = second_value
-        .checked_sub(first_value)
-        .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
+    let mut previous_difference =
+        second_value
+            .checked_sub(first_value)
+            .ok_or(Error::ArithmeticOverflow {
+                operation: "computing a second-order spatial difference",
+            })?;
     let mut second_differences = Vec::with_capacity(values.len().saturating_sub(2));
 
     for index in 2..values.len() {
-        let difference = values[index]
-            .checked_sub(values[index - 1])
-            .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
-        second_differences.push(
-            difference
-                .checked_sub(previous_difference)
-                .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?,
-        );
+        let difference =
+            values[index]
+                .checked_sub(values[index - 1])
+                .ok_or(Error::ArithmeticOverflow {
+                    operation: "computing a second-order spatial difference",
+                })?;
+        second_differences.push(difference.checked_sub(previous_difference).ok_or(
+            Error::ArithmeticOverflow {
+                operation: "computing a second-order spatial difference",
+            },
+        )?);
         previous_difference = difference;
     }
 
@@ -139,11 +148,12 @@ fn second_order_spatial_difference(values: &[i64]) -> Result<(SpatialDescriptors
 }
 
 fn spatial_difference_delta(value: i64, overall_minimum: i64) -> Result<u64> {
-    let delta = value
-        .checked_sub(overall_minimum)
-        .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
-    u64::try_from(delta)
-        .map_err(|_| Error::Other("spatial differencing produced negative delta".into()))
+    let delta = i128::from(value) - i128::from(overall_minimum);
+    u64::try_from(delta).map_err(|_| {
+        Error::ValueOutOfRange(format!(
+            "spatial differencing delta {delta} does not fit u64"
+        ))
+    })
 }
 
 fn spatial_descriptor_octets(descriptors: &SpatialDescriptors) -> Result<u8> {
@@ -162,7 +172,7 @@ fn spatial_descriptor_octets(descriptors: &SpatialDescriptors) -> Result<u8> {
         }
     }
 
-    Err(Error::Other(
+    Err(Error::ValueOutOfRange(
         "spatial differencing descriptor exceeds signed-magnitude range".into(),
     ))
 }
@@ -201,24 +211,19 @@ pub(super) fn write_spatial_descriptors(
 fn signed_magnitude_bits(value: i64, octets: u8) -> Result<u64> {
     let bit_count = u32::from(octets) * 8;
     if bit_count == 0 || bit_count > u64::BITS {
-        return Err(Error::Other(
+        return Err(Error::ValueOutOfRange(
             "spatial differencing descriptor width must be 1..=8 octets".into(),
         ));
     }
-    let magnitude = value
-        .checked_abs()
-        .ok_or_else(|| Error::Other("spatial differencing descriptor magnitude overflow".into()))?
-        as u64;
+    let magnitude = value.checked_abs().ok_or(Error::ArithmeticOverflow {
+        operation: "computing a spatial differencing descriptor magnitude",
+    })? as u64;
     let magnitude_bits = bit_count - 1;
-    let max_magnitude = if magnitude_bits == u64::BITS {
-        u64::MAX
-    } else {
-        (1u64 << magnitude_bits) - 1
-    };
+    let max_magnitude = (1u64 << magnitude_bits) - 1;
     if magnitude > max_magnitude {
-        return Err(Error::Other(
-            "spatial differencing descriptor exceeds signed-magnitude range".into(),
-        ));
+        return Err(Error::ValueOutOfRange(format!(
+            "spatial differencing descriptor {value} exceeds {octets}-octet signed-magnitude range"
+        )));
     }
 
     let sign_bit = if value < 0 {
@@ -227,4 +232,41 @@ fn signed_magnitude_bits(value: i64, octets: u8) -> Result<u64> {
         0
     };
     Ok(sign_bit | magnitude)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{signed_magnitude_bits, spatially_difference_values};
+    use crate::SpatialDifferencingOrder;
+    use grib_core::Error;
+
+    #[test]
+    fn computes_spatial_delta_beyond_i64_range() {
+        let packing = spatially_difference_values(
+            &[i64::MAX as u64, 0, i64::MAX as u64],
+            SpatialDifferencingOrder::First,
+        )
+        .unwrap();
+        assert_eq!(
+            packing.values,
+            [0, 0, u64::MAX - 1],
+            "the unsigned packed delta must not overflow an i64 intermediate"
+        );
+    }
+
+    #[test]
+    fn reports_invalid_spatial_descriptors_with_typed_errors() {
+        assert!(matches!(
+            signed_magnitude_bits(i64::MIN, 8),
+            Err(Error::ArithmeticOverflow { .. })
+        ));
+        assert!(matches!(
+            signed_magnitude_bits(128, 1),
+            Err(Error::ValueOutOfRange(_))
+        ));
+        assert!(matches!(
+            signed_magnitude_bits(0, 0),
+            Err(Error::ValueOutOfRange(_))
+        ));
+    }
 }

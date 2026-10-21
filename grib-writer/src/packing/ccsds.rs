@@ -81,7 +81,7 @@ pub(crate) fn pack_ccsds_auto(
 
 #[cfg(feature = "ccsds")]
 fn ccsds_bits_per_value(max_delta: u64, flags: CcsdsFlags) -> Result<u8> {
-    let mut bits = bits_needed(max_delta)?;
+    let mut bits = bits_needed(max_delta);
     if bits == 0 || !flags.contains(CcsdsFlags::SIGNED) {
         return Ok(bits);
     }

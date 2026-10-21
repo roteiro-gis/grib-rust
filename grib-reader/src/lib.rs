@@ -5,6 +5,12 @@
 //! complex packing, multi-field bitmap reuse, bounded allocation, and optional
 //! image-backed and CCSDS packing codecs.
 //!
+//! Missing grid points from bitmaps and embedded complex-packing codes decode
+//! as `NaN`. Complex-packing substitute metadata remains available through
+//! [`ComplexPackingParams::primary_missing_substitute`] and
+//! [`ComplexPackingParams::secondary_missing_substitute`] for callers that
+//! need producer-specific replacement values.
+//!
 //! # Example
 //!
 //! ```no_run
@@ -556,6 +562,8 @@ impl<'a> Message<'a> {
     /// Alternating scan rows are normalized, but the GRIB i/j scan directions
     /// are preserved. Use [`Message::decode_into_north_up`] when deterministic
     /// +i columns and -j rows are required.
+    /// Bitmap omissions and embedded complex-packing missing codes are written
+    /// as `NaN`; substitute metadata is not applied automatically.
     pub fn decode_into<T: DecodeSample>(&self, out: &mut [T]) -> Result<()> {
         self.decode_scan_order_into(out)?;
         self.metadata.grid.reorder_for_ndarray_in_place(out)
@@ -563,6 +571,9 @@ impl<'a> Message<'a> {
 
     /// Decodes into deterministic row-major orientation: +i columns and -j
     /// rows (north-to-south for conventional geographic grids).
+    ///
+    /// Bitmap omissions and embedded complex-packing missing codes are written
+    /// as `NaN`; substitute metadata is not applied automatically.
     pub fn decode_into_north_up<T: DecodeSample>(&self, out: &mut [T]) -> Result<()> {
         self.decode_scan_order_into(out)?;
         self.metadata.grid.normalize_north_up_in_place(out)
@@ -668,8 +679,7 @@ impl<'a> Message<'a> {
     /// +i columns and -j rows.
     pub fn read_data_as_f64(&self) -> Result<ArrayD<f64>> {
         let ordered = self.read_flat_data_as_f64()?;
-        ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
-            .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
+        decoded_array(self.metadata.grid.ndarray_shape(), ordered)
     }
 
     /// Returns an `f32` ndarray in row-major reader order.
@@ -679,22 +689,19 @@ impl<'a> Message<'a> {
     /// +i columns and -j rows.
     pub fn read_data_as_f32(&self) -> Result<ArrayD<f32>> {
         let ordered = self.read_flat_data_as_f32()?;
-        ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
-            .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
+        decoded_array(self.metadata.grid.ndarray_shape(), ordered)
     }
 
     /// Returns an `f64` ndarray with +i columns and -j rows.
     pub fn read_data_north_up_as_f64(&self) -> Result<ArrayD<f64>> {
         let ordered = self.read_flat_data_north_up_as_f64()?;
-        ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
-            .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
+        decoded_array(self.metadata.grid.ndarray_shape(), ordered)
     }
 
     /// Returns an `f32` ndarray with +i columns and -j rows.
     pub fn read_data_north_up_as_f32(&self) -> Result<ArrayD<f32>> {
         let ordered = self.read_flat_data_north_up_as_f32()?;
-        ArrayD::from_shape_vec(IxDyn(&self.metadata.grid.ndarray_shape()), ordered)
-            .map_err(|e| Error::Other(format!("failed to build ndarray from decoded field: {e}")))
+        decoded_array(self.metadata.grid.ndarray_shape(), ordered)
     }
 
     pub fn raw_bytes(&self) -> &[u8] {
@@ -710,6 +717,13 @@ impl<'a> Message<'a> {
         )?;
         Ok(num_grid_points)
     }
+}
+
+fn decoded_array<T>(shape: Vec<usize>, values: Vec<T>) -> Result<ArrayD<T>> {
+    ArrayD::from_shape_vec(IxDyn(&shape), values).map_err(|error| Error::InvalidSection {
+        section: 3,
+        reason: format!("grid shape cannot represent decoded field: {error}"),
+    })
 }
 
 /// Iterator over fields in a GRIB file.

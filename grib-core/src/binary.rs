@@ -24,7 +24,7 @@ pub fn write_u16_be(out: &mut Vec<u8>, value: u16) -> Result<()> {
 
 pub fn write_u24_be(out: &mut Vec<u8>, value: u32) -> Result<()> {
     if value > U24_MAX {
-        return Err(Error::Other(format!(
+        return Err(Error::ValueOutOfRange(format!(
             "value {value} does not fit in an unsigned 24-bit integer"
         )));
     }
@@ -243,7 +243,8 @@ mod tests {
     #[test]
     fn rejects_unsigned_24_bit_overflow() {
         let mut out = Vec::new();
-        assert!(write_u24_be(&mut out, 0x0100_0000).is_err());
+        let error = write_u24_be(&mut out, 0x0100_0000).unwrap_err();
+        assert!(matches!(error, crate::Error::ValueOutOfRange(_)));
         assert!(out.is_empty());
     }
 

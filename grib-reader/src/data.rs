@@ -514,18 +514,18 @@ fn unpack_jpeg2000_into<T: DecodeSample>(
     // used as the validation boundary.
     let header = parse_jpeg2000_header(data_bytes)?;
     if header.components != 1 {
-        return Err(Error::Other(format!(
+        return Err(invalid_data_section(format!(
             "JPEG 2000 GRIB packing requires one component, got {}",
             header.components
         )));
     }
     if header.is_signed {
-        return Err(Error::Other(
-            "JPEG 2000 GRIB packing requires unsigned component data".into(),
+        return Err(invalid_data_section(
+            "JPEG 2000 GRIB packing requires unsigned component data",
         ));
     }
     if header.precision > params.packing.bits_per_value {
-        return Err(Error::Other(format!(
+        return Err(invalid_data_section(format!(
             "JPEG 2000 component precision {} exceeds GRIB bits-per-value {}",
             header.precision, params.packing.bits_per_value
         )));
@@ -539,10 +539,13 @@ fn unpack_jpeg2000_into<T: DecodeSample>(
         });
     }
 
-    let image = jpeg2k::Image::from_bytes(data_bytes)
-        .map_err(|err| Error::Other(format!("JPEG 2000 decode failed: {err}")))?;
+    let image = jpeg2k::Image::from_bytes(data_bytes).map_err(|err| Error::Codec {
+        codec: "JPEG 2000",
+        operation: "decode",
+        reason: err.to_string(),
+    })?;
     if image.num_components() != 1 {
-        return Err(Error::Other(format!(
+        return Err(invalid_data_section(format!(
             "JPEG 2000 GRIB packing requires one component, got {}",
             image.num_components()
         )));
@@ -550,14 +553,14 @@ fn unpack_jpeg2000_into<T: DecodeSample>(
     let component = image
         .components()
         .first()
-        .ok_or_else(|| Error::Other("JPEG 2000 image has no components".into()))?;
+        .ok_or_else(|| invalid_data_section("JPEG 2000 image has no components"))?;
     if component.is_signed() {
-        return Err(Error::Other(
-            "JPEG 2000 GRIB packing requires unsigned component data".into(),
+        return Err(invalid_data_section(
+            "JPEG 2000 GRIB packing requires unsigned component data",
         ));
     }
     if component.precision() > u32::from(params.packing.bits_per_value) {
-        return Err(Error::Other(format!(
+        return Err(invalid_data_section(format!(
             "JPEG 2000 component precision {} exceeds GRIB bits-per-value {}",
             component.precision(),
             params.packing.bits_per_value
@@ -713,9 +716,14 @@ const fn ceil_div_u32(value: u32, divisor: u32) -> u32 {
 
 #[cfg(feature = "jpeg2000")]
 fn invalid_jpeg2000_header(reason: impl Into<String>) -> Error {
+    invalid_data_section(format!("invalid JPEG 2000 header: {}", reason.into()))
+}
+
+#[cfg(any(feature = "jpeg2000", feature = "png"))]
+fn invalid_data_section(reason: impl Into<String>) -> Error {
     Error::InvalidSection {
         section: 7,
-        reason: format!("invalid JPEG 2000 header: {}", reason.into()),
+        reason: reason.into(),
     }
 }
 
@@ -743,7 +751,7 @@ fn jpeg2000_raw_value(sample: i32, bits_per_value: u8) -> Result<u64> {
         u64::from(u32::from_ne_bytes(sample.to_ne_bytes()))
     } else {
         u64::try_from(sample).map_err(|_| {
-            Error::Other("JPEG 2000 unsigned component yielded a negative sample".into())
+            Error::ValueOutOfRange("JPEG 2000 unsigned component yielded a negative sample".into())
         })?
     };
     validate_raw_value_fits(raw, bits_per_value)?;
@@ -760,9 +768,11 @@ fn unpack_png_into<T: DecodeSample>(
     validate_png_bits(params.packing.bits_per_value)?;
 
     let decoder = png::Decoder::new(std::io::Cursor::new(data_bytes));
-    let mut reader = decoder
-        .read_info()
-        .map_err(|err| Error::Other(format!("PNG decode failed: {err}")))?;
+    let mut reader = decoder.read_info().map_err(|err| Error::Codec {
+        codec: "PNG",
+        operation: "read header",
+        reason: err.to_string(),
+    })?;
     let header_sample_count = image_sample_count(reader.info().width, reader.info().height)?;
     if header_sample_count != num_values {
         return Err(Error::DataLengthMismatch {
@@ -772,11 +782,15 @@ fn unpack_png_into<T: DecodeSample>(
     }
     let buffer_size = reader
         .output_buffer_size()
-        .ok_or_else(|| Error::Other("PNG output buffer size overflow".into()))?;
+        .ok_or(Error::ArithmeticOverflow {
+            operation: "computing PNG output buffer size",
+        })?;
     let mut buffer = filled_vec(buffer_size, 0, "PNG output buffer")?;
-    let info = reader
-        .next_frame(&mut buffer)
-        .map_err(|err| Error::Other(format!("PNG decode failed: {err}")))?;
+    let info = reader.next_frame(&mut buffer).map_err(|err| Error::Codec {
+        codec: "PNG",
+        operation: "decode",
+        reason: err.to_string(),
+    })?;
     let data = &buffer[..info.buffer_size()];
 
     let sample_count = image_sample_count(info.width, info.height)?;
@@ -814,7 +828,7 @@ fn unpack_png_into<T: DecodeSample>(
         (png::ColorType::Rgba, png::BitDepth::Eight, 32) => {
             unpack_png_bytes(data, 4, num_values, &params.packing, output)
         }
-        (color_type, bit_depth, bits_per_value) => Err(Error::Other(format!(
+        (color_type, bit_depth, bits_per_value) => Err(invalid_data_section(format!(
             "PNG image layout {color_type:?}/{bit_depth:?} is incompatible with GRIB bits-per-value {bits_per_value}"
         ))),
     }
@@ -840,12 +854,13 @@ fn validate_png_bits(bits_per_value: u8) -> Result<()> {
 
 #[cfg(any(feature = "jpeg2000", feature = "png"))]
 fn image_sample_count(width: u32, height: u32) -> Result<usize> {
-    let width = usize::try_from(width).map_err(|_| Error::Other("image width overflow".into()))?;
-    let height =
-        usize::try_from(height).map_err(|_| Error::Other("image height overflow".into()))?;
-    width
-        .checked_mul(height)
-        .ok_or_else(|| Error::Other("image sample count overflow".into()))
+    let width = usize::try_from(width)
+        .map_err(|_| Error::ValueOutOfRange("image width exceeds usize".into()))?;
+    let height = usize::try_from(height)
+        .map_err(|_| Error::ValueOutOfRange("image height exceeds usize".into()))?;
+    width.checked_mul(height).ok_or(Error::ArithmeticOverflow {
+        operation: "computing image sample count",
+    })
 }
 
 #[cfg(feature = "png")]
@@ -857,16 +872,22 @@ fn unpack_png_subbyte_grayscale<T: DecodeSample>(
     params: &ScaledPackingParams,
     output: &mut OutputCursor<'_, T>,
 ) -> Result<()> {
-    let width = usize::try_from(width).map_err(|_| Error::Other("PNG width overflow".into()))?;
-    let height = usize::try_from(height).map_err(|_| Error::Other("PNG height overflow".into()))?;
+    let width = usize::try_from(width)
+        .map_err(|_| Error::ValueOutOfRange("PNG width exceeds usize".into()))?;
+    let height = usize::try_from(height)
+        .map_err(|_| Error::ValueOutOfRange("PNG height exceeds usize".into()))?;
     let bits = usize::from(bits_per_sample);
     let row_bytes = width
         .checked_mul(bits)
-        .ok_or_else(|| Error::Other("PNG row width overflow".into()))?
+        .ok_or(Error::ArithmeticOverflow {
+            operation: "computing PNG row width",
+        })?
         .div_ceil(8);
     let expected_bytes = row_bytes
         .checked_mul(height)
-        .ok_or_else(|| Error::Other("PNG data length overflow".into()))?;
+        .ok_or(Error::ArithmeticOverflow {
+            operation: "computing PNG data length",
+        })?;
     if data.len() < expected_bytes {
         return Err(Error::DataLengthMismatch {
             expected: expected_bytes,
@@ -877,9 +898,7 @@ fn unpack_png_subbyte_grayscale<T: DecodeSample>(
     let mask = (1u8 << bits) - 1;
     for row in data[..expected_bytes].chunks_exact(row_bytes) {
         for x in 0..width {
-            let bit_offset = x
-                .checked_mul(bits)
-                .ok_or_else(|| Error::Other("PNG bit offset overflow".into()))?;
+            let bit_offset = x.checked_mul(bits).ok_or(Error::BitOffsetOverflow)?;
             let shift = 8 - bits - (bit_offset % 8);
             let raw = u64::from((row[bit_offset / 8] >> shift) & mask);
             push_image_value(output, params, raw)?;
@@ -897,9 +916,12 @@ fn unpack_png_bytes<T: DecodeSample>(
     params: &ScaledPackingParams,
     output: &mut OutputCursor<'_, T>,
 ) -> Result<()> {
-    let expected_bytes = num_values
-        .checked_mul(bytes_per_sample)
-        .ok_or_else(|| Error::Other("PNG data length overflow".into()))?;
+    let expected_bytes =
+        num_values
+            .checked_mul(bytes_per_sample)
+            .ok_or(Error::ArithmeticOverflow {
+                operation: "computing PNG data length",
+            })?;
     if data.len() < expected_bytes {
         return Err(Error::DataLengthMismatch {
             expected: expected_bytes,
@@ -924,9 +946,9 @@ fn unpack_png_u16<T: DecodeSample>(
     params: &ScaledPackingParams,
     output: &mut OutputCursor<'_, T>,
 ) -> Result<()> {
-    let expected_bytes = num_values
-        .checked_mul(2)
-        .ok_or_else(|| Error::Other("PNG data length overflow".into()))?;
+    let expected_bytes = num_values.checked_mul(2).ok_or(Error::ArithmeticOverflow {
+        operation: "computing PNG data length",
+    })?;
     if data.len() < expected_bytes {
         return Err(Error::DataLengthMismatch {
             expected: expected_bytes,
@@ -960,7 +982,7 @@ fn validate_raw_value_fits(raw: u64, bits_per_value: u8) -> Result<()> {
         (1u64 << bits_per_value) - 1
     };
     if raw > max_value {
-        return Err(Error::Other(format!(
+        return Err(Error::ValueOutOfRange(format!(
             "decoded image sample {raw} exceeds GRIB bits-per-value {bits_per_value}"
         )));
     }
@@ -1022,12 +1044,16 @@ fn unpack_complex_into<T: DecodeSample>(
         let width_delta = width_reader.read(params.group_width_bits as usize)?;
         let group_width = usize::from(params.group_width_reference)
             .checked_add(width_delta as usize)
-            .ok_or_else(|| Error::Other("group width overflow".into()))?;
+            .ok_or(Error::ArithmeticOverflow {
+                operation: "computing complex-packing group width",
+            })?;
         let group_length = read_group_length(&mut length_reader, params, group_index)?;
 
         actual_total = actual_total
             .checked_add(group_length)
-            .ok_or_else(|| Error::Other("group length overflow".into()))?;
+            .ok_or(Error::ArithmeticOverflow {
+                operation: "summing complex-packing group lengths",
+            })?;
 
         if group_width == 0 {
             let raw_value = decode_constant_group_value(
@@ -1054,7 +1080,7 @@ fn unpack_complex_into<T: DecodeSample>(
         }
 
         let group_reference = i64::try_from(group_reference)
-            .map_err(|_| Error::Other("group reference exceeds i64 range".into()))?;
+            .map_err(|_| Error::ValueOutOfRange("group reference exceeds i64".into()))?;
         for _ in 0..group_length {
             let packed = value_reader.read(group_width)?;
             let value = decode_group_value(
@@ -1114,11 +1140,16 @@ fn read_group_length(
     let scaled = reader
         .read(params.scaled_group_length_bits as usize)?
         .checked_mul(u64::from(params.group_length_increment))
-        .ok_or_else(|| Error::Other("group length overflow".into()))?;
+        .ok_or(Error::ArithmeticOverflow {
+            operation: "scaling complex-packing group length",
+        })?;
     let length = u64::from(params.group_length_reference)
         .checked_add(scaled)
-        .ok_or_else(|| Error::Other("group length overflow".into()))?;
-    usize::try_from(length).map_err(|_| Error::Other("group length overflow".into()))
+        .ok_or(Error::ArithmeticOverflow {
+            operation: "computing complex-packing group length",
+        })?;
+    usize::try_from(length)
+        .map_err(|_| Error::ValueOutOfRange("complex-packing group length exceeds usize".into()))
 }
 
 fn read_spatial_descriptors(
@@ -1134,9 +1165,10 @@ fn read_spatial_descriptors(
 
     let bit_count = usize::from(params.descriptor_octets) * 8;
     if bit_count > u64::BITS as usize {
-        return Err(Error::Other(
-            "spatial differencing descriptors wider than 8 octets are not supported".into(),
-        ));
+        return Err(Error::InvalidSection {
+            section: 5,
+            reason: "spatial differencing descriptors wider than 8 octets are not supported".into(),
+        });
     }
 
     let first_value = reader.read_signed(bit_count)?;
@@ -1178,7 +1210,7 @@ fn decode_constant_group_value(
     }
 
     let value = i64::try_from(group_reference)
-        .map_err(|_| Error::Other("group reference exceeds i64 range".into()))?;
+        .map_err(|_| Error::ValueOutOfRange("group reference exceeds i64".into()))?;
     Ok(Some(value))
 }
 
@@ -1202,11 +1234,13 @@ fn decode_group_value(
         return Ok(None);
     }
 
-    let packed =
-        i64::try_from(packed).map_err(|_| Error::Other("packed value exceeds i64 range".into()))?;
+    let packed = i64::try_from(packed)
+        .map_err(|_| Error::ValueOutOfRange("packed value exceeds i64".into()))?;
     let value = group_reference
         .checked_add(packed)
-        .ok_or_else(|| Error::Other("decoded complex packing value overflow".into()))?;
+        .ok_or(Error::ArithmeticOverflow {
+            operation: "reconstructing complex-packing value",
+        })?;
     Ok(Some(value))
 }
 
@@ -1533,12 +1567,16 @@ impl SpatialRestoreState {
             return Ok(self.descriptors.first_value);
         }
 
-        let delta = value
-            .checked_add(self.descriptors.overall_minimum)
-            .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
+        let delta = value.checked_add(self.descriptors.overall_minimum).ok_or(
+            Error::ArithmeticOverflow {
+                operation: "restoring first-order spatial difference",
+            },
+        )?;
         self.previous
             .and_then(|previous| previous.checked_add(delta))
-            .ok_or_else(|| Error::Other("spatial differencing overflow".into()))
+            .ok_or(Error::ArithmeticOverflow {
+                operation: "restoring first-order spatial difference",
+            })
     }
 
     fn restore_second_order(&mut self, value: i64) -> Result<i64> {
@@ -1550,24 +1588,31 @@ impl SpatialRestoreState {
                     reason: "missing second-order spatial differencing descriptors".into(),
                 })?;
                 self.previous_difference = second_value.checked_sub(self.descriptors.first_value);
-                self.previous_difference
-                    .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
+                self.previous_difference.ok_or(Error::ArithmeticOverflow {
+                    operation: "initializing second-order spatial difference",
+                })?;
                 Ok(second_value)
             }
             _ => {
-                let second_difference = value
-                    .checked_add(self.descriptors.overall_minimum)
-                    .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
+                let second_difference = value.checked_add(self.descriptors.overall_minimum).ok_or(
+                    Error::ArithmeticOverflow {
+                        operation: "restoring second-order spatial difference",
+                    },
+                )?;
                 let difference = self
                     .previous_difference
                     .and_then(|previous_difference| {
                         previous_difference.checked_add(second_difference)
                     })
-                    .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
+                    .ok_or(Error::ArithmeticOverflow {
+                        operation: "restoring second-order spatial difference",
+                    })?;
                 let next = self
                     .previous
                     .and_then(|previous| previous.checked_add(difference))
-                    .ok_or_else(|| Error::Other("spatial differencing overflow".into()))?;
+                    .ok_or(Error::ArithmeticOverflow {
+                        operation: "restoring second-order spatial difference",
+                    })?;
                 self.previous_difference = Some(difference);
                 Ok(next)
             }
@@ -2071,6 +2116,32 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "jpeg2000")]
+    #[test]
+    fn reports_negative_unsigned_jpeg2000_samples_as_out_of_range() {
+        let error = super::jpeg2000_raw_value(-1, 8).unwrap_err();
+        assert!(matches!(error, Error::ValueOutOfRange(_)));
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn reports_incompatible_png_layout_as_invalid_section_seven() {
+        let payload = encode_png(1, 1, png::ColorType::Rgb, png::BitDepth::Eight, &[1, 2, 3]);
+        let representation = DataRepresentation::PngPacking(PngPackingParams {
+            packing: ScaledPackingParams {
+                encoded_values: 1,
+                reference_value: 0.0,
+                binary_scale: 0,
+                decimal_scale: 0,
+                bits_per_value: 8,
+                original_field_type: 0,
+            },
+        });
+
+        let error = decode_payload(&payload, &representation, None, 1).unwrap_err();
+        assert!(matches!(error, Error::InvalidSection { section: 7, .. }));
+    }
+
     #[cfg(not(feature = "png"))]
     #[test]
     fn png_packing_requires_png_feature() {
@@ -2233,8 +2304,8 @@ mod tests {
             original_field_type: 0,
             group_splitting_method: 1,
             missing_value_management: 1,
-            primary_missing_substitute: u32::MAX,
-            secondary_missing_substitute: u32::MAX,
+            primary_missing_substitute: 0x6655_4433,
+            secondary_missing_substitute: 0x2211_00ff,
             num_groups: 2,
             group_width_reference: 0,
             group_width_bits: 2,
@@ -2244,6 +2315,9 @@ mod tests {
             scaled_group_length_bits: 0,
             spatial_differencing: None,
         };
+
+        assert_eq!(params.primary_missing_substitute(), Some(0x6655_4433));
+        assert_eq!(params.secondary_missing_substitute(), None);
 
         let values = unpack_complex(&[0x79, 0x90, 0x34], &params).unwrap();
         assert_eq!(values[0], 7.0);
