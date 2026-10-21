@@ -2,6 +2,9 @@
 
 use grib_core::binary::read_u24_be;
 
+const GRIB1_LARGE_MESSAGE_FLAG: u32 = 0x80_0000;
+const GRIB1_LARGE_MESSAGE_BLOCK_BYTES: u64 = 120;
+
 /// Parsed Indicator Section (Section 0).
 #[derive(Debug, Clone)]
 pub struct Indicator {
@@ -28,7 +31,9 @@ impl Indicator {
         let edition = Self::edition(data)?;
         match edition {
             1 => {
-                let length = u64::from(read_u24_be(&data[4..7])?);
+                let raw_length = read_u24_be(&data[4..7])?;
+                let length = resolve_grib1_large_message_length(data, raw_length)
+                    .unwrap_or(u64::from(raw_length));
                 Some(Self {
                     edition,
                     discipline: 0,
@@ -50,6 +55,84 @@ impl Indicator {
             _ => None,
         }
     }
+}
+
+pub(crate) fn grib1_section4_length(data: &[u8], offset: usize) -> Option<usize> {
+    let raw_total_length = read_u24_be(data.get(4..7)?)?;
+    let raw_section4_length = read_u24_be(data.get(offset..offset.checked_add(3)?)?)?;
+    let length = if uses_grib1_large_message_convention(raw_total_length, raw_section4_length) {
+        let total_length =
+            decode_grib1_large_message_length(raw_total_length, raw_section4_length)?;
+        total_length
+            .checked_sub(u64::try_from(offset).ok()?)?
+            .checked_sub(4)?
+    } else {
+        u64::from(raw_section4_length)
+    };
+    usize::try_from(length).ok()
+}
+
+fn resolve_grib1_large_message_length(data: &[u8], raw_length: u32) -> Option<u64> {
+    if raw_length & GRIB1_LARGE_MESSAGE_FLAG == 0 {
+        return None;
+    }
+
+    let section4_offset = locate_grib1_section4(data)?;
+    let raw_section4_length =
+        read_u24_be(data.get(section4_offset..section4_offset.checked_add(3)?)?)?;
+    if !uses_grib1_large_message_convention(raw_length, raw_section4_length) {
+        return None;
+    }
+    decode_grib1_large_message_length(raw_length, raw_section4_length)
+}
+
+fn uses_grib1_large_message_convention(raw_total_length: u32, raw_section4_length: u32) -> bool {
+    raw_total_length & GRIB1_LARGE_MESSAGE_FLAG != 0 && raw_section4_length < 120
+}
+
+fn decode_grib1_large_message_length(
+    raw_total_length: u32,
+    raw_section4_length: u32,
+) -> Option<u64> {
+    u64::from(raw_total_length & !GRIB1_LARGE_MESSAGE_FLAG)
+        .checked_mul(GRIB1_LARGE_MESSAGE_BLOCK_BYTES)?
+        .checked_sub(u64::from(raw_section4_length))?
+        .checked_add(4)
+}
+
+fn locate_grib1_section4(data: &[u8]) -> Option<usize> {
+    let product_offset = 8usize;
+    let product_length = section_length(data, product_offset)?;
+    if product_length < 8 {
+        return None;
+    }
+    let product_end = product_offset.checked_add(product_length)?;
+    let section_flags = *data.get(product_offset.checked_add(7)?)?;
+    let mut offset = product_end;
+
+    if section_flags & 0b1000_0000 != 0 {
+        offset = skip_section(data, offset)?;
+    }
+    if section_flags & 0b0100_0000 != 0 {
+        offset = skip_section(data, offset)?;
+    }
+    data.get(offset..offset.checked_add(3)?)?;
+    Some(offset)
+}
+
+fn skip_section(data: &[u8], offset: usize) -> Option<usize> {
+    let length = section_length(data, offset)?;
+    if length < 3 {
+        return None;
+    }
+    let end = offset.checked_add(length)?;
+    data.get(offset..end)?;
+    Some(end)
+}
+
+fn section_length(data: &[u8], offset: usize) -> Option<usize> {
+    let end = offset.checked_add(3)?;
+    usize::try_from(read_u24_be(data.get(offset..end)?)?).ok()
 }
 
 #[cfg(test)]
@@ -81,6 +164,43 @@ mod tests {
         let ind = Indicator::parse(&data).unwrap();
         assert_eq!(ind.edition, 1);
         assert_eq!(ind.total_length, 1000);
+    }
+
+    #[test]
+    fn resolves_grib1_large_message_convention_from_section4_padding() {
+        let units = 70_500u32;
+        let section4_padding = 17u32;
+        let mut data = vec![0u8; 8 + 28 + 32 + 3];
+        data[0..4].copy_from_slice(b"GRIB");
+        data[4..7].copy_from_slice(&(GRIB1_LARGE_MESSAGE_FLAG | units).to_be_bytes()[1..]);
+        data[7] = 1;
+        data[8..11].copy_from_slice(&28u32.to_be_bytes()[1..]);
+        data[15] = 0b1000_0000;
+        data[36..39].copy_from_slice(&32u32.to_be_bytes()[1..]);
+        data[68..71].copy_from_slice(&section4_padding.to_be_bytes()[1..]);
+
+        let indicator = Indicator::parse(&data).unwrap();
+        assert_eq!(
+            indicator.total_length,
+            u64::from(units) * GRIB1_LARGE_MESSAGE_BLOCK_BYTES - u64::from(section4_padding) + 4
+        );
+        assert!(indicator.total_length > u64::from(GRIB1_LARGE_MESSAGE_FLAG));
+    }
+
+    #[test]
+    fn preserves_ordinary_grib1_length_when_section4_is_not_padding() {
+        let raw_length = GRIB1_LARGE_MESSAGE_FLAG | 1_000;
+        let mut data = vec![0u8; 8 + 28 + 3];
+        data[0..4].copy_from_slice(b"GRIB");
+        data[4..7].copy_from_slice(&raw_length.to_be_bytes()[1..]);
+        data[7] = 1;
+        data[8..11].copy_from_slice(&28u32.to_be_bytes()[1..]);
+        data[36..39].copy_from_slice(&120u32.to_be_bytes()[1..]);
+
+        assert_eq!(
+            Indicator::parse(&data).unwrap().total_length,
+            u64::from(raw_length)
+        );
     }
 
     #[test]

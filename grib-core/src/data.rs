@@ -1,27 +1,36 @@
 //! Data Representation Section (Section 5) shared model.
 
-use crate::binary::decode_wmo_i16;
+use crate::binary::{decode_wmo_i16, decode_wmo_i8};
 use crate::error::{Error, Result};
 
-/// Data representation template number and parameters.
+/// GRIB data representation and validated packing parameters.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum DataRepresentation {
     /// Template 5.0: Simple packing.
     SimplePacking(ScaledPackingParams),
+    /// GRIB1 grid-point second-order packing.
+    ///
+    /// GRIB1 stores this layout in Binary Data Section flags rather than a
+    /// GRIB2 data representation template.
+    Grib1SecondOrderPacking(Grib1SecondOrderPackingParams),
     /// Template 5.2/5.3: Complex packing with optional spatial differencing.
     ComplexPacking(ComplexPackingParams),
+    /// Template 5.4: IEEE floating-point values.
+    IeeePacking(IeeePackingParams),
     /// Template 5.40: JPEG 2000 code stream packing.
     Jpeg2000Packing(Jpeg2000PackingParams),
     /// Template 5.41: PNG image packing.
     PngPacking(PngPackingParams),
     /// Template 5.42: CCSDS 121.0 adaptive entropy coding.
     CcsdsPacking(CcsdsPackingParams),
+    /// Template 5.200: Run-length packing with predefined level values.
+    RunLengthPacking(RunLengthPackingParams),
     /// Unsupported template.
     Unsupported(u16),
 }
 
-/// Scaling parameters shared by GRIB2 grid-point packing templates.
+/// Scaling parameters shared by GRIB1 and GRIB2 grid-point packing.
 ///
 /// Decoded values use `(reference + packed * 2^binary_scale) *
 /// 10^-decimal_scale`.
@@ -33,6 +42,154 @@ pub struct ScaledPackingParams {
     pub decimal_scale: i16,
     pub bits_per_value: u8,
     pub original_field_type: u8,
+}
+
+/// Standard GRIB1 second-order group layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Grib1SecondOrderLayout {
+    /// One variable-width group for each scan line; group lengths come from
+    /// the grid and optional primary bitmap.
+    RowByRow,
+    /// Groups are located by a secondary bitmap and share one value width.
+    ConstantWidth,
+    /// Groups are located by a secondary bitmap and have individual widths.
+    VariableWidth,
+}
+
+/// Validated parameters for standard GRIB1 grid-point second-order packing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Grib1SecondOrderPackingParams {
+    pub(crate) packing: ScaledPackingParams,
+    pub(crate) layout: Grib1SecondOrderLayout,
+    pub(crate) group_count: usize,
+    pub(crate) group_widths: Vec<u8>,
+    pub(crate) group_lengths: Vec<usize>,
+    pub(crate) first_order_values_offset: usize,
+    pub(crate) second_order_values_offset: usize,
+    pub(crate) unused_bits: u8,
+}
+
+impl Grib1SecondOrderPackingParams {
+    pub const fn packing(&self) -> &ScaledPackingParams {
+        &self.packing
+    }
+
+    pub const fn layout(&self) -> Grib1SecondOrderLayout {
+        self.layout
+    }
+
+    pub const fn group_count(&self) -> usize {
+        self.group_count
+    }
+
+    /// Returns one width for constant-width packing or one width per group for
+    /// row-by-row and variable-width packing.
+    pub fn group_widths(&self) -> &[u8] {
+        &self.group_widths
+    }
+
+    /// Returns secondary-bitmap group lengths. Row-by-row lengths are supplied
+    /// from the grid and primary bitmap when the field is indexed.
+    pub fn group_lengths(&self) -> &[usize] {
+        &self.group_lengths
+    }
+
+    /// Byte offset of first-order values relative to GRIB1 BDS octet 12.
+    pub const fn first_order_values_offset(&self) -> usize {
+        self.first_order_values_offset
+    }
+
+    /// Byte offset of second-order values relative to GRIB1 BDS octet 12.
+    pub const fn second_order_values_offset(&self) -> usize {
+        self.second_order_values_offset
+    }
+
+    pub const fn unused_bits(&self) -> u8 {
+        self.unused_bits
+    }
+
+    /// Returns the second-order width for one group.
+    pub fn group_width(&self, group_index: usize) -> Option<u8> {
+        match self.layout {
+            Grib1SecondOrderLayout::ConstantWidth => self.group_widths.first().copied(),
+            Grib1SecondOrderLayout::RowByRow | Grib1SecondOrderLayout::VariableWidth => {
+                self.group_widths.get(group_index).copied()
+            }
+        }
+    }
+}
+
+/// IEEE floating-point precision from Code Table 5.7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum IeeePrecision {
+    /// IEEE 754 binary32.
+    Single,
+    /// IEEE 754 binary64.
+    Double,
+    /// IEEE 754 binary128.
+    Quadruple,
+}
+
+impl IeeePrecision {
+    /// Returns the Code Table 5.7 wire value.
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Single => 1,
+            Self::Double => 2,
+            Self::Quadruple => 3,
+        }
+    }
+
+    /// Returns the number of octets occupied by each Section 7 value.
+    pub const fn bytes_per_value(self) -> usize {
+        match self {
+            Self::Single => 4,
+            Self::Double => 8,
+            Self::Quadruple => 16,
+        }
+    }
+
+    /// Returns the number of bits occupied by each Section 7 value.
+    pub const fn bits_per_value(self) -> u8 {
+        match self {
+            Self::Single => 32,
+            Self::Double => 64,
+            Self::Quadruple => 128,
+        }
+    }
+}
+
+/// Parameters for IEEE floating-point packing (Template 5.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IeeePackingParams {
+    pub encoded_values: usize,
+    pub precision: IeeePrecision,
+}
+
+/// Parameters for run-length packing with level values (Template 5.200).
+///
+/// Packed level zero represents a missing value. Codes from one through
+/// `max_level_value` index the corresponding scaled entry in `level_values`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunLengthPackingParams {
+    pub encoded_values: usize,
+    pub bits_per_value: u8,
+    pub max_level_value: u16,
+    pub decimal_scale: i16,
+    pub level_values: Vec<u16>,
+}
+
+impl RunLengthPackingParams {
+    /// Returns the decoded representative value for a nonzero level code.
+    pub fn representative_value(&self, level: u16) -> Option<f64> {
+        if level == 0 || level > self.max_level_value {
+            return None;
+        }
+        let scaled = *self.level_values.get(usize::from(level - 1))?;
+        Some(f64::from(scaled) * 10.0_f64.powi(-i32::from(self.decimal_scale)))
+    }
 }
 
 /// Parameters for JPEG 2000 code stream packing (Template 5.40).
@@ -283,10 +440,14 @@ pub struct SpatialDifferencingParams {
 }
 
 impl DataRepresentation {
-    /// Returns the GRIB2 data representation template number.
+    /// Returns the GRIB2 template number or a diagnostic identifier for a
+    /// GRIB1 representation.
     pub const fn template_number(&self) -> u16 {
         match self {
             Self::SimplePacking(_) => 0,
+            // GRIB1 has no template number. Keep this identifier disjoint from
+            // WMO GRIB2 template numbers for diagnostics and writer rejection.
+            Self::Grib1SecondOrderPacking(_) => 1005,
             Self::ComplexPacking(params) => {
                 if params.spatial_differencing.is_some() {
                     3
@@ -294,9 +455,11 @@ impl DataRepresentation {
                     2
                 }
             }
+            Self::IeeePacking(_) => 4,
             Self::Jpeg2000Packing(_) => 40,
             Self::PngPacking(_) => 41,
             Self::CcsdsPacking(_) => 42,
+            Self::RunLengthPacking(_) => 200,
             Self::Unsupported(template) => *template,
         }
     }
@@ -320,9 +483,11 @@ impl DataRepresentation {
             0 => parse_simple_packing(section_bytes),
             2 => parse_complex_packing(section_bytes, false),
             3 => parse_complex_packing(section_bytes, true),
+            4 => parse_ieee_packing(section_bytes),
             40 => parse_jpeg2000_packing(section_bytes),
             41 => parse_png_packing(section_bytes),
             42 => parse_ccsds_packing(section_bytes),
+            200 => parse_run_length_packing(section_bytes),
             _ => Ok(Self::Unsupported(template)),
         }
     }
@@ -330,10 +495,13 @@ impl DataRepresentation {
     pub fn encoded_values(&self) -> Option<usize> {
         match self {
             Self::SimplePacking(params) => Some(params.encoded_values),
+            Self::Grib1SecondOrderPacking(params) => Some(params.packing.encoded_values),
             Self::ComplexPacking(params) => Some(params.encoded_values),
+            Self::IeeePacking(params) => Some(params.encoded_values),
             Self::Jpeg2000Packing(params) => Some(params.packing.encoded_values),
             Self::PngPacking(params) => Some(params.packing.encoded_values),
             Self::CcsdsPacking(params) => Some(params.packing().encoded_values),
+            Self::RunLengthPacking(params) => Some(params.encoded_values),
             Self::Unsupported(_) => None,
         }
     }
@@ -343,6 +511,132 @@ fn parse_simple_packing(data: &[u8]) -> Result<DataRepresentation> {
     Ok(DataRepresentation::SimplePacking(
         parse_scaled_packing_base(data, 0, 21)?,
     ))
+}
+
+fn parse_ieee_packing(data: &[u8]) -> Result<DataRepresentation> {
+    if data.len() < 12 {
+        return Err(Error::InvalidSection {
+            section: 5,
+            reason: format!("template 5.4 requires 12 bytes, got {}", data.len()),
+        });
+    }
+
+    let precision = match data[11] {
+        1 => IeeePrecision::Single,
+        2 => IeeePrecision::Double,
+        3 => IeeePrecision::Quadruple,
+        code => {
+            return Err(Error::InvalidSection {
+                section: 5,
+                reason: format!("template 5.4 has invalid IEEE precision code {code}"),
+            });
+        }
+    };
+
+    Ok(DataRepresentation::IeeePacking(IeeePackingParams {
+        encoded_values: u32::from_be_bytes(data[5..9].try_into().unwrap()) as usize,
+        precision,
+    }))
+}
+
+fn parse_run_length_packing(data: &[u8]) -> Result<DataRepresentation> {
+    if data.len() < 17 {
+        return Err(Error::InvalidSection {
+            section: 5,
+            reason: format!(
+                "template 5.200 requires at least 17 bytes, got {}",
+                data.len()
+            ),
+        });
+    }
+
+    let bits_per_value = data[11];
+    let max_level_value = u16::from_be_bytes(data[12..14].try_into().unwrap());
+    let number_of_level_values = usize::from(u16::from_be_bytes(data[14..16].try_into().unwrap()));
+    let required = number_of_level_values
+        .checked_mul(2)
+        .and_then(|level_bytes| 17_usize.checked_add(level_bytes))
+        .ok_or(Error::ArithmeticOverflow {
+            operation: "computing template 5.200 length",
+        })?;
+    if data.len() < required {
+        return Err(Error::InvalidSection {
+            section: 5,
+            reason: format!(
+                "template 5.200 declares {number_of_level_values} level values and requires {required} bytes, got {}",
+                data.len()
+            ),
+        });
+    }
+
+    validate_run_length_parameters(bits_per_value, max_level_value, number_of_level_values)
+        .map_err(|reason| Error::InvalidSection {
+            section: 5,
+            reason: format!("invalid template 5.200 parameters: {reason}"),
+        })?;
+
+    let mut level_values = Vec::new();
+    level_values
+        .try_reserve_exact(number_of_level_values)
+        .map_err(|error| {
+            Error::allocation("template 5.200 level values", number_of_level_values, error)
+        })?;
+    for bytes in data[17..required].chunks_exact(2) {
+        level_values.push(u16::from_be_bytes(
+            bytes.try_into().expect("two-byte level value"),
+        ));
+    }
+
+    Ok(DataRepresentation::RunLengthPacking(
+        RunLengthPackingParams {
+            encoded_values: u32::from_be_bytes(data[5..9].try_into().unwrap()) as usize,
+            bits_per_value,
+            max_level_value,
+            decimal_scale: decode_wmo_i8(data[16]),
+            level_values,
+        },
+    ))
+}
+
+fn validate_run_length_parameters(
+    bits_per_value: u8,
+    max_level_value: u16,
+    number_of_level_values: usize,
+) -> std::result::Result<(), String> {
+    if bits_per_value > 64 {
+        return Err(format!(
+            "bits per value must not exceed 64, got {bits_per_value}"
+        ));
+    }
+    if max_level_value == 0 {
+        if number_of_level_values != 0 {
+            return Err(format!(
+                "zero maximum level requires an empty level table, got {number_of_level_values} entries"
+            ));
+        }
+        return Ok(());
+    }
+    if bits_per_value == 0 {
+        return Err(format!(
+            "bits per value must be between 1 and 64, got {bits_per_value}"
+        ));
+    }
+    if usize::from(max_level_value) > number_of_level_values {
+        return Err(format!(
+            "maximum level {max_level_value} exceeds the {number_of_level_values}-entry level table"
+        ));
+    }
+    let max_code = if bits_per_value == 64 {
+        u64::MAX
+    } else {
+        (1_u64 << bits_per_value) - 1
+    };
+    if u64::from(max_level_value) >= max_code {
+        return Err(format!(
+            "maximum level {max_level_value} leaves no run-length codes at {bits_per_value} bits"
+        ));
+    }
+    Ok(())
 }
 
 fn parse_scaled_packing_base(
@@ -468,7 +762,7 @@ fn parse_complex_packing(
     }
 
     let group_splitting_method = data[21];
-    if group_splitting_method != 1 {
+    if !matches!(group_splitting_method, 0 | 1) {
         return Err(Error::UnsupportedGroupSplittingMethod(
             group_splitting_method,
         ));
@@ -493,6 +787,22 @@ fn parse_complex_packing(
     } else {
         None
     };
+    let group_length_reference = u32::from_be_bytes(data[37..41].try_into().unwrap());
+    let group_length_increment = data[41];
+    let true_length_last_group = u32::from_be_bytes(data[42..46].try_into().unwrap());
+    let scaled_group_length_bits = data[46];
+    if group_splitting_method == 0
+        && (group_length_reference != 0
+            || group_length_increment != 0
+            || true_length_last_group != 0
+            || scaled_group_length_bits != 0)
+    {
+        return Err(Error::InvalidSection {
+            section: 5,
+            reason: "complex packing group splitting method 0 requires all group-length fields to be zero"
+                .into(),
+        });
+    }
 
     Ok(DataRepresentation::ComplexPacking(ComplexPackingParams {
         encoded_values: u32::from_be_bytes(data[5..9].try_into().unwrap()) as usize,
@@ -508,10 +818,10 @@ fn parse_complex_packing(
         num_groups: u32::from_be_bytes(data[31..35].try_into().unwrap()) as usize,
         group_width_reference: data[35],
         group_width_bits: data[36],
-        group_length_reference: u32::from_be_bytes(data[37..41].try_into().unwrap()),
-        group_length_increment: data[41],
-        true_length_last_group: u32::from_be_bytes(data[42..46].try_into().unwrap()),
-        scaled_group_length_bits: data[46],
+        group_length_reference,
+        group_length_increment,
+        true_length_last_group,
+        scaled_group_length_bits,
         spatial_differencing,
     }))
 }
@@ -520,9 +830,10 @@ fn parse_complex_packing(
 mod tests {
     use super::{
         CcsdsBlockSize, CcsdsFlags, CcsdsPackingParams, ComplexPackingParams, DataRepresentation,
-        Jpeg2000PackingParams, PngPackingParams, ScaledPackingParams, SpatialDifferencingParams,
+        IeeePackingParams, IeeePrecision, Jpeg2000PackingParams, PngPackingParams,
+        RunLengthPackingParams, ScaledPackingParams, SpatialDifferencingParams,
     };
-    use crate::binary::encode_wmo_i16;
+    use crate::binary::{encode_wmo_i16, encode_wmo_i8};
 
     #[test]
     fn parses_simple_packing_template() {
@@ -550,6 +861,114 @@ mod tests {
                 original_field_type: 0,
             })
         );
+    }
+
+    #[test]
+    fn parses_all_ieee_packing_precisions() {
+        for (code, precision) in [
+            (1, IeeePrecision::Single),
+            (2, IeeePrecision::Double),
+            (3, IeeePrecision::Quadruple),
+        ] {
+            let representation = DataRepresentation::parse(&ieee_section(code)).unwrap();
+            assert_eq!(representation.template_number(), 4);
+            assert_eq!(
+                representation,
+                DataRepresentation::IeeePacking(IeeePackingParams {
+                    encoded_values: 6,
+                    precision,
+                })
+            );
+            assert_eq!(representation.encoded_values(), Some(6));
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_or_truncated_ieee_packing_parameters() {
+        for code in [0, 4, 255] {
+            let error = DataRepresentation::parse(&ieee_section(code)).unwrap_err();
+            assert!(error.to_string().contains("invalid IEEE precision code"));
+        }
+
+        let error = DataRepresentation::parse(&ieee_section(1)[..11]).unwrap_err();
+        assert!(error.to_string().contains("requires 12 bytes"));
+    }
+
+    #[test]
+    fn parses_run_length_packing_template() {
+        let section = run_length_section(3, 2, -1, &[10, 20, 30]);
+        let representation = DataRepresentation::parse(&section).unwrap();
+
+        assert_eq!(representation.template_number(), 200);
+        assert_eq!(
+            representation,
+            DataRepresentation::RunLengthPacking(RunLengthPackingParams {
+                encoded_values: 9,
+                bits_per_value: 3,
+                max_level_value: 2,
+                decimal_scale: -1,
+                level_values: vec![10, 20, 30],
+            })
+        );
+        let DataRepresentation::RunLengthPacking(params) = representation else {
+            unreachable!();
+        };
+        assert_eq!(params.representative_value(0), None);
+        assert_eq!(params.representative_value(1), Some(100.0));
+        assert_eq!(params.representative_value(2), Some(200.0));
+        assert_eq!(params.representative_value(3), None);
+    }
+
+    #[test]
+    fn parses_all_missing_run_length_parameters() {
+        let representation = DataRepresentation::parse(&run_length_section(0, 0, 0, &[])).unwrap();
+        assert_eq!(
+            representation,
+            DataRepresentation::RunLengthPacking(RunLengthPackingParams {
+                encoded_values: 9,
+                bits_per_value: 0,
+                max_level_value: 0,
+                decimal_scale: 0,
+                level_values: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_run_length_parameters() {
+        for (section, reason) in [
+            (
+                run_length_section(3, 3, 0, &[10, 20]),
+                "exceeds the 2-entry level table",
+            ),
+            (
+                run_length_section(2, 3, 0, &[10, 20, 30]),
+                "leaves no run-length codes",
+            ),
+            (
+                run_length_section(0, 1, 0, &[10]),
+                "bits per value must be between 1 and 64",
+            ),
+            (
+                run_length_section(65, 1, 0, &[10]),
+                "bits per value must not exceed 64",
+            ),
+            (
+                run_length_section(65, 0, 0, &[]),
+                "bits per value must not exceed 64",
+            ),
+            (
+                run_length_section(3, 0, 0, &[10]),
+                "zero maximum level requires an empty level table",
+            ),
+        ] {
+            let error = DataRepresentation::parse(&section).unwrap_err();
+            assert!(error.to_string().contains(reason), "{error}");
+        }
+
+        let section = run_length_section(3, 2, 0, &[10, 20]);
+        let error = DataRepresentation::parse(&section[..section.len() - 1]).unwrap_err();
+        assert!(error.to_string().contains("requires 21 bytes"));
     }
 
     #[test]
@@ -778,6 +1197,38 @@ mod tests {
         section[21] = flags;
         section[22] = block_size;
         section[23..25].copy_from_slice(&rsi.to_be_bytes());
+        section
+    }
+
+    fn ieee_section(precision: u8) -> Vec<u8> {
+        let mut section = vec![0u8; 12];
+        section[..4].copy_from_slice(&12u32.to_be_bytes());
+        section[4] = 5;
+        section[5..9].copy_from_slice(&6u32.to_be_bytes());
+        section[9..11].copy_from_slice(&4u16.to_be_bytes());
+        section[11] = precision;
+        section
+    }
+
+    fn run_length_section(
+        bits_per_value: u8,
+        max_level_value: u16,
+        decimal_scale: i16,
+        level_values: &[u16],
+    ) -> Vec<u8> {
+        let length = 17 + 2 * level_values.len();
+        let mut section = vec![0u8; length];
+        section[..4].copy_from_slice(&(length as u32).to_be_bytes());
+        section[4] = 5;
+        section[5..9].copy_from_slice(&9u32.to_be_bytes());
+        section[9..11].copy_from_slice(&200u16.to_be_bytes());
+        section[11] = bits_per_value;
+        section[12..14].copy_from_slice(&max_level_value.to_be_bytes());
+        section[14..16].copy_from_slice(&(level_values.len() as u16).to_be_bytes());
+        section[16] = encode_wmo_i8(decimal_scale).unwrap();
+        for (bytes, level) in section[17..].chunks_exact_mut(2).zip(level_values) {
+            bytes.copy_from_slice(&level.to_be_bytes());
+        }
         section
     }
 }

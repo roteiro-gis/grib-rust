@@ -4,14 +4,15 @@ mod reference;
 
 #[allow(unused_imports)]
 pub use fixtures::{
-    build_bitmap_prefixed_stream, build_grib1_bitmap_message, build_grib1_message,
-    build_grib1_message_with_bitmap, build_grib2_complex_packing_message,
+    build_bitmap_prefixed_stream, build_grib1_bitmap_message, build_grib1_large_message_convention,
+    build_grib1_message, build_grib1_message_with_bitmap, build_grib1_second_order_general_message,
+    build_grib1_second_order_row_by_row_message, build_grib2_complex_packing_message,
     build_grib2_complex_packing_message_with_missing, build_grib2_lambert_alternating_message,
     build_grib2_lambert_message, build_grib2_message, build_grib2_message_with_forecast,
     build_grib2_multifield_message, build_grib2_polar_stereographic_alternating_message,
     build_grib2_polar_stereographic_message, build_grib2_regular_gaussian_message,
-    build_grib2_rotated_latlon_message, build_grib2_spatial_differencing_message,
-    build_truncated_grib2_message,
+    build_grib2_rotated_latlon_message, build_grib2_run_length_message,
+    build_grib2_spatial_differencing_message, build_truncated_grib2_message,
 };
 
 #[allow(unused_imports)]

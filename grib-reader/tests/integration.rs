@@ -3,11 +3,13 @@ mod common;
 use std::io::{Cursor, Write};
 
 use common::{
-    build_grib1_message, build_grib1_message_with_bitmap, build_grib2_complex_packing_message,
-    build_grib2_complex_packing_message_with_missing, build_grib2_lambert_alternating_message,
-    build_grib2_lambert_message, build_grib2_message, build_grib2_message_with_forecast,
-    build_grib2_multifield_message, build_grib2_polar_stereographic_alternating_message,
-    build_grib2_polar_stereographic_message, build_grib2_spatial_differencing_message,
+    build_grib1_large_message_convention, build_grib1_message, build_grib1_message_with_bitmap,
+    build_grib1_second_order_general_message, build_grib1_second_order_row_by_row_message,
+    build_grib2_complex_packing_message, build_grib2_complex_packing_message_with_missing,
+    build_grib2_lambert_alternating_message, build_grib2_lambert_message, build_grib2_message,
+    build_grib2_message_with_forecast, build_grib2_multifield_message,
+    build_grib2_polar_stereographic_alternating_message, build_grib2_polar_stereographic_message,
+    build_grib2_run_length_message, build_grib2_spatial_differencing_message,
 };
 use grib_reader::{
     Error, ForecastTimeUnit, GribFile, GridDefinition, LocalParameterEntry, ParameterTableSource,
@@ -64,6 +66,18 @@ fn open_grib2_from_reader_and_decode() {
 }
 
 #[test]
+fn decodes_run_length_packing_message() {
+    let opened = GribFile::from_bytes(build_grib2_run_length_message()).unwrap();
+    let field = opened.message(0).unwrap();
+    assert_eq!(field.metadata().data_representation.template_number(), 200);
+
+    let values = field.read_flat_data_as_f64().unwrap();
+    assert_eq!(values[..3], [10.0, 10.0, 10.0]);
+    assert!(values[3].is_nan());
+    assert_eq!(values[4..], [20.0, 20.0]);
+}
+
+#[test]
 fn open_grib1_from_file_and_decode() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sample.grib1");
@@ -86,6 +100,29 @@ fn open_grib1_from_file_and_decode() {
             .collect::<Vec<_>>(),
         vec![5.0, 6.0, 7.0, 8.0]
     );
+}
+
+#[test]
+fn decodes_grib1_second_order_row_and_secondary_bitmap_groups() {
+    for bytes in [
+        build_grib1_second_order_row_by_row_message(),
+        build_grib1_second_order_general_message(),
+    ] {
+        let opened = GribFile::from_bytes(bytes).unwrap();
+        assert_eq!(
+            opened.message(0).unwrap().read_flat_data_as_f64().unwrap(),
+            vec![10.0, 11.0, 12.0, 20.0, 22.0, 23.0]
+        );
+    }
+}
+
+#[test]
+fn opens_grib1_large_message_convention_and_resolves_section4_length() {
+    let opened = GribFile::from_bytes(build_grib1_large_message_convention()).unwrap();
+    let field = opened.message(0).unwrap();
+
+    assert_eq!(field.metadata().message_length, 84);
+    assert_eq!(field.read_flat_data_as_f64().unwrap(), [1.0, 2.0, 3.0, 4.0]);
 }
 
 #[test]

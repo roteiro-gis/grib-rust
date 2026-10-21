@@ -2,6 +2,7 @@
 
 use crate::data::{decode_payload, DataRepresentation};
 use crate::error::{Error, Result};
+use crate::indicator::grib1_section4_length;
 use crate::sections::SectionRef;
 
 use grib_core::binary::read_u24_be;
@@ -70,7 +71,10 @@ pub fn parse_message_sections(message_bytes: &[u8]) -> Result<Grib1Sections> {
         None
     };
 
-    let data = parse_section(message_bytes, cursor, 4, payload_limit)?;
+    let data_length = grib1_section4_length(message_bytes, cursor).ok_or(Error::Truncated {
+        offset: cursor as u64,
+    })?;
+    let data = parse_section_with_length(cursor, data_length, 4, payload_limit)?;
     if data.offset + data.length != payload_limit {
         return Err(Error::InvalidMessage(
             "GRIB1 message contains trailing bytes before end marker".into(),
@@ -109,6 +113,15 @@ fn parse_section(
     let length = read_u24_be(length_bytes).ok_or(Error::Truncated {
         offset: offset as u64,
     })? as usize;
+    parse_section_with_length(offset, length, number, payload_limit)
+}
+
+fn parse_section_with_length(
+    offset: usize,
+    length: usize,
+    number: u8,
+    payload_limit: usize,
+) -> Result<SectionRef> {
     if length < 3 {
         return Err(Error::InvalidSection {
             section: number,
@@ -166,6 +179,34 @@ mod tests {
         let sections = parse_message_sections(&message).unwrap();
         assert!(sections.grid.is_some());
         assert!(sections.bitmap.is_none());
+        assert_eq!(sections.data.length, 12);
+    }
+
+    #[test]
+    fn resolves_large_message_section4_length_from_message_boundary() {
+        let mut message = Vec::new();
+        message.extend_from_slice(b"GRIB");
+        message.extend_from_slice(&[0x80, 0, 1, 1]);
+        let mut pds = vec![0u8; 28];
+        pds[..3].copy_from_slice(&[0, 0, 28]);
+        pds[7] = 0b1000_0000;
+        pds[12] = 26;
+        pds[13] = 3;
+        pds[14] = 20;
+        pds[15] = 12;
+        pds[24] = 21;
+        message.extend_from_slice(&pds);
+        let mut gds = vec![0u8; 32];
+        gds[..3].copy_from_slice(&[0, 0, 32]);
+        message.extend_from_slice(&gds);
+        let mut bds = vec![0u8; 12];
+        // ceil((84 - 4) / 120) * 120 - (84 - 4) = 40.
+        bds[..3].copy_from_slice(&[0, 0, 40]);
+        message.extend_from_slice(&bds);
+        message.extend_from_slice(b"7777");
+
+        let sections = parse_message_sections(&message).unwrap();
+        assert_eq!(sections.data.offset, 68);
         assert_eq!(sections.data.length, 12);
     }
 

@@ -45,6 +45,69 @@ pub fn build_grib1_message(values: &[u8]) -> Vec<u8> {
     }
 }
 
+pub fn build_grib1_large_message_convention() -> Vec<u8> {
+    let mut message = GRIB1_1234.to_vec();
+    // A compact fixture using the same formula as an ECMWF >8 MiB message:
+    // ceil((84 - 4) / 120) = 1 block and 40 padding octets.
+    message[4..7].copy_from_slice(&[0x80, 0, 1]);
+    message[68..71].copy_from_slice(&[0, 0, 40]);
+    message
+}
+
+pub fn build_grib1_second_order_row_by_row_message() -> Vec<u8> {
+    build_grib1_second_order_message(27, 0x10, 24, 26, &[2, 2], None)
+}
+
+pub fn build_grib1_second_order_general_message() -> Vec<u8> {
+    build_grib1_second_order_message(28, 0x30, 25, 27, &[2, 2], Some(23))
+}
+
+fn build_grib1_second_order_message(
+    section_length: usize,
+    extended_flags: u8,
+    n1: u16,
+    n2: u16,
+    widths: &[u8],
+    secondary_bitmap_offset: Option<usize>,
+) -> Vec<u8> {
+    let mut message = GRIB1_1234.to_vec();
+    let grid_offset = 8 + 28;
+    message[grid_offset + 6..grid_offset + 8].copy_from_slice(&3u16.to_be_bytes());
+    message[grid_offset + 8..grid_offset + 10].copy_from_slice(&2u16.to_be_bytes());
+
+    let mut bds = vec![0u8; section_length];
+    bds[..3].copy_from_slice(&[
+        ((section_length >> 16) & 0xff) as u8,
+        ((section_length >> 8) & 0xff) as u8,
+        (section_length & 0xff) as u8,
+    ]);
+    bds[3] = 0x44;
+    bds[10] = 5;
+    bds[11..13].copy_from_slice(&n1.to_be_bytes());
+    bds[13] = extended_flags;
+    bds[14..16].copy_from_slice(&n2.to_be_bytes());
+    bds[16..18].copy_from_slice(&2u16.to_be_bytes());
+    bds[18..20].copy_from_slice(&6u16.to_be_bytes());
+    bds[21..21 + widths.len()].copy_from_slice(widths);
+    if let Some(offset) = secondary_bitmap_offset {
+        bds[offset] = 0b1001_0000;
+    }
+    let first_order_index = usize::from(n1) - 1;
+    bds[first_order_index..first_order_index + 2].copy_from_slice(&[0x55, 0x00]);
+    let second_order_index = usize::from(n2) - 1;
+    bds[second_order_index..second_order_index + 2].copy_from_slice(&[0x18, 0xb0]);
+
+    let data_offset = 8 + 28 + 32;
+    message.truncate(data_offset);
+    message.extend_from_slice(&bds);
+    message.extend_from_slice(b"7777");
+    let total_length = message.len();
+    message[4] = ((total_length >> 16) & 0xff) as u8;
+    message[5] = ((total_length >> 8) & 0xff) as u8;
+    message[6] = (total_length & 0xff) as u8;
+    message
+}
+
 pub fn build_grib1_message_with_bitmap(
     values: &[u8],
     ni: u16,
@@ -113,6 +176,18 @@ pub fn build_grib2_regular_gaussian_message() -> Vec<u8> {
         build_product_section(),
         build_simple_representation_section(values.len(), 8),
         build_data_section(&values),
+    ];
+    assemble_grib2_message(&sections)
+}
+
+pub fn build_grib2_run_length_message() -> Vec<u8> {
+    let sections = [
+        build_identification_section(),
+        build_rotated_latlon_grid_section(),
+        build_product_section(),
+        build_run_length_representation_section(),
+        // 10 repeated three times, missing once, then 20 repeated twice.
+        build_data_section(&[1, 5, 0, 2, 4]),
     ];
     assemble_grib2_message(&sections)
 }
@@ -265,6 +340,21 @@ fn build_simple_representation_section(encoded_values: usize, bits_per_value: u8
     section[9..11].copy_from_slice(&0u16.to_be_bytes());
     section[11..15].copy_from_slice(&0f32.to_be_bytes());
     section[19] = bits_per_value;
+    section
+}
+
+fn build_run_length_representation_section() -> Vec<u8> {
+    let mut section = vec![0u8; 21];
+    section[..4].copy_from_slice(&21u32.to_be_bytes());
+    section[4] = 5;
+    section[5..9].copy_from_slice(&6u32.to_be_bytes());
+    section[9..11].copy_from_slice(&200u16.to_be_bytes());
+    section[11] = 8;
+    section[12..14].copy_from_slice(&2u16.to_be_bytes());
+    section[14..16].copy_from_slice(&2u16.to_be_bytes());
+    section[16] = 0;
+    section[17..19].copy_from_slice(&10u16.to_be_bytes());
+    section[19..21].copy_from_slice(&20u16.to_be_bytes());
     section
 }
 

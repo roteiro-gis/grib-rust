@@ -3,8 +3,9 @@ use grib_core::{DataRepresentation, GridDefinition, Identification, ProductDefin
 
 use crate::grib1::validate_supported_grib1_grid;
 use crate::packing::{
-    pack_ccsds_auto, pack_complex_auto, pack_jpeg2000_auto, pack_png_auto, pack_simple_auto,
-    reorder_field_to_grib_scan_order, PackedField, PackingStrategy,
+    pack_ccsds_auto, pack_complex_auto, pack_complex_row_by_row, pack_ieee, pack_jpeg2000_auto,
+    pack_png_auto, pack_simple_auto, reorder_field_to_grib_scan_order, PackedField,
+    PackingStrategy,
 };
 use crate::sections::{
     checked_grid_point_count, validate_supported_grid, validate_supported_product,
@@ -139,10 +140,16 @@ impl Grib1FieldBuilder {
                 product.decimal_scale = decimal_scale;
                 pack_simple_auto(&values, bitmap_mask, decimal_scale)?
             }
-            PackingStrategy::ComplexAuto { .. } => {
+            PackingStrategy::ComplexAuto { .. } | PackingStrategy::ComplexRowByRow { .. } => {
                 return Err(Error::UnsupportedPackingForEdition {
                     edition: 1,
                     packing: "complex",
+                });
+            }
+            PackingStrategy::Ieee { .. } => {
+                return Err(Error::UnsupportedPackingForEdition {
+                    edition: 1,
+                    packing: "IEEE",
                 });
             }
             PackingStrategy::Jpeg2000Auto { .. } => {
@@ -332,6 +339,19 @@ impl Grib2FieldBuilder {
                 decimal_scale,
                 spatial_differencing,
             )?,
+            PackingStrategy::ComplexRowByRow {
+                decimal_scale,
+                spatial_differencing,
+            } => pack_complex_row_by_row(
+                &values,
+                bitmap.as_deref(),
+                &grid,
+                decimal_scale,
+                spatial_differencing,
+            )?,
+            PackingStrategy::Ieee { precision } => {
+                pack_ieee(&values, bitmap.as_deref(), precision)?
+            }
             PackingStrategy::Jpeg2000Auto { decimal_scale } => {
                 pack_jpeg2000_auto(&values, bitmap.as_deref(), &grid, decimal_scale)?
             }

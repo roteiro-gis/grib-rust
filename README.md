@@ -16,7 +16,7 @@ Rust GRIB reader, writer, and shared core primitives for weather and climate dat
 | `grib-aec` | Safe shared interface to the bundled libaec CCSDS codec |
 | `grib-core` | Shared GRIB data model, code tables, binary primitives, bit I/O, and validation helpers |
 | `grib-reader` | GRIB1/GRIB2 file opening, message scanning, metadata parsing, and packed data decoding |
-| `grib-writer` | GRIB1/GRIB2 field builders, simple/complex/image/CCSDS packing, bitmap handling, and message serialization |
+| `grib-writer` | GRIB1/GRIB2 field builders, simple/complex/IEEE/image/CCSDS packing, bitmap handling, and message serialization |
 
 ## Reader Usage
 
@@ -170,8 +170,17 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
   3.20, Lambert conformal grid template 3.30, and Albers equal-area grid
   template 3.31 metadata, projected coordinate offsets, and flat data decode
 - Reader simple packing for GRIB1 and GRIB2
+- Reader framing for ECMWF-era GRIB1 messages larger than the 24-bit standard
+  length limit
+- Reader GRIB1 row-by-row, constant-width, and variable-width second-order
+  grid-point packing
 - Reader GRIB1 predefined bitmaps via caller-supplied center-defined bitmap tables
-- GRIB2 complex packing with general group splitting, including spatial differencing
+- GRIB2 complex packing with general or row-by-row group splitting, including
+  spatial differencing
+- Reader and writer GRIB2 IEEE template 5.4 with binary32, binary64, and
+  correctly rounded binary128 conversion
+- Reader GRIB2 run-length template 5.200 with scaled level values and embedded
+  missing-value runs
 - Feature-gated reader GRIB2 JPEG2000 template 5.40 and PNG template 5.41 packed data decode
 - WMO parameter table lookups (Code Table 4.2) plus center/subcenter/local-table-aware GRIB2 local parameter entries and CSV authoring helpers
 - Typed metadata access for reference time, parameter identity, product metadata, grid geometry, and lat/lon coordinates
@@ -191,7 +200,8 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Feature-gated reader GRIB2 CCSDS/AEC template 5.42 decode using the bundled,
   security-fixed libaec 1.1.7 codec
 - Writer GRIB2 regular lat/lon fields with simple packing template 5.0,
-  complex packing template 5.2, and spatial differencing template 5.3
+  general or row-by-row complex packing template 5.2, and spatial
+  differencing template 5.3
 - Writer GRIB2 Mercator grid template 3.10, polar stereographic grid template
   3.20, Lambert conformal grid template 3.30, and Albers equal-area grid
   template 3.31 fields
@@ -211,8 +221,6 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
   4.5, 4.6, 4.8, 4.9, 4.10, 4.11, 4.12, and 4.15
 - Remaining writer GRIB2 product definition templates beyond 4.0, 4.1, 4.2,
   4.5, 4.6, 4.8, 4.9, 4.10, 4.11, 4.12, and 4.15
-- Writer GRIB2 row-by-row complex packing
-
 Unsupported decode and encode operations fail explicitly with typed errors;
 unknown GRIB2 product templates remain indexable with their raw bytes preserved.
 Calendar-dependent forecast units such as months and years are exposed through
