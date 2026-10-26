@@ -4,6 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 image_name="${ECCODES_DOCKER_IMAGE:-grib-rust-eccodes}"
 docker_cpus="${ECCODES_DOCKER_CPUS:-2}"
+docker_memory="${ECCODES_DOCKER_MEMORY:-4g}"
+container_name="${ECCODES_DOCKER_CONTAINER_NAME:-grib-rust-eccodes-parity-$$}"
 cargo_build_jobs="${CARGO_BUILD_JOBS:-2}"
 cargo_term_color="${CARGO_TERM_COLOR:-always}"
 rustflags="${RUSTFLAGS:--D warnings}"
@@ -16,7 +18,10 @@ else
 fi
 
 docker build -f "${repo_root}/docker/eccodes.Dockerfile" -t "${image_name}" "${repo_root}"
-docker run --rm --cpus "${docker_cpus}" \
+docker run --rm \
+  --name "${container_name}" \
+  --cpus "${docker_cpus}" \
+  --memory "${docker_memory}" \
   -e CARGO_BUILD_JOBS="${cargo_build_jobs}" \
   -e CARGO_TARGET_DIR="${cargo_target_dir}" \
   -e CARGO_TERM_COLOR="${cargo_term_color}" \

@@ -5,8 +5,9 @@ use std::io::{Cursor, Write};
 use common::{
     build_grib1_large_message_convention, build_grib1_message, build_grib1_message_with_bitmap,
     build_grib1_second_order_general_message, build_grib1_second_order_row_by_row_message,
-    build_grib2_complex_packing_message, build_grib2_complex_packing_message_with_missing,
-    build_grib2_lambert_alternating_message, build_grib2_lambert_message, build_grib2_message,
+    build_grib2_albers_equal_area_message, build_grib2_complex_packing_message,
+    build_grib2_complex_packing_message_with_missing, build_grib2_lambert_alternating_message,
+    build_grib2_lambert_message, build_grib2_mercator_message, build_grib2_message,
     build_grib2_message_with_forecast, build_grib2_multifield_message,
     build_grib2_polar_stereographic_alternating_message, build_grib2_polar_stereographic_message,
     build_grib2_run_length_message, build_grib2_spatial_differencing_message,
@@ -243,6 +244,86 @@ fn open_grib2_lambert_conformal_normalizes_alternating_scan_rows() {
     let opened = GribFile::from_bytes(build_grib2_lambert_alternating_message()).unwrap();
     let field = opened.message(0).unwrap();
 
+    assert_eq!(
+        field.read_flat_data_as_f64().unwrap(),
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    );
+}
+
+#[test]
+fn open_grib2_mercator_field_and_decode_flat_data() {
+    let opened = GribFile::from_bytes(build_grib2_mercator_message()).unwrap();
+    let field = opened.message(0).unwrap();
+
+    assert_eq!(field.grid_shape(), (3, 2));
+    assert_eq!(field.latitudes().unwrap(), None);
+    assert_eq!(field.longitudes().unwrap(), None);
+    assert_eq!(
+        field.projected_x_coordinates().unwrap().unwrap(),
+        vec![0.0, 1_000.0, 2_000.0]
+    );
+    assert_eq!(
+        field.projected_y_coordinates().unwrap().unwrap(),
+        vec![-0.0, -2_000.0]
+    );
+    match field.grid_definition() {
+        GridDefinition::Mercator(grid) => {
+            assert_eq!(grid.core.number_of_points, 6);
+            assert_eq!(grid.core.shape_of_earth, 6);
+            assert_eq!(grid.core.nx, 3);
+            assert_eq!(grid.core.ny, 2);
+            assert_eq!(grid.core.lat_first, -20_000_000);
+            assert_eq!(grid.core.lon_first, -100_000_000);
+            assert_eq!(grid.lat_d, 0);
+            assert_eq!(grid.lat_last, 20_000_000);
+            assert_eq!(grid.lon_last, -98_000_000);
+            assert_eq!(grid.orientation_of_grid, 0);
+            assert_eq!(grid.core.dx, 1_000_000);
+            assert_eq!(grid.core.dy, 2_000_000);
+        }
+        other => panic!("expected Mercator grid, got {other:?}"),
+    }
+    assert_eq!(
+        field.read_flat_data_as_f64().unwrap(),
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    );
+}
+
+#[test]
+fn open_grib2_albers_equal_area_field_and_decode_flat_data() {
+    let opened = GribFile::from_bytes(build_grib2_albers_equal_area_message()).unwrap();
+    let field = opened.message(0).unwrap();
+
+    assert_eq!(field.grid_shape(), (3, 2));
+    assert_eq!(field.latitudes().unwrap(), None);
+    assert_eq!(field.longitudes().unwrap(), None);
+    assert_eq!(
+        field.projected_x_coordinates().unwrap().unwrap(),
+        vec![0.0, 4_000.0, 8_000.0]
+    );
+    assert_eq!(
+        field.projected_y_coordinates().unwrap().unwrap(),
+        vec![-0.0, -5_000.0]
+    );
+    match field.grid_definition() {
+        GridDefinition::AlbersEqualArea(grid) => {
+            assert_eq!(grid.core.number_of_points, 6);
+            assert_eq!(grid.core.shape_of_earth, 6);
+            assert_eq!(grid.core.nx, 3);
+            assert_eq!(grid.core.ny, 2);
+            assert_eq!(grid.core.lat_first, 23_000_000);
+            assert_eq!(grid.core.lon_first, 240_000_000);
+            assert_eq!(grid.lat_d, 25_000_000);
+            assert_eq!(grid.lon_v, 265_000_000);
+            assert_eq!(grid.core.dx, 4_000_000);
+            assert_eq!(grid.core.dy, 5_000_000);
+            assert_eq!(grid.latin1, 29_500_000);
+            assert_eq!(grid.latin2, 45_500_000);
+            assert_eq!(grid.lat_southern_pole, -90_000_000);
+            assert_eq!(grid.lon_southern_pole, 0);
+        }
+        other => panic!("expected Albers equal-area grid, got {other:?}"),
+    }
     assert_eq!(
         field.read_flat_data_as_f64().unwrap(),
         vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]

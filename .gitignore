@@ -5,3 +5,4 @@ target/
 .DS_Store
 grib-reader/fuzz/artifacts/
 grib-reader/fuzz/coverage/
+lcov.info

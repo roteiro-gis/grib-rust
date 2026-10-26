@@ -36,13 +36,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy --no-self-update
 
       - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Run ecCodes parity tests
         run: ./scripts/run-reference-parity.sh
@@ -54,20 +56,22 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy --no-self-update
 
       - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Run ecCodes Criterion benchmarks
         run: ./scripts/run-reference-benchmarks.sh
 
       - name: Upload Criterion artifacts
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: criterion-eccodes-${{ github.sha }}
           path: target/criterion
