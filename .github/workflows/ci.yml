@@ -36,7 +36,7 @@ jobs:
         run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy --no-self-update
 
       - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -88,7 +88,7 @@ jobs:
         run: rustup toolchain install 1.87.0 --profile minimal --no-self-update
 
       - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: msrv-1.87
 
@@ -116,7 +116,7 @@ jobs:
         run: rustup toolchain install 1.91.0 --profile minimal --no-self-update
 
       - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Run the full test suite
         run: cargo +1.91.0 test --workspace --all-features --locked
@@ -138,7 +138,7 @@ jobs:
         run: rustup toolchain install 1.91.0 --profile minimal --no-self-update
 
       - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install cargo-deny
         env:
@@ -165,7 +165,7 @@ jobs:
         run: rustup toolchain install 1.91.0 --profile minimal --component llvm-tools-preview --no-self-update
 
       - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install cargo-llvm-cov
         env:
