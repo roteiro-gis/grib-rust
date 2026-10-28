@@ -62,16 +62,17 @@ pub fn scan_sections(msg_bytes: &[u8]) -> Result<Vec<SectionRef>> {
                 reason: format!("section length {length} is smaller than the 5-byte header"),
             });
         }
-        if pos + length > msg_bytes.len() {
-            return Err(Error::Truncated { offset: pos as u64 });
-        }
+        let end = pos
+            .checked_add(length)
+            .filter(|end| *end <= msg_bytes.len())
+            .ok_or(Error::Truncated { offset: pos as u64 })?;
 
         sections.push(SectionRef {
             number,
             offset: pos,
             length,
         });
-        pos += length;
+        pos = end;
     }
 
     Err(Error::InvalidMessage("missing end section 7777".into()))

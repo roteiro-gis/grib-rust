@@ -57,8 +57,8 @@ pub use data::{
 pub use error::{Error, Result};
 pub use grib1::{BinaryDataSection, GridDescription, ProductDefinition as Grib1ProductDefinition};
 pub use grid::{
-    GridDefinition, LambertConformalGrid, LatLonGrid, PolarStereographicGrid, ProjectedGridCore,
-    RegularGaussianGrid, RotatedLatLonGrid,
+    AlbersEqualAreaGrid, GridDefinition, LambertConformalGrid, LatLonGrid, MercatorGrid,
+    PolarStereographicGrid, ProjectedGridCore, RegularGaussianGrid, RotatedLatLonGrid,
 };
 pub use metadata::{ForecastTimeUnit, Parameter, ParameterTableSource, ReferenceTime};
 pub use parameter::{
@@ -209,9 +209,11 @@ impl<'a> GribFileBuilder<'a> {
         let mut data = Vec::new();
         let mut chunk = [0u8; 64 * 1024];
         loop {
-            let read = reader
-                .read(&mut chunk)
-                .map_err(|err| Error::Io(err, "GRIB input stream".into()))?;
+            let read = match reader.read(&mut chunk) {
+                Ok(read) => read,
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(err) => return Err(Error::Io(err, "GRIB input stream".into())),
+            };
             if read == 0 {
                 break;
             }
