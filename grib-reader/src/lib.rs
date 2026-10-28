@@ -510,7 +510,10 @@ impl<'a> Message<'a> {
         }
 
         let unit = self.metadata.forecast_time_unit?;
-        let lead = self.metadata.forecast_time?;
+        let lead = match &self.metadata.grib1_product {
+            Some(product) => i64::from(product.valid_time_offset()?),
+            None => self.metadata.forecast_time?,
+        };
         self.metadata
             .reference_time
             .checked_add_forecast_time_by_edition(self.metadata.edition, unit, lead)

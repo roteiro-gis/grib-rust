@@ -459,6 +459,25 @@ fn computes_grib1_indicator_ten_valid_time_from_u16_lead() {
 }
 
 #[test]
+fn computes_grib1_accumulation_valid_time_from_end_of_period() {
+    let mut bytes = build_grib1_message(&[5, 6, 7, 8]);
+    let pds_offset = 8;
+    bytes[pds_offset + 18] = 6;
+    bytes[pds_offset + 19] = 12;
+    bytes[pds_offset + 20] = 4;
+
+    let opened = GribFile::from_bytes(bytes).unwrap();
+    let field = opened.message(0).unwrap();
+    let valid = field.valid_time().unwrap();
+
+    assert_eq!(field.forecast_time(), None);
+    assert_eq!(valid.year, 2026);
+    assert_eq!(valid.month, 3);
+    assert_eq!(valid.day, 21);
+    assert_eq!(valid.hour, 0);
+}
+
+#[test]
 fn computes_grib1_quarter_hour_valid_time() {
     let mut bytes = build_grib1_message(&[5, 6, 7, 8]);
     let pds_offset = 8;
