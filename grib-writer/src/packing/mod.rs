@@ -17,6 +17,7 @@ use crate::{Error, Result};
 
 /// Field packing strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PackingStrategy {
     /// Simple packing with binary scale 0 and automatic bit-width selection.
     SimpleAuto { decimal_scale: i16 },

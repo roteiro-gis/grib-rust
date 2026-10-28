@@ -9,6 +9,7 @@ use std::borrow::Cow;
 /// Raw unit codes are edition-specific. In particular, GRIB1 code `13` means
 /// quarter-hour while GRIB2 code `13` means second.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ForecastTimeUnit {
     Minute,
     Hour,
@@ -194,6 +195,7 @@ impl ReferenceTime {
 
 /// Source table used to resolve a parameter name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ParameterTableSource {
     /// GRIB1 parameter table.
     Grib1 { table_version: u8 },
