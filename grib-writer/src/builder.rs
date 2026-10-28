@@ -14,6 +14,7 @@ use crate::{Error, Result};
 
 /// Order of values supplied to field builders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum ValueOrder {
     /// Logical row-major order matching `grib-reader` ndarray output.
     #[default]

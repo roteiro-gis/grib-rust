@@ -83,9 +83,7 @@ impl<'a, W: Write> GribWriter<'a, W> {
             }
             write_product_section(&mut message, field.product())?;
             write_data_representation_section(&mut message, field.packed())?;
-            if let Some(bitmap) = &field.packed().bitmap_payload {
-                write_bitmap_section(&mut message, bitmap)?;
-            }
+            write_bitmap_section(&mut message, field.packed().bitmap_payload.as_deref())?;
             write_data_section(&mut message, &field.packed().data_payload)?;
         }
         message.extend_from_slice(b"7777");

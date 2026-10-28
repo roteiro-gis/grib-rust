@@ -85,6 +85,18 @@ impl ProductDefinition {
             _ => None,
         }
     }
+
+    /// Offset from the reference time at which the product is valid, in
+    /// `forecast_time_unit` units.
+    ///
+    /// Ranges, averages, accumulations, and differences (time range
+    /// indicators 2 through 5) are valid at the end of their period, `P2`.
+    pub fn valid_time_offset(&self) -> Option<u32> {
+        match self.time_range_indicator {
+            2..=5 => Some(u32::from(self.p2)),
+            _ => self.forecast_time(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
