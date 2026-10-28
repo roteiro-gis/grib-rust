@@ -890,7 +890,7 @@ fn transform_supported_scan_order_in_place<T>(
     }
 
     if adjacent_rows_alternate_direction(scanning_mode) {
-        reverse_alternating_rows(values, ni, nj, i_scans_positive(scanning_mode));
+        reverse_alternating_rows(values, ni, nj);
     }
 
     Ok(())
@@ -1013,16 +1013,12 @@ fn checked_grid_point_count(nx: u32, ny: u32) -> Result<usize> {
     })
 }
 
-fn reverse_alternating_rows<T>(values: &mut [T], ni: usize, nj: usize, i_scans_positive: bool) {
-    for row in 0..nj {
-        let reverse = if i_scans_positive {
-            row % 2 == 1
-        } else {
-            row % 2 == 0
-        };
-        if reverse {
-            values[row * ni..(row + 1) * ni].reverse();
-        }
+/// Code Table 3.4 flag 4: the first row scans in the flag-1 direction and
+/// each following row reverses it, so odd rows are flipped regardless of the
+/// i direction.
+fn reverse_alternating_rows<T>(values: &mut [T], ni: usize, nj: usize) {
+    for row in (1..nj).step_by(2) {
+        values[row * ni..(row + 1) * ni].reverse();
     }
 }
 
@@ -1682,6 +1678,31 @@ mod tests {
             .reorder_ndarray_to_grib_scan(vec![1, 2, 3, 4, 5, 6])
             .unwrap();
         assert_eq!(scan_order, vec![1, 2, 3, 6, 5, 4]);
+    }
+
+    #[test]
+    fn preserves_negative_i_direction_for_alternating_row_scan() {
+        // Row 0 scans -i from lon_first; row 1 scans back in +i.
+        let grid = GridDefinition::LatLon(LatLonGrid {
+            ni: 3,
+            nj: 2,
+            lat_first: 0,
+            lon_first: 0,
+            lat_last: 0,
+            lon_last: 0,
+            di: 1,
+            dj: 1,
+            scanning_mode: 0b1001_0000,
+        });
+
+        let mut reader_order = vec![1, 2, 3, 6, 5, 4];
+        grid.reorder_for_ndarray_in_place(&mut reader_order)
+            .unwrap();
+        assert_eq!(reader_order, vec![1, 2, 3, 4, 5, 6]);
+
+        let mut north_up = vec![1, 2, 3, 6, 5, 4];
+        grid.normalize_north_up_in_place(&mut north_up).unwrap();
+        assert_eq!(north_up, vec![3, 2, 1, 6, 5, 4]);
     }
 
     #[test]
