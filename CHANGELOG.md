@@ -83,6 +83,21 @@
 - add projected-grid reader fixtures, assert coordinates and decoded values on
   real interoperability samples, and seed the fuzzers with GRIB1 second-order
   and large-message fields
+- fix reader-order and north-up orientation for alternating-row scans whose
+  first row runs in the -i direction (scanning mode flag 4 with flag 1 set);
+  odd rows are now reversed regardless of the i direction, matching Code Table
+  3.4 and ecCodes
+- always write GRIB2 Section 6, using bitmap indicator 255 when no bitmap
+  applies, as required by the GRIB2 message structure
+- report GRIB1 valid times for time range indicators 2 through 5 at the end of
+  the period (`P2`) through `Message::valid_time` and the new
+  `grib1::ProductDefinition::valid_time_offset`
+- re-export `MercatorGrid` and `AlbersEqualAreaGrid` from the `grib-reader`
+  crate root alongside the other grid types
+- retry interrupted reads in `GribFileBuilder::from_reader`
+- mark `PackingStrategy`, `ValueOrder`, `ForecastTimeUnit`, and
+  `ParameterTableSource` non-exhaustive so future packing templates, value
+  orders, time units, and parameter sources are not breaking changes
 
 ## 0.6.0 - 2026-06-25
 
