@@ -766,12 +766,15 @@ fn write_scaled_data_representation_base(
     write_u8_be(out, params.original_field_type)
 }
 
-pub(crate) fn write_bitmap_section(out: &mut Vec<u8>, bitmap_payload: &[u8]) -> Result<()> {
-    let length = checked_section_length(6usize + bitmap_payload.len(), 6)?;
+/// Section 6 is mandatory in every GRIB2 field; indicator 255 states that no
+/// bitmap applies.
+pub(crate) fn write_bitmap_section(out: &mut Vec<u8>, bitmap_payload: Option<&[u8]>) -> Result<()> {
+    let payload = bitmap_payload.unwrap_or_default();
+    let length = checked_section_length(6usize + payload.len(), 6)?;
     write_u32_be(out, length)?;
     write_u8_be(out, 6)?;
-    write_u8_be(out, 0)?;
-    out.extend_from_slice(bitmap_payload);
+    write_u8_be(out, if bitmap_payload.is_some() { 0 } else { 255 })?;
+    out.extend_from_slice(payload);
     Ok(())
 }
 

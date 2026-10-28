@@ -295,6 +295,15 @@ fn section_numbers(bytes: &[u8]) -> Vec<u8> {
         .collect()
 }
 
+fn bitmap_indicators(bytes: &[u8]) -> Vec<u8> {
+    scan_sections(bytes)
+        .unwrap()
+        .iter()
+        .filter(|section| section.number == 6)
+        .map(|section| bytes[section.offset + 5])
+        .collect()
+}
+
 #[cfg(any(feature = "jpeg2000", feature = "png"))]
 fn section_payload(bytes: &[u8], section_number: u8) -> &[u8] {
     let section = scan_sections(bytes)
@@ -2393,7 +2402,11 @@ fn writes_single_grib2_message_with_multiple_fields() {
     let second = simple_field(&[5.0, 6.0, 7.0, 8.0], 0, 2);
 
     let bytes = write_message([first, second]);
-    assert_eq!(section_numbers(&bytes), vec![1, 3, 4, 5, 7, 4, 5, 7, 8]);
+    assert_eq!(
+        section_numbers(&bytes),
+        vec![1, 3, 4, 5, 6, 7, 4, 5, 6, 7, 8]
+    );
+    assert_eq!(bitmap_indicators(&bytes), vec![255, 255]);
 
     let file = GribFile::from_bytes(bytes).unwrap();
     assert_eq!(file.message_count(), 2);
@@ -2427,7 +2440,7 @@ fn emits_new_grid_section_only_when_grid_changes() {
     let bytes = write_message([first, second, third]);
     assert_eq!(
         section_numbers(&bytes),
-        vec![1, 3, 4, 5, 7, 4, 5, 7, 3, 4, 5, 7, 8]
+        vec![1, 3, 4, 5, 6, 7, 4, 5, 6, 7, 3, 4, 5, 6, 7, 8]
     );
 
     let file = GribFile::from_bytes(bytes).unwrap();
@@ -2457,7 +2470,11 @@ fn writes_reused_grid_multifield_message_with_bitmap() {
         .unwrap();
 
     let bytes = write_message([first, second]);
-    assert_eq!(section_numbers(&bytes), vec![1, 3, 4, 5, 7, 4, 5, 6, 7, 8]);
+    assert_eq!(
+        section_numbers(&bytes),
+        vec![1, 3, 4, 5, 6, 7, 4, 5, 6, 7, 8]
+    );
+    assert_eq!(bitmap_indicators(&bytes), vec![255, 0]);
 
     let file = GribFile::from_bytes(bytes).unwrap();
     assert_eq!(file.message_count(), 2);
