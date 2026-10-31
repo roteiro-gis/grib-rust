@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.0 - Unreleased
+## 0.7.0 - 2026-10-30
 
 - replace the reader's constructor matrix with `GribFile::builder()`, including
   memory-mapped file, owned-byte, and arbitrary `Read` inputs
