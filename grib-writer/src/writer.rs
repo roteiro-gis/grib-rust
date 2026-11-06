@@ -9,7 +9,7 @@ use crate::grib1::{
 use crate::sections::{
     write_bitmap_section, write_data_representation_section, write_data_section,
     write_grid_section, write_identification_section, write_indicator_placeholder,
-    write_product_section,
+    write_product_section, write_reused_bitmap_section,
 };
 use crate::{Error, Grib1Field, Grib2Field, Result};
 
@@ -76,6 +76,7 @@ impl<'a, W: Write> GribWriter<'a, W> {
         write_indicator_placeholder(&mut message, first.discipline())?;
         write_identification_section(&mut message, first.identification())?;
         let mut current_grid = None;
+        let mut defined_bitmap: Option<&[u8]> = None;
         for field in &fields {
             if current_grid != Some(field.grid()) {
                 write_grid_section(&mut message, field.grid())?;
@@ -83,7 +84,15 @@ impl<'a, W: Write> GribWriter<'a, W> {
             }
             write_product_section(&mut message, field.product())?;
             write_data_representation_section(&mut message, field.packed())?;
-            write_bitmap_section(&mut message, field.packed().bitmap_payload.as_deref())?;
+            let bitmap = field.packed().bitmap_payload.as_deref();
+            if bitmap.is_some() && bitmap == defined_bitmap {
+                write_reused_bitmap_section(&mut message)?;
+            } else {
+                write_bitmap_section(&mut message, bitmap)?;
+                if bitmap.is_some() {
+                    defined_bitmap = bitmap;
+                }
+            }
             write_data_section(&mut message, &field.packed().data_payload)?;
         }
         message.extend_from_slice(b"7777");

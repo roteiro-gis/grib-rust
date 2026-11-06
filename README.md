@@ -216,7 +216,8 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Feature-gated writer GRIB2 CCSDS/AEC template 5.42 encode with automatic
   bit-width selection, bitmap support, and configurable codec parameters
 - Writer GRIB2 bitmap section generation from explicit masks or `NaN` values
-- Writer single-message multi-field GRIB2 output with reused grid sections
+- Writer single-message multi-field GRIB2 output with reused grid sections and
+  bitmap indicator 254 for repeated bitmaps
 - Writer GRIB1 regular lat/lon fields with simple packing and optional explicit
   or predefined bitmap section
 

@@ -792,6 +792,13 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
             "writer-ieee-double.grib2",
             write_grib2_message([ieee_double]),
         ),
+        (
+            "writer-reused-bitmap.grib2",
+            write_grib2_message([
+                simple_grib2_field(&[1.0, f64::NAN, 3.0, 4.0], 0, 0),
+                simple_grib2_field(&[5.0, f64::NAN, 7.0, 8.0], 0, 2),
+            ]),
+        ),
         ("writer-complex.grib2", write_grib2_message([complex])),
         (
             "writer-complex-spatial-first.grib2",
