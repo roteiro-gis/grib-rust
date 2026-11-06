@@ -373,6 +373,7 @@ impl GribFile {
         MessageIter {
             file: self,
             index: 0,
+            end: self.messages.len(),
         }
     }
 
@@ -411,6 +412,14 @@ impl GribFile {
     }
 }
 
+impl std::fmt::Debug for GribFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GribFile")
+            .field("message_count", &self.messages.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// A single logical GRIB field.
 pub struct Message<'a> {
     bytes: &'a [u8],
@@ -419,6 +428,15 @@ pub struct Message<'a> {
     row_group_lengths: Option<&'a [usize]>,
     options: ReaderOptions,
     index: usize,
+}
+
+impl std::fmt::Debug for Message<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Message")
+            .field("index", &self.index)
+            .field("metadata", self.metadata)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> Message<'a> {
@@ -739,21 +757,56 @@ fn decoded_array<T>(shape: Vec<usize>, values: Vec<T>) -> Result<ArrayD<T>> {
 }
 
 /// Iterator over fields in a GRIB file.
+#[derive(Clone)]
 pub struct MessageIter<'a> {
     file: &'a GribFile,
     index: usize,
+    end: usize,
 }
 
 impl<'a> Iterator for MessageIter<'a> {
     type Item = Message<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.file.message_count() {
+        if self.index >= self.end {
             return None;
         }
         let message = self.file.message_at(self.index);
         self.index += 1;
         Some(message)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.end - self.index;
+        (remaining, Some(remaining))
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        self.index = self.index.saturating_add(n).min(self.end);
+        self.next()
+    }
+}
+
+impl DoubleEndedIterator for MessageIter<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.index >= self.end {
+            return None;
+        }
+        self.end -= 1;
+        Some(self.file.message_at(self.end))
+    }
+}
+
+impl ExactSizeIterator for MessageIter<'_> {}
+
+impl std::iter::FusedIterator for MessageIter<'_> {}
+
+impl<'a> IntoIterator for &'a GribFile {
+    type Item = Message<'a>;
+    type IntoIter = MessageIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.messages()
     }
 }
 
@@ -1757,6 +1810,29 @@ mod tests {
         assert!(decoded[1].is_nan());
         assert_eq!(decoded[2], 7.0);
         assert!(decoded[3].is_nan());
+    }
+
+    #[test]
+    fn message_iterator_is_exact_size_and_double_ended() {
+        let mut bytes = build_grib1_message(&[1, 2, 3, 4]);
+        bytes.extend(build_grib1_message(&[5, 6, 7, 8]));
+        bytes.extend(build_grib1_message(&[9, 10, 11, 12]));
+        let file = GribFile::from_bytes(bytes).unwrap();
+
+        let mut messages = file.messages();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages.next_back().unwrap().index(), 2);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages.next().unwrap().index(), 0);
+        assert_eq!(messages.next().unwrap().index(), 1);
+        assert!(messages.next().is_none());
+        assert!(messages.next_back().is_none());
+
+        assert_eq!(file.messages().nth(2).unwrap().index(), 2);
+        assert!(file.messages().nth(3).is_none());
+        let indices = (&file).into_iter().rev().map(|message| message.index());
+        assert_eq!(indices.collect::<Vec<_>>(), vec![2, 1, 0]);
+        assert!(format!("{file:?}").contains("message_count: 3"));
     }
 
     #[test]
