@@ -1432,10 +1432,13 @@ fn unpack_complex_into<T: DecodeSample>(
     let mut reference_reader = BitReader::with_offset(data_bytes, layout.reference_offset);
     let mut width_reader = BitReader::with_offset(data_bytes, layout.width_offset);
     let mut length_reader = BitReader::with_offset(data_bytes, layout.length_offset);
-    let mut value_reader = BitReader::with_offset(data_bytes, layout.value_offset);
-    let binary_factor = 2.0_f64.powi(params.binary_scale as i32);
-    let decimal_factor = 10.0_f64.powi(-(params.decimal_scale as i32));
-    let reference = params.reference_value as f64;
+    let mut value_offset = layout.value_offset;
+    let scale = ComplexScale {
+        reference: f64::from(params.reference_value),
+        binary_factor: 2.0_f64.powi(i32::from(params.binary_scale)),
+        decimal_factor: 10.0_f64.powi(-i32::from(params.decimal_scale)),
+    };
+    let group_reference_bits = usize::from(params.group_reference_bits);
     let mut actual_total = 0usize;
     let row_group_lengths = match params.group_splitting_method {
         0 => {
@@ -1459,7 +1462,7 @@ fn unpack_complex_into<T: DecodeSample>(
     };
 
     for group_index in 0..params.num_groups {
-        let group_reference = reference_reader.read(params.group_reference_bits as usize)?;
+        let group_reference = reference_reader.read(group_reference_bits)?;
         let width_delta = width_reader.read(params.group_width_bits as usize)?;
         let group_width = usize::from(params.group_width_reference)
             .checked_add(width_delta as usize)
@@ -1477,22 +1480,31 @@ fn unpack_complex_into<T: DecodeSample>(
                 operation: "summing complex-packing group lengths",
             })?;
 
+        if actual_total > params.encoded_values {
+            return Err(Error::DataLengthMismatch {
+                expected: params.encoded_values,
+                actual: actual_total,
+            });
+        }
+
         if group_width == 0 {
-            let raw_value = decode_constant_group_value(
-                group_reference,
-                params.group_reference_bits as usize,
-                params.missing_value_management,
-            )?;
-            for _ in 0..group_length {
-                let value = spatial
-                    .as_mut()
-                    .map_or(Ok(raw_value), |state| state.restore(raw_value))?;
-                output.push_present(scale_complex_value(
-                    reference,
-                    binary_factor,
-                    decimal_factor,
-                    value,
-                ))?;
+            let missing = MissingCodes::new(group_reference_bits, params.missing_value_management)?;
+            let raw_value =
+                if missing.contains(group_reference) {
+                    None
+                } else {
+                    Some(i64::try_from(group_reference).map_err(|_| {
+                        Error::ValueOutOfRange("group reference exceeds i64".into())
+                    })?)
+                };
+            match spatial.as_mut() {
+                Some(state) => emit_group(output, group_length, || {
+                    Ok(scale.apply(state.restore(raw_value)?))
+                })?,
+                None => {
+                    let value = scale.apply(raw_value);
+                    emit_group(output, group_length, || Ok(value))?
+                }
             }
             continue;
         }
@@ -1503,23 +1515,28 @@ fn unpack_complex_into<T: DecodeSample>(
 
         let group_reference = i64::try_from(group_reference)
             .map_err(|_| Error::ValueOutOfRange("group reference exceeds i64".into()))?;
-        for _ in 0..group_length {
-            let packed = value_reader.read(group_width)?;
-            let value = decode_group_value(
-                group_reference,
-                packed,
-                group_width,
-                params.missing_value_management,
-            )?;
-            let value = spatial
-                .as_mut()
-                .map_or(Ok(value), |state| state.restore(value))?;
-            output.push_present(scale_complex_value(
-                reference,
-                binary_factor,
-                decimal_factor,
-                value,
-            ))?;
+        let missing = MissingCodes::new(group_width, params.missing_value_management)?;
+        let mut packed_values =
+            PackedValues::new(data_bytes, value_offset, group_width, group_length)?;
+        value_offset = packed_values.end_bit_offset();
+        let mut next_value = || -> Result<Option<i64>> {
+            let packed = packed_values.next_value();
+            if missing.contains(packed) {
+                return Ok(None);
+            }
+            i64::try_from(packed)
+                .ok()
+                .and_then(|packed| group_reference.checked_add(packed))
+                .map(Some)
+                .ok_or(Error::ArithmeticOverflow {
+                    operation: "reconstructing complex-packing value",
+                })
+        };
+        match spatial.as_mut() {
+            Some(state) => emit_group(output, group_length, || {
+                Ok(scale.apply(state.restore(next_value()?)?))
+            })?,
+            None => emit_group(output, group_length, || Ok(scale.apply(next_value()?)))?,
         }
     }
 
@@ -1642,78 +1659,121 @@ fn read_spatial_descriptors(
     })
 }
 
-fn decode_constant_group_value(
-    group_reference: u64,
-    group_reference_bits: usize,
-    missing_value_management: u8,
-) -> Result<Option<i64>> {
-    if is_missing_code(
-        group_reference,
-        group_reference_bits,
-        missing_value_management,
-        MissingKind::Primary,
-    )? || is_missing_code(
-        group_reference,
-        group_reference_bits,
-        missing_value_management,
-        MissingKind::Secondary,
-    )? {
-        return Ok(None);
-    }
-
-    let value = i64::try_from(group_reference)
-        .map_err(|_| Error::ValueOutOfRange("group reference exceeds i64".into()))?;
-    Ok(Some(value))
+/// Bounds-checked cursor over one group of fixed-width packed values.
+///
+/// The whole group is validated against the payload up front so each value is
+/// extracted from a single unaligned big-endian word without per-value
+/// truncation checks.
+struct PackedValues<'a> {
+    data: &'a [u8],
+    bit_offset: usize,
+    end_bit_offset: usize,
+    width: usize,
 }
 
-fn decode_group_value(
-    group_reference: i64,
-    packed: u64,
-    group_width: usize,
-    missing_value_management: u8,
-) -> Result<Option<i64>> {
-    if is_missing_code(
-        packed,
-        group_width,
-        missing_value_management,
-        MissingKind::Primary,
-    )? || is_missing_code(
-        packed,
-        group_width,
-        missing_value_management,
-        MissingKind::Secondary,
-    )? {
-        return Ok(None);
+impl<'a> PackedValues<'a> {
+    fn new(data: &'a [u8], bit_offset: usize, width: usize, count: usize) -> Result<Self> {
+        debug_assert!((1..=u64::BITS as usize).contains(&width));
+        let end_bit_offset = width
+            .checked_mul(count)
+            .and_then(|bits| bit_offset.checked_add(bits))
+            .ok_or(Error::BitOffsetOverflow)?;
+        let data_bits = data.len().checked_mul(8).ok_or(Error::BitOffsetOverflow)?;
+        if end_bit_offset > data_bits {
+            return Err(Error::Truncated {
+                offset: data.len() as u64,
+            });
+        }
+        Ok(Self {
+            data,
+            bit_offset,
+            end_bit_offset,
+            width,
+        })
     }
 
-    let packed = i64::try_from(packed)
-        .map_err(|_| Error::ValueOutOfRange("packed value exceeds i64".into()))?;
-    let value = group_reference
-        .checked_add(packed)
-        .ok_or(Error::ArithmeticOverflow {
-            operation: "reconstructing complex-packing value",
-        })?;
-    Ok(Some(value))
+    fn end_bit_offset(&self) -> usize {
+        self.end_bit_offset
+    }
+
+    /// Returns the next value. Callers must not read more than the `count`
+    /// values validated by [`PackedValues::new`].
+    fn next_value(&mut self) -> u64 {
+        debug_assert!(self.bit_offset + self.width <= self.end_bit_offset);
+        let byte = self.bit_offset / 8;
+        let shift = self.bit_offset % 8;
+        let value = if shift + self.width <= u64::BITS as usize {
+            (load_be_u64(self.data, byte) << shift) >> (u64::BITS as usize - self.width)
+        } else {
+            // Widths above 57 bits can straddle nine bytes.
+            let high = load_be_u64(self.data, byte) << shift;
+            let low = u64::from(self.data[byte + 8]) >> (8 - shift);
+            (high | low) >> (u64::BITS as usize - self.width)
+        };
+        self.bit_offset += self.width;
+        value
+    }
 }
 
-fn is_missing_code(
-    value: u64,
-    bit_width: usize,
-    missing_value_management: u8,
-    kind: MissingKind,
-) -> Result<bool> {
-    let required_mode = match kind {
-        MissingKind::Primary => 1,
-        MissingKind::Secondary => 2,
-    };
-    if missing_value_management < required_mode {
-        return Ok(false);
+/// Loads up to eight bytes starting at `byte` as a big-endian word, padding
+/// past the end of `data` with zeros.
+fn load_be_u64(data: &[u8], byte: usize) -> u64 {
+    match data.get(byte..byte + 8) {
+        Some(bytes) => u64::from_be_bytes(bytes.try_into().expect("eight-byte window")),
+        None => {
+            let mut bytes = [0u8; 8];
+            let available = data.get(byte..).unwrap_or_default();
+            bytes[..available.len()].copy_from_slice(available);
+            u64::from_be_bytes(bytes)
+        }
+    }
+}
+
+/// Writes `count` decoded values, filling a contiguous output slice when no
+/// bitmap applies.
+fn emit_group<T: DecodeSample>(
+    output: &mut OutputCursor<'_, T>,
+    count: usize,
+    mut next: impl FnMut() -> Result<T>,
+) -> Result<()> {
+    if let Some(dense) = output.take_dense(count)? {
+        for target in dense {
+            *target = next()?;
+        }
+    } else {
+        for _ in 0..count {
+            output.push_present(next()?)?;
+        }
+    }
+    Ok(())
+}
+
+/// Embedded missing-value codes for one complex-packing bit width, resolved
+/// once per group instead of once per value.
+#[derive(Debug, Clone, Copy)]
+struct MissingCodes {
+    primary: Option<u64>,
+    secondary: Option<u64>,
+}
+
+impl MissingCodes {
+    fn new(bit_width: usize, missing_value_management: u8) -> Result<Self> {
+        let primary = if missing_value_management >= 1 {
+            missing_code(bit_width, MissingKind::Primary)?
+        } else {
+            None
+        };
+        let secondary = if missing_value_management >= 2 {
+            missing_code(bit_width, MissingKind::Secondary)?
+        } else {
+            None
+        };
+        Ok(Self { primary, secondary })
     }
 
-    let Some(code) = missing_code(bit_width, kind)? else {
-        return Ok(false);
-    };
-    Ok(value == code)
+    fn contains(self, value: u64) -> bool {
+        self.primary == Some(value) || self.secondary == Some(value)
+    }
 }
 
 fn missing_code(bit_width: usize, kind: MissingKind) -> Result<Option<u64>> {
@@ -1737,20 +1797,24 @@ fn missing_code(bit_width: usize, kind: MissingKind) -> Result<Option<u64>> {
     Ok(Some(code))
 }
 
-fn scale_complex_value<T: DecodeSample>(
+#[derive(Debug, Clone, Copy)]
+struct ComplexScale {
     reference: f64,
     binary_factor: f64,
     decimal_factor: f64,
-    value: Option<i64>,
-) -> T {
-    match value {
-        Some(value) => T::from_f64(scale_decoded_value(
-            reference,
-            value as f64,
-            binary_factor,
-            decimal_factor,
-        )),
-        None => T::nan(),
+}
+
+impl ComplexScale {
+    fn apply<T: DecodeSample>(self, value: Option<i64>) -> T {
+        match value {
+            Some(value) => T::from_f64(scale_decoded_value(
+                self.reference,
+                value as f64,
+                self.binary_factor,
+                self.decimal_factor,
+            )),
+            None => T::nan(),
+        }
     }
 }
 
@@ -1967,18 +2031,24 @@ struct SpatialDescriptors {
 
 #[derive(Debug, Clone)]
 struct SpatialRestoreState {
-    descriptors: SpatialDescriptors,
-    previous: Option<i64>,
-    previous_difference: Option<i64>,
+    order: u8,
+    first_value: i64,
+    second_value: Option<i64>,
+    overall_minimum: i64,
+    previous: i64,
+    previous_difference: i64,
     non_missing_seen: usize,
 }
 
 impl SpatialRestoreState {
     fn new(descriptors: SpatialDescriptors) -> Self {
         Self {
-            descriptors,
-            previous: None,
-            previous_difference: None,
+            order: descriptors.order,
+            first_value: descriptors.first_value,
+            second_value: descriptors.second_value,
+            overall_minimum: descriptors.overall_minimum,
+            previous: 0,
+            previous_difference: 0,
             non_missing_seen: 0,
         }
     }
@@ -1988,23 +2058,64 @@ impl SpatialRestoreState {
             return Ok(None);
         };
 
-        let restored = match self.descriptors.order {
-            1 => self.restore_first_order(value)?,
-            2 => self.restore_second_order(value)?,
-            other => return Err(Error::UnsupportedSpatialDifferencingOrder(other)),
-        };
+        let restored = if self.non_missing_seen >= usize::from(self.order) {
+            self.restore_steady_state(value)
+        } else {
+            self.restore_initial_value()
+        }?;
 
-        self.previous = Some(restored);
+        self.previous = restored;
         self.non_missing_seen += 1;
         Ok(Some(restored))
     }
 
-    fn finish(self) -> Result<()> {
-        let expected = match self.descriptors.order {
-            1 => 1,
-            2 => 2,
-            other => return Err(Error::UnsupportedSpatialDifferencingOrder(other)),
+    /// Restores a value once the order's initial values have been emitted.
+    fn restore_steady_state(&mut self, value: i64) -> Result<i64> {
+        let overflow = || Error::ArithmeticOverflow {
+            operation: "restoring a spatial difference",
         };
+        let difference = value
+            .checked_add(self.overall_minimum)
+            .ok_or_else(overflow)?;
+        match self.order {
+            1 => self.previous.checked_add(difference).ok_or_else(overflow),
+            2 => {
+                self.previous_difference = self
+                    .previous_difference
+                    .checked_add(difference)
+                    .ok_or_else(overflow)?;
+                self.previous
+                    .checked_add(self.previous_difference)
+                    .ok_or_else(overflow)
+            }
+            other => Err(Error::UnsupportedSpatialDifferencingOrder(other)),
+        }
+    }
+
+    fn restore_initial_value(&mut self) -> Result<i64> {
+        match (self.order, self.non_missing_seen) {
+            (1 | 2, 0) => Ok(self.first_value),
+            (2, 1) => {
+                let second_value = self.second_value.ok_or(Error::InvalidSection {
+                    section: 5,
+                    reason: "missing second-order spatial differencing descriptors".into(),
+                })?;
+                self.previous_difference = second_value.checked_sub(self.first_value).ok_or(
+                    Error::ArithmeticOverflow {
+                        operation: "initializing second-order spatial difference",
+                    },
+                )?;
+                Ok(second_value)
+            }
+            (other, _) => Err(Error::UnsupportedSpatialDifferencingOrder(other)),
+        }
+    }
+
+    fn finish(self) -> Result<()> {
+        if !matches!(self.order, 1 | 2) {
+            return Err(Error::UnsupportedSpatialDifferencingOrder(self.order));
+        }
+        let expected = usize::from(self.order);
         if self.non_missing_seen < expected {
             return Err(Error::DataLengthMismatch {
                 expected,
@@ -2012,63 +2123,6 @@ impl SpatialRestoreState {
             });
         }
         Ok(())
-    }
-
-    fn restore_first_order(&mut self, value: i64) -> Result<i64> {
-        if self.non_missing_seen == 0 {
-            return Ok(self.descriptors.first_value);
-        }
-
-        let delta = value.checked_add(self.descriptors.overall_minimum).ok_or(
-            Error::ArithmeticOverflow {
-                operation: "restoring first-order spatial difference",
-            },
-        )?;
-        self.previous
-            .and_then(|previous| previous.checked_add(delta))
-            .ok_or(Error::ArithmeticOverflow {
-                operation: "restoring first-order spatial difference",
-            })
-    }
-
-    fn restore_second_order(&mut self, value: i64) -> Result<i64> {
-        match self.non_missing_seen {
-            0 => Ok(self.descriptors.first_value),
-            1 => {
-                let second_value = self.descriptors.second_value.ok_or(Error::InvalidSection {
-                    section: 5,
-                    reason: "missing second-order spatial differencing descriptors".into(),
-                })?;
-                self.previous_difference = second_value.checked_sub(self.descriptors.first_value);
-                self.previous_difference.ok_or(Error::ArithmeticOverflow {
-                    operation: "initializing second-order spatial difference",
-                })?;
-                Ok(second_value)
-            }
-            _ => {
-                let second_difference = value.checked_add(self.descriptors.overall_minimum).ok_or(
-                    Error::ArithmeticOverflow {
-                        operation: "restoring second-order spatial difference",
-                    },
-                )?;
-                let difference = self
-                    .previous_difference
-                    .and_then(|previous_difference| {
-                        previous_difference.checked_add(second_difference)
-                    })
-                    .ok_or(Error::ArithmeticOverflow {
-                        operation: "restoring second-order spatial difference",
-                    })?;
-                let next = self
-                    .previous
-                    .and_then(|previous| previous.checked_add(difference))
-                    .ok_or(Error::ArithmeticOverflow {
-                        operation: "restoring second-order spatial difference",
-                    })?;
-                self.previous_difference = Some(difference);
-                Ok(next)
-            }
-        }
     }
 }
 
@@ -2089,6 +2143,36 @@ mod tests {
     use crate::error::Error;
     use grib_core::binary::encode_ieee_binary128;
     use grib_core::bit::BitWriter;
+
+    #[test]
+    fn packed_values_match_bit_reader_for_every_width_and_alignment() {
+        for width in 1..=64usize {
+            for lead in 0..8usize {
+                let count = 5usize;
+                let mut writer = BitWriter::with_capacity_bits(lead + width * count);
+                writer.write(0, lead).unwrap();
+                let max = if width == 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << width) - 1
+                };
+                let expected = (0..count as u64)
+                    .map(|index| max.wrapping_sub(index.wrapping_mul(0x9e37_79b9_7f4a_7c15)) & max)
+                    .collect::<Vec<_>>();
+                for value in &expected {
+                    writer.write(*value, width).unwrap();
+                }
+                writer.align_to_byte().unwrap();
+                let bytes = writer.into_bytes();
+
+                let mut values = super::PackedValues::new(&bytes, lead, width, count).unwrap();
+                let actual = (0..count).map(|_| values.next_value()).collect::<Vec<_>>();
+                assert_eq!(actual, expected, "width {width}, lead {lead}");
+                assert_eq!(values.end_bit_offset(), lead + width * count);
+                assert!(super::PackedValues::new(&bytes, lead, width, count + 8).is_err());
+            }
+        }
+    }
 
     #[test]
     fn unpack_simple_constant() {
