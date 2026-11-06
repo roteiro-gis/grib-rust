@@ -1,13 +1,13 @@
 #[cfg(feature = "ccsds")]
 use grib_aec::{encode as aec_encode, AecFlags, AecParams};
-#[cfg(feature = "ccsds")]
-use grib_core::{filled_vec, CcsdsPackingParams, DataRepresentation, ScaledPackingParams};
 use grib_core::{CcsdsBlockSize, CcsdsFlags};
+#[cfg(feature = "ccsds")]
+use grib_core::{CcsdsPackingParams, DataRepresentation, ScaledPackingParams};
 
 use super::PackedField;
 #[cfg(feature = "ccsds")]
 use super::{
-    bits_needed, pack_bitmap, present_mask, quantize_present_values, simple_packing_deltas,
+    bits_needed, constant_aware_packing_deltas, pack_bitmap, present_mask, quantize_present_values,
 };
 use crate::{Error, Result};
 
@@ -34,7 +34,8 @@ pub(crate) fn pack_ccsds_auto(
         None
     };
     let quantized = quantize_present_values(values, &present, decimal_scale, "CCSDS packing")?;
-    let (reference_value, deltas) = ccsds_packing_deltas(&quantized, decimal_scale)?;
+    let (reference_value, deltas) =
+        constant_aware_packing_deltas(&quantized, decimal_scale, "CCSDS")?;
     let max_delta = deltas.iter().copied().max().unwrap_or(0);
     let bits_per_value = ccsds_bits_per_value(max_delta, flags)?;
     if bits_per_value > 32 {
@@ -103,29 +104,6 @@ fn ccsds_bits_per_value(max_delta: u64, flags: CcsdsFlags) -> Result<u8> {
             .ok_or(Error::UnsupportedPackingWidth(bits))?;
     }
     Ok(bits)
-}
-
-#[cfg(feature = "ccsds")]
-fn ccsds_packing_deltas(quantized: &[f64], decimal_scale: i16) -> Result<(f32, Vec<u64>)> {
-    let Some(&first) = quantized.first() else {
-        return Ok((0.0, Vec::new()));
-    };
-    if quantized.iter().all(|value| *value == first) {
-        let decimal_factor = 10.0_f64.powi(-i32::from(decimal_scale));
-        let constant = first * decimal_factor;
-        let reference_value = constant as f32;
-        if !constant.is_finite() || !reference_value.is_finite() {
-            return Err(Error::ValueOutOfRange(
-                "constant CCSDS reference value does not fit IEEE f32".into(),
-            ));
-        }
-        return Ok((
-            reference_value,
-            filled_vec(quantized.len(), 0_u64, "constant CCSDS packed")?,
-        ));
-    }
-
-    simple_packing_deltas(quantized)
 }
 
 #[cfg(feature = "ccsds")]

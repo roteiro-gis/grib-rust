@@ -3,7 +3,7 @@ use grib_core::filled_vec;
 use grib_core::{GridDefinition, ScaledPackingParams};
 
 use super::super::{
-    bits_needed, pack_bitmap, present_mask, quantize_present_values, simple_packing_deltas,
+    bits_needed, constant_aware_packing_deltas, pack_bitmap, present_mask, quantize_present_values,
 };
 use crate::{Error, Result};
 
@@ -49,11 +49,6 @@ pub(super) fn prepare_image_packing(
 ) -> Result<PreparedImagePacking> {
     let present = present_mask(values, explicit_bitmap)?;
     let present_count = present.iter().filter(|present| **present).count();
-    if present_count == 0 {
-        return Err(Error::ValueOutOfRange(format!(
-            "{packing_name} requires at least one present value"
-        )));
-    }
 
     let bitmap_payload = if present.iter().any(|present| !*present) {
         Some(pack_bitmap(&present)?)
@@ -62,10 +57,16 @@ pub(super) fn prepare_image_packing(
     };
 
     let quantized = quantize_present_values(values, &present, decimal_scale, packing_name)?;
-    let (reference_value, deltas) = simple_packing_deltas(&quantized)?;
+    let (reference_value, deltas) =
+        constant_aware_packing_deltas(&quantized, decimal_scale, packing_name)?;
     let max_delta = deltas.iter().copied().max().unwrap_or(0);
-    let minimum_bits = bits_needed(max_delta).max(1);
-    let bits_per_value = select_bits_per_value(minimum_bits)?;
+    // Constant and all-missing fields use zero bits per value with an empty
+    // Section 7 payload, matching ecCodes, instead of a degenerate image.
+    let bits_per_value = if max_delta == 0 {
+        0
+    } else {
+        select_bits_per_value(bits_needed(max_delta))?
+    };
     validate_image_deltas_fit(&deltas, bits_per_value)?;
 
     Ok(PreparedImagePacking {

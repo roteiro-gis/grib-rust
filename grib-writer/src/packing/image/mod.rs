@@ -38,11 +38,15 @@ pub(crate) fn pack_jpeg2000_auto(
         "JPEG2000 packing",
         jpeg2000_bits_per_value,
     )?;
-    let data_payload = encode_jpeg2000_payload(
-        &prepared.deltas,
-        prepared.params.bits_per_value,
-        prepared.dimensions,
-    )?;
+    let data_payload = if prepared.params.bits_per_value == 0 {
+        Vec::new()
+    } else {
+        encode_jpeg2000_payload(
+            &prepared.deltas,
+            prepared.params.bits_per_value,
+            prepared.dimensions,
+        )?
+    };
 
     Ok(PackedField {
         representation: DataRepresentation::Jpeg2000Packing(Jpeg2000PackingParams {
@@ -80,11 +84,15 @@ pub(crate) fn pack_png_auto(
         "PNG packing",
         png_bits_per_value,
     )?;
-    let data_payload = encode_png_payload(
-        &prepared.deltas,
-        prepared.params.bits_per_value,
-        prepared.dimensions,
-    )?;
+    let data_payload = if prepared.params.bits_per_value == 0 {
+        Vec::new()
+    } else {
+        encode_png_payload(
+            &prepared.deltas,
+            prepared.params.bits_per_value,
+            prepared.dimensions,
+        )?
+    };
 
     Ok(PackedField {
         representation: DataRepresentation::PngPacking(PngPackingParams {
