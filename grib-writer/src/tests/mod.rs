@@ -1405,18 +1405,13 @@ fn reports_unrepresentable_grid_coordinates_with_typed_errors() {
         other => panic!("expected latitude-longitude grid, got {other:?}"),
     };
     invalid_grid.lat_first = i32::MIN;
-    let field = Grib2FieldBuilder::new()
+    let err = Grib2FieldBuilder::new()
         .identification(identification())
         .grid(GridDefinition::LatLon(invalid_grid))
         .product(product(0, 0))
         .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
         .values(&[1.0, 2.0, 3.0, 4.0])
         .build()
-        .unwrap();
-
-    let mut bytes = Vec::new();
-    let err = GribWriter::new(&mut bytes)
-        .write_grib2_message([field])
         .unwrap_err();
 
     assert!(matches!(
@@ -2729,4 +2724,80 @@ fn flags_given_and_missing_latlon_increments() {
     let message = file.message(0).unwrap();
     assert_eq!(message.longitudes().unwrap().unwrap(), vec![-120.0, -119.0]);
     assert_eq!(message.latitudes().unwrap().unwrap(), vec![50.0, 49.0]);
+}
+
+#[test]
+fn writes_rotated_latlon_and_regular_gaussian_grids() {
+    let rotated = GridDefinition::RotatedLatLon(grib_core::RotatedLatLonGrid {
+        grid: LatLonGrid {
+            ni: 3,
+            nj: 2,
+            lat_first: -10_000_000,
+            lon_first: 340_000_000,
+            lat_last: 0,
+            lon_last: 20_000_000,
+            di: 20_000_000,
+            dj: 10_000_000,
+            scanning_mode: 0b0100_0000,
+        },
+        lat_southern_pole: -30_000_000,
+        lon_southern_pole: 10_000_000,
+        angle_of_rotation: 15.5,
+    });
+    let gaussian = GridDefinition::RegularGaussian(grib_core::RegularGaussianGrid {
+        ni: 4,
+        nj: 4,
+        lat_first: 59_444_408,
+        lon_first: 0,
+        lat_last: -59_444_408,
+        lon_last: 270_000_000,
+        di: 90_000_000,
+        number_of_parallels: 2,
+        scanning_mode: 0,
+    });
+
+    for grid in [rotated, gaussian] {
+        let (ni, nj) = grid.shape();
+        let values = (0..ni * nj).map(|index| index as f64).collect::<Vec<_>>();
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid.clone())
+            .product(product(0, 0))
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&values)
+            .build()
+            .unwrap();
+
+        let file = GribFile::from_bytes(write_message([field])).unwrap();
+        let message = file.message(0).unwrap();
+        assert_eq!(message.grid_definition(), &grid);
+        assert_eq!(message.read_flat_data_as_f64().unwrap(), values);
+    }
+}
+
+#[test]
+fn rejects_gaussian_grid_corners_off_the_gaussian_parallels() {
+    let grid = GridDefinition::RegularGaussian(grib_core::RegularGaussianGrid {
+        ni: 4,
+        nj: 4,
+        lat_first: 60_000_000,
+        lon_first: 0,
+        lat_last: -60_000_000,
+        lon_last: 270_000_000,
+        di: 90_000_000,
+        number_of_parallels: 2,
+        scanning_mode: 0,
+    });
+    let err = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(grid)
+        .product(product(0, 0))
+        .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+        .values(&[0.0; 16])
+        .build()
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        grib_core::Error::InvalidSection { section: 3, .. }
+    ));
 }

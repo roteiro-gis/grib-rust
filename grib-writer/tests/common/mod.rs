@@ -9,8 +9,9 @@ use grib_core::{
     DerivedStatisticalProcessTemplate, FixedSurface, GridDefinition, Identification, IeeePrecision,
     LatLonGrid, PercentileForecastTemplate, PercentileStatisticalProcessTemplate,
     ProbabilityForecastTemplate, ProbabilityLimit, ProbabilityStatisticalProcessTemplate,
-    ProbabilityType, ProductDefinition, ProductDefinitionTemplate, ScaledPackingParams,
-    SpatialProcessTemplate, StatisticalInterval, StatisticalTimeRange,
+    ProbabilityType, ProductDefinition, ProductDefinitionTemplate, RegularGaussianGrid,
+    RotatedLatLonGrid, ScaledPackingParams, SpatialProcessTemplate, StatisticalInterval,
+    StatisticalTimeRange,
 };
 #[cfg(feature = "ccsds")]
 use grib_core::{CcsdsBlockSize, CcsdsFlags};
@@ -809,6 +810,14 @@ pub fn writer_reference_samples() -> Vec<(&'static str, Vec<u8>)> {
             ]),
         ),
         (
+            "writer-rotated-latlon.grib2",
+            write_grib2_message([grib2_grid_field(rotated_latlon_grid())]),
+        ),
+        (
+            "writer-regular-gaussian.grib2",
+            write_grib2_message([grib2_grid_field(regular_gaussian_grid())]),
+        ),
+        (
             "writer-simple.grib1",
             write_grib1_message(simple_grib1_field(&[5.0, 6.0, 7.0, 8.0])),
         ),
@@ -1160,6 +1169,52 @@ pub fn latlon_grid(ni: u32, nj: u32, scanning_mode: u8) -> GridDefinition {
         dj,
         scanning_mode,
     })
+}
+
+pub fn rotated_latlon_grid() -> GridDefinition {
+    GridDefinition::RotatedLatLon(RotatedLatLonGrid {
+        grid: LatLonGrid {
+            ni: 3,
+            nj: 2,
+            lat_first: -10_000_000,
+            lon_first: 340_000_000,
+            lat_last: 0,
+            lon_last: 20_000_000,
+            di: 20_000_000,
+            dj: 10_000_000,
+            scanning_mode: 0b0100_0000,
+        },
+        lat_southern_pole: -30_000_000,
+        lon_southern_pole: 10_000_000,
+        angle_of_rotation: 0.0,
+    })
+}
+
+pub fn regular_gaussian_grid() -> GridDefinition {
+    GridDefinition::RegularGaussian(RegularGaussianGrid {
+        ni: 4,
+        nj: 4,
+        lat_first: 59_444_408,
+        lon_first: 0,
+        lat_last: -59_444_408,
+        lon_last: 270_000_000,
+        di: 90_000_000,
+        number_of_parallels: 2,
+        scanning_mode: 0,
+    })
+}
+
+fn grib2_grid_field(grid: GridDefinition) -> Grib2Field {
+    let (ni, nj) = grid.shape();
+    let values = dense_values(ni as u32, nj as u32);
+    Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(grid)
+        .product(product(0, 0))
+        .packing(PackingStrategy::SimpleAuto { decimal_scale: 1 })
+        .values(&values)
+        .build()
+        .unwrap()
 }
 
 pub fn dense_values(ni: u32, nj: u32) -> Vec<f64> {

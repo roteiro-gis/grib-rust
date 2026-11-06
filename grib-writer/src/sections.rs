@@ -7,8 +7,9 @@ use grib_core::{
     DataRepresentation, FixedSurface, GridDefinition, Identification, IeeePackingParams,
     Jpeg2000PackingParams, LambertConformalGrid, LatLonGrid, MercatorGrid, PngPackingParams,
     PolarStereographicGrid, ProbabilityLimit, ProbabilityType, ProductDefinition,
-    ProductDefinitionTemplate, ProjectedGridCore, ReferenceTime, ScaledPackingParams,
-    StatisticalInterval, StatisticalTimeRange, MISSING_INCREMENT,
+    ProductDefinitionTemplate, ProjectedGridCore, ReferenceTime, RegularGaussianGrid,
+    RotatedLatLonGrid, ScaledPackingParams, StatisticalInterval, StatisticalTimeRange,
+    MISSING_INCREMENT,
 };
 
 use crate::packing::PackedField;
@@ -65,6 +66,8 @@ pub(crate) fn write_identification_section(
 pub(crate) fn write_grid_section(out: &mut Vec<u8>, grid: &GridDefinition) -> Result<()> {
     match grid {
         GridDefinition::LatLon(grid) => write_latlon_grid_section(out, grid),
+        GridDefinition::RotatedLatLon(grid) => write_rotated_latlon_grid_section(out, grid),
+        GridDefinition::RegularGaussian(grid) => write_regular_gaussian_grid_section(out, grid),
         GridDefinition::Mercator(grid) => write_mercator_grid_section(out, grid),
         GridDefinition::PolarStereographic(grid) => {
             write_polar_stereographic_grid_section(out, grid)
@@ -77,34 +80,129 @@ pub(crate) fn write_grid_section(out: &mut Vec<u8>, grid: &GridDefinition) -> Re
 
 fn write_latlon_grid_section(out: &mut Vec<u8>, grid: &LatLonGrid) -> Result<()> {
     let mut section = vec![0u8; 72];
-    section[..4].copy_from_slice(&72u32.to_be_bytes());
-    section[4] = 3;
-    section[6..10].copy_from_slice(&checked_latlon_point_count(grid)?.to_be_bytes());
-    section[12..14].copy_from_slice(&0u16.to_be_bytes());
-    section[30..34].copy_from_slice(&grid.ni.to_be_bytes());
-    section[34..38].copy_from_slice(&grid.nj.to_be_bytes());
-    section[46..50].copy_from_slice(&encode_grib_i32(
-        grid.lat_first,
-        "latitude of first grid point",
+    write_latlon_template(&mut section, 0, grid)?;
+    out.extend_from_slice(&section);
+    Ok(())
+}
+
+fn write_rotated_latlon_grid_section(out: &mut Vec<u8>, grid: &RotatedLatLonGrid) -> Result<()> {
+    let mut section = vec![0u8; 84];
+    write_latlon_template(&mut section, 1, &grid.grid)?;
+    section[72..76].copy_from_slice(&encode_grib_i32(
+        grid.lat_southern_pole,
+        "latitude of the southern pole of projection",
     )?);
-    section[50..54].copy_from_slice(&encode_grib_i32(
-        grid.lon_first,
-        "longitude of first grid point",
-    )?);
-    section[55..59].copy_from_slice(&encode_grib_i32(
-        grid.lat_last,
-        "latitude of last grid point",
-    )?);
-    section[59..63].copy_from_slice(&encode_grib_i32(
-        grid.lon_last,
-        "longitude of last grid point",
-    )?);
+    section[76..80].copy_from_slice(&grid.lon_southern_pole.to_be_bytes());
+    section[80..84].copy_from_slice(&grid.angle_of_rotation.to_be_bytes());
+    validate_written_grid_section(&section)?;
+    out.extend_from_slice(&section);
+    Ok(())
+}
+
+fn write_regular_gaussian_grid_section(
+    out: &mut Vec<u8>,
+    grid: &RegularGaussianGrid,
+) -> Result<()> {
+    let mut section = vec![0u8; 72];
+    write_geographic_grid_header(
+        &mut section,
+        40,
+        GeographicGridPoints {
+            ni: grid.ni,
+            nj: grid.nj,
+            lat_first: grid.lat_first,
+            lon_first: grid.lon_first,
+            lat_last: grid.lat_last,
+            lon_last: grid.lon_last,
+        },
+    )?;
+    section[54] = if grid.di != MISSING_INCREMENT {
+        0x20
+    } else {
+        0
+    };
+    section[63..67].copy_from_slice(&grid.di.to_be_bytes());
+    section[67..71].copy_from_slice(&grid.number_of_parallels.to_be_bytes());
+    section[71] = grid.scanning_mode;
+    validate_written_grid_section(&section)?;
+    // Reject corner points that are not Gaussian parallels or that disagree
+    // with Ni and Di, which readers would otherwise fail to georeference.
+    grid.latitudes()?;
+    grid.longitudes()?;
+    out.extend_from_slice(&section);
+    Ok(())
+}
+
+/// Writes the template 3.0 layout shared by templates 3.0 and 3.1.
+fn write_latlon_template(section: &mut [u8], template: u16, grid: &LatLonGrid) -> Result<()> {
+    write_geographic_grid_header(
+        section,
+        template,
+        GeographicGridPoints {
+            ni: grid.ni,
+            nj: grid.nj,
+            lat_first: grid.lat_first,
+            lon_first: grid.lon_first,
+            lat_last: grid.lat_last,
+            lon_last: grid.lon_last,
+        },
+    )?;
     section[54] = latlon_resolution_flags(grid);
     section[63..67].copy_from_slice(&grid.di.to_be_bytes());
     section[67..71].copy_from_slice(&grid.dj.to_be_bytes());
     section[71] = grid.scanning_mode;
-    out.extend_from_slice(&section);
     Ok(())
+}
+
+struct GeographicGridPoints {
+    ni: u32,
+    nj: u32,
+    lat_first: i32,
+    lon_first: i32,
+    lat_last: i32,
+    lon_last: i32,
+}
+
+/// Writes the section header, point count, shape, and corner points common to
+/// templates 3.0, 3.1, and 3.40.
+fn write_geographic_grid_header(
+    section: &mut [u8],
+    template: u16,
+    points: GeographicGridPoints,
+) -> Result<()> {
+    let length = checked_section_length(section.len(), 3)?;
+    section[..4].copy_from_slice(&length.to_be_bytes());
+    section[4] = 3;
+    section[6..10]
+        .copy_from_slice(&checked_geographic_point_count(points.ni, points.nj)?.to_be_bytes());
+    section[12..14].copy_from_slice(&template.to_be_bytes());
+    section[30..34].copy_from_slice(&points.ni.to_be_bytes());
+    section[34..38].copy_from_slice(&points.nj.to_be_bytes());
+    section[46..50].copy_from_slice(&encode_grib_i32(
+        points.lat_first,
+        "latitude of first grid point",
+    )?);
+    section[50..54].copy_from_slice(&encode_grib_i32(
+        points.lon_first,
+        "longitude of first grid point",
+    )?);
+    section[55..59].copy_from_slice(&encode_grib_i32(
+        points.lat_last,
+        "latitude of last grid point",
+    )?);
+    section[59..63].copy_from_slice(&encode_grib_i32(
+        points.lon_last,
+        "longitude of last grid point",
+    )?);
+    Ok(())
+}
+
+/// Rejects a written grid section that the reader would refuse to parse.
+fn validate_written_grid_section(section: &[u8]) -> Result<()> {
+    match GridDefinition::parse(section)? {
+        GridDefinition::Unsupported(template) => Err(Error::UnsupportedGridTemplate(template)),
+        _ => Ok(()),
+    }
 }
 
 /// Flag Table 3.3 bits 3 and 4 mark the i and j increments as given.
@@ -809,6 +907,10 @@ fn checked_section_length(length: usize, section: u8) -> Result<u32> {
 pub(crate) fn checked_grid_point_count(grid: &GridDefinition) -> Result<usize> {
     match grid {
         GridDefinition::LatLon(grid) => Ok(checked_latlon_point_count(grid)? as usize),
+        GridDefinition::RotatedLatLon(grid) => Ok(checked_latlon_point_count(&grid.grid)? as usize),
+        GridDefinition::RegularGaussian(grid) => {
+            Ok(checked_geographic_point_count(grid.ni, grid.nj)? as usize)
+        }
         GridDefinition::Mercator(grid) => checked_projected_point_count(
             grid.core.nx,
             grid.core.ny,
@@ -838,12 +940,15 @@ pub(crate) fn checked_grid_point_count(grid: &GridDefinition) -> Result<usize> {
 }
 
 fn checked_latlon_point_count(grid: &LatLonGrid) -> Result<u32> {
-    let count =
-        u64::from(grid.ni)
-            .checked_mul(u64::from(grid.nj))
-            .ok_or(Error::ArithmeticOverflow {
-                operation: "computing latitude-longitude grid point count",
-            })?;
+    checked_geographic_point_count(grid.ni, grid.nj)
+}
+
+fn checked_geographic_point_count(ni: u32, nj: u32) -> Result<u32> {
+    let count = u64::from(ni)
+        .checked_mul(u64::from(nj))
+        .ok_or(Error::ArithmeticOverflow {
+            operation: "computing latitude-longitude grid point count",
+        })?;
     u32::try_from(count)
         .map_err(|_| Error::ValueOutOfRange(format!("grid point count {count} exceeds u32")))
 }
@@ -881,7 +986,10 @@ fn checked_projected_point_count(
 }
 
 pub(crate) fn validate_supported_grid(grid: &GridDefinition) -> Result<()> {
-    grid.validate_supported_scan_order()
+    grid.validate_supported_scan_order()?;
+    // Encoding the small grid section up front reports invalid geometry when
+    // the field is built instead of when the message is written.
+    write_grid_section(&mut Vec::with_capacity(84), grid)
 }
 
 pub(crate) fn validate_supported_product(product: &ProductDefinition) -> Result<()> {
