@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.0-rc.1 - Unreleased
+
+- decode zero-width simple, JPEG2000, PNG, and CCSDS fields as their unscaled
+  reference value, matching ecCodes and NCEP g2c, without requiring the image
+  or CCSDS codec features
+- write constant simple, JPEG2000, PNG, and CCSDS fields with an unscaled
+  reference value, and write constant or all-missing JPEG2000 and PNG fields
+  with zero bits per value and an empty data section
+- derive missing or zero latitude/longitude increments from the grid corner
+  points, map GRIB1 increments flagged as not given to `MISSING_INCREMENT`,
+  and set the increment-given flags when writing GRIB1 and GRIB2 grids
+- write GRIB2 rotated latitude/longitude template 3.1 and regular Gaussian
+  template 3.40 grids, and validate grid geometry when a field is built
+- reuse identical bitmaps within multi-field GRIB2 messages through bitmap
+  indicator 254
+- decode complex packing and spatial differencing about 2.3x to 2.6x faster by
+  resolving missing codes per group and extracting values word-wise
+- make `MessageIter` exact-size, double-ended, fused, and cloneable, implement
+  `IntoIterator` for `&GribFile`, and implement `Debug` for `GribFile` and
+  `Message`
+
 ## 0.7.0 - 2026-10-30
 
 - replace the reader's constructor matrix with `GribFile::builder()`, including

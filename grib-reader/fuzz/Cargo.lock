@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "grib-aec"
-version = "0.7.0"
+version = "0.8.0-rc.1"
 dependencies = [
  "cc",
  "thiserror",
@@ -91,14 +91,14 @@ dependencies = [
 
 [[package]]
 name = "grib-core"
-version = "0.7.0"
+version = "0.8.0-rc.1"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "grib-reader"
-version = "0.7.0"
+version = "0.8.0-rc.1"
 dependencies = [
  "grib-aec",
  "grib-core",
@@ -120,7 +120,7 @@ dependencies = [
 
 [[package]]
 name = "grib-writer"
-version = "0.7.0"
+version = "0.8.0-rc.1"
 dependencies = [
  "grib-aec",
  "grib-core",
