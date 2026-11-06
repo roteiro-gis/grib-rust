@@ -6,7 +6,7 @@ use crate::data::{
     DataRepresentation, Grib1SecondOrderLayout, Grib1SecondOrderPackingParams, ScaledPackingParams,
 };
 use crate::error::{Error, Result};
-use crate::grid::{GridDefinition, LatLonGrid};
+use crate::grid::{GridDefinition, LatLonGrid, MISSING_INCREMENT};
 use crate::metadata::{Parameter, ReferenceTime};
 use crate::parameter;
 
@@ -476,12 +476,9 @@ fn parse_latlon_grid(section_bytes: &[u8]) -> Result<GridDefinition> {
     let lon_first = parse_coordinate(&section_bytes[13..16], 360_000_000, "first longitude")?;
     let lat_last = parse_coordinate(&section_bytes[17..20], 90_000_000, "last latitude")?;
     let lon_last = parse_coordinate(&section_bytes[20..23], 360_000_000, "last longitude")?;
-    let di = u32::from(u16::from_be_bytes(
-        section_bytes[23..25].try_into().unwrap(),
-    )) * 1_000;
-    let dj = u32::from(u16::from_be_bytes(
-        section_bytes[25..27].try_into().unwrap(),
-    )) * 1_000;
+    let increments_given = section_bytes[16] & 0x80 != 0;
+    let di = parse_increment(&section_bytes[23..25], increments_given);
+    let dj = parse_increment(&section_bytes[25..27], increments_given);
     let scanning_mode = section_bytes[27];
 
     Ok(GridDefinition::LatLon(LatLonGrid {
@@ -495,6 +492,18 @@ fn parse_latlon_grid(section_bytes: &[u8]) -> Result<GridDefinition> {
         dj,
         scanning_mode,
     }))
+}
+
+/// Converts a GRIB1 millidegree increment to microdegrees, mapping the
+/// all-ones pattern and increments flagged as not given to
+/// [`MISSING_INCREMENT`].
+fn parse_increment(bytes: &[u8], given: bool) -> u32 {
+    let raw = u16::from_be_bytes(bytes.try_into().unwrap());
+    if !given || raw == u16::MAX {
+        MISSING_INCREMENT
+    } else {
+        u32::from(raw) * 1_000
+    }
 }
 
 fn parse_coordinate(bytes: &[u8], absolute_limit: i64, name: &str) -> Result<i32> {
@@ -523,6 +532,7 @@ mod tests {
     use super::{BinaryDataSection, GridDescription, ProductDefinition};
     use crate::data::{DataRepresentation, Grib1SecondOrderLayout};
     use crate::error::Error;
+    use crate::grid::{GridDefinition, MISSING_INCREMENT};
     use crate::metadata::ReferenceTime;
 
     #[test]
@@ -594,6 +604,30 @@ mod tests {
         let err = GridDescription::parse(&section).unwrap_err();
         assert!(matches!(err, Error::InvalidSection { section: 2, .. }));
         assert!(err.to_string().contains("first longitude"));
+    }
+
+    #[test]
+    fn maps_grib1_increments_not_given_to_missing_and_infers_axes() {
+        let grid_of = |section: &[u8]| match GridDescription::parse(section).unwrap().grid {
+            GridDefinition::LatLon(grid) => grid,
+            other => panic!("expected a latitude/longitude grid, got {other:?}"),
+        };
+
+        let mut section = valid_grid_description_section();
+        section[16] = 0x80;
+        let given = grid_of(&section);
+        assert_eq!((given.di, given.dj), (1_000_000, 1_000_000));
+
+        section[23..25].copy_from_slice(&u16::MAX.to_be_bytes());
+        assert_eq!(grid_of(&section).di, MISSING_INCREMENT);
+
+        let not_given = grid_of(&valid_grid_description_section());
+        assert_eq!(
+            (not_given.di, not_given.dj),
+            (MISSING_INCREMENT, MISSING_INCREMENT)
+        );
+        assert_eq!(not_given.longitudes().unwrap(), vec![0.0, 1.0]);
+        assert_eq!(not_given.latitudes().unwrap(), vec![0.0, -1.0]);
     }
 
     #[test]

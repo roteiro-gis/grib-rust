@@ -8,7 +8,7 @@ use grib_core::{
     Jpeg2000PackingParams, LambertConformalGrid, LatLonGrid, MercatorGrid, PngPackingParams,
     PolarStereographicGrid, ProbabilityLimit, ProbabilityType, ProductDefinition,
     ProductDefinitionTemplate, ProjectedGridCore, ReferenceTime, ScaledPackingParams,
-    StatisticalInterval, StatisticalTimeRange,
+    StatisticalInterval, StatisticalTimeRange, MISSING_INCREMENT,
 };
 
 use crate::packing::PackedField;
@@ -99,11 +99,24 @@ fn write_latlon_grid_section(out: &mut Vec<u8>, grid: &LatLonGrid) -> Result<()>
         grid.lon_last,
         "longitude of last grid point",
     )?);
+    section[54] = latlon_resolution_flags(grid);
     section[63..67].copy_from_slice(&grid.di.to_be_bytes());
     section[67..71].copy_from_slice(&grid.dj.to_be_bytes());
     section[71] = grid.scanning_mode;
     out.extend_from_slice(&section);
     Ok(())
+}
+
+/// Flag Table 3.3 bits 3 and 4 mark the i and j increments as given.
+fn latlon_resolution_flags(grid: &LatLonGrid) -> u8 {
+    let mut flags = 0;
+    if grid.di != MISSING_INCREMENT {
+        flags |= 0x20;
+    }
+    if grid.dj != MISSING_INCREMENT {
+        flags |= 0x10;
+    }
+    flags
 }
 
 fn write_mercator_grid_section(out: &mut Vec<u8>, grid: &MercatorGrid) -> Result<()> {
