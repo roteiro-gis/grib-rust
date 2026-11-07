@@ -2558,6 +2558,38 @@ fn writes_reused_grid_multifield_message_with_bitmap() {
 }
 
 #[test]
+fn reuses_identical_bitmaps_within_a_multifield_message() {
+    let masked = |values: &[f64], parameter_number: u8| {
+        Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid())
+            .product(product(0, parameter_number))
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(values)
+            .build()
+            .unwrap()
+    };
+    let bytes = write_message([
+        masked(&[1.0, f64::NAN, 3.0, 4.0], 0),
+        masked(&[5.0, 6.0, 7.0, 8.0], 2),
+        masked(&[9.0, f64::NAN, 11.0, 12.0], 4),
+        masked(&[f64::NAN, 14.0, 15.0, 16.0], 5),
+        masked(&[17.0, 18.0, f64::NAN, 20.0], 6),
+        masked(&[f64::NAN, 22.0, 23.0, 24.0], 7),
+    ]);
+    assert_eq!(bitmap_indicators(&bytes), vec![0, 255, 254, 0, 0, 0]);
+
+    let file = GribFile::from_bytes(bytes).unwrap();
+    let decoded = file.message(2).unwrap().read_flat_data_as_f64().unwrap();
+    assert_eq!(decoded[0], 9.0);
+    assert!(decoded[1].is_nan());
+    assert_eq!(&decoded[2..], &[11.0, 12.0]);
+    let decoded = file.message(5).unwrap().read_flat_data_as_f64().unwrap();
+    assert!(decoded[0].is_nan());
+    assert_eq!(&decoded[1..], &[22.0, 23.0, 24.0]);
+}
+
+#[test]
 fn roundtrips_logical_row_major_order_for_supported_scan_modes() {
     let logical = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     for scanning_mode in [

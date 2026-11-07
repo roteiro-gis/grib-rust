@@ -791,6 +791,14 @@ pub(crate) fn write_bitmap_section(out: &mut Vec<u8>, bitmap_payload: Option<&[u
     Ok(())
 }
 
+/// Writes bitmap indicator 254, which applies the bitmap most recently
+/// defined in the same message.
+pub(crate) fn write_reused_bitmap_section(out: &mut Vec<u8>) -> Result<()> {
+    write_u32_be(out, 6)?;
+    write_u8_be(out, 6)?;
+    write_u8_be(out, 254)
+}
+
 pub(crate) fn write_data_section(out: &mut Vec<u8>, data_payload: &[u8]) -> Result<()> {
     let length = checked_section_length(5usize + data_payload.len(), 7)?;
     write_u32_be(out, length)?;
