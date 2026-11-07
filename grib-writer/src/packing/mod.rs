@@ -11,7 +11,9 @@ pub(crate) use image::{pack_jpeg2000_auto, pack_png_auto};
 pub(crate) use simple::pack_simple_auto;
 
 use grib_core::bit::BitWriter;
-use grib_core::{CcsdsBlockSize, CcsdsFlags, DataRepresentation, GridDefinition, IeeePrecision};
+use grib_core::{
+    filled_vec, CcsdsBlockSize, CcsdsFlags, DataRepresentation, GridDefinition, IeeePrecision,
+};
 
 use crate::{Error, Result};
 
@@ -153,6 +155,37 @@ fn present_mask(values: &[f64], explicit_bitmap: Option<&[bool]>) -> Result<Vec<
             })
             .collect(),
     }
+}
+
+/// Computes the reference value and packed deltas for templates that encode a
+/// constant field with zero bits per value.
+///
+/// ecCodes and NCEP g2c store a constant field's value directly in the
+/// reference value and ignore both scale factors when bits-per-value is zero,
+/// so constant fields carry the unscaled value instead of the quantized one.
+fn constant_aware_packing_deltas(
+    quantized: &[f64],
+    decimal_scale: i16,
+    packing_name: &str,
+) -> Result<(f32, Vec<u64>)> {
+    let Some(&first) = quantized.first() else {
+        return Ok((0.0, Vec::new()));
+    };
+    if quantized.iter().all(|value| *value == first) {
+        let constant = first * 10.0_f64.powi(-i32::from(decimal_scale));
+        let reference_value = constant as f32;
+        if !constant.is_finite() || !reference_value.is_finite() {
+            return Err(Error::ValueOutOfRange(format!(
+                "constant {packing_name} reference value does not fit IEEE f32"
+            )));
+        }
+        return Ok((
+            reference_value,
+            filled_vec(quantized.len(), 0_u64, "constant packed deltas")?,
+        ));
+    }
+
+    simple_packing_deltas(quantized)
 }
 
 fn simple_packing_deltas(quantized: &[f64]) -> Result<(f32, Vec<u64>)> {

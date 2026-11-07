@@ -2319,6 +2319,78 @@ fn writes_constant_field_with_zero_width_simple_packing() {
 }
 
 #[test]
+fn writes_decimal_scaled_constant_field_as_unscaled_reference() {
+    let field = Grib2FieldBuilder::new()
+        .identification(identification())
+        .grid(grid())
+        .product(product(0, 0))
+        .packing(PackingStrategy::SimpleAuto { decimal_scale: 2 })
+        .values(&[273.5; 4])
+        .build()
+        .unwrap();
+
+    match field.data_representation() {
+        DataRepresentation::SimplePacking(params) => {
+            assert_eq!(params.bits_per_value, 0);
+            assert_eq!(params.decimal_scale, 2);
+            assert_eq!(params.reference_value, 273.5);
+        }
+        other => panic!("expected simple packing, got {other:?}"),
+    }
+
+    let file = GribFile::from_bytes(write_message([field])).unwrap();
+    assert_eq!(
+        file.message(0).unwrap().read_flat_data_as_f64().unwrap(),
+        vec![273.5; 4]
+    );
+}
+
+#[cfg(all(feature = "jpeg2000", feature = "png"))]
+#[test]
+fn writes_constant_and_all_missing_image_fields_without_payloads() {
+    for packing in [
+        PackingStrategy::Jpeg2000Auto { decimal_scale: 1 },
+        PackingStrategy::PngAuto { decimal_scale: 1 },
+    ] {
+        let build = |values: &[f64]| {
+            Grib2FieldBuilder::new()
+                .identification(identification())
+                .grid(grid())
+                .product(product(0, 0))
+                .packing(packing)
+                .values(values)
+                .build()
+                .unwrap()
+        };
+        let constant = build(&[2.5, f64::NAN, 2.5, 2.5]);
+        let all_missing = build(&[f64::NAN; 4]);
+        for field in [&constant, &all_missing] {
+            let params = match field.data_representation() {
+                DataRepresentation::Jpeg2000Packing(params) => &params.packing,
+                DataRepresentation::PngPacking(params) => &params.packing,
+                other => panic!("expected image packing, got {other:?}"),
+            };
+            assert_eq!(params.bits_per_value, 0);
+        }
+
+        let bytes = write_message([constant, all_missing]);
+        assert_eq!(section_payload(&bytes, 7), &[] as &[u8]);
+        let file = GribFile::from_bytes(bytes).unwrap();
+        let values = file.message(0).unwrap().read_flat_data_as_f64().unwrap();
+        assert_eq!(values[0], 2.5);
+        assert!(values[1].is_nan());
+        assert_eq!(&values[2..], &[2.5, 2.5]);
+        assert!(file
+            .message(1)
+            .unwrap()
+            .read_flat_data_as_f64()
+            .unwrap()
+            .iter()
+            .all(|value| value.is_nan()));
+    }
+}
+
+#[test]
 fn writes_decimal_scaled_values_within_quantization_tolerance() {
     let values = [1.2, 2.3, 3.4, 4.5];
     let field = Grib2FieldBuilder::new()

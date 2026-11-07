@@ -2,7 +2,7 @@ use grib_core::bit::BitWriter;
 use grib_core::{DataRepresentation, ScaledPackingParams};
 
 use super::{
-    pack_bitmap, present_mask, quantize_present_values, simple_packing_deltas, PackedField,
+    constant_aware_packing_deltas, pack_bitmap, present_mask, quantize_present_values, PackedField,
 };
 use crate::Result;
 
@@ -20,7 +20,8 @@ pub(crate) fn pack_simple_auto(
     };
 
     let quantized = quantize_present_values(values, &present, decimal_scale, "simple packing")?;
-    let (reference_value, deltas) = simple_packing_deltas(&quantized)?;
+    let (reference_value, deltas) =
+        constant_aware_packing_deltas(&quantized, decimal_scale, "simple packing")?;
     let max_delta = deltas.iter().copied().max().unwrap_or(0);
     let bits_per_value = if max_delta == 0 {
         0

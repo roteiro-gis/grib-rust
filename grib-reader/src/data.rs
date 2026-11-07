@@ -184,6 +184,10 @@ pub(crate) fn decode_payload_into_with_group_lengths<T: DecodeSample>(
     }
 
     let mut output = OutputCursor::new(out, bitmap_section);
+    if let Some(constant) = zero_width_constant(representation, payload)? {
+        fill_present(&mut output, T::from_f64(constant), expected_values)?;
+        return output.finish();
+    }
     match representation {
         DataRepresentation::SimplePacking(params) => {
             unpack_simple_into(payload, params, expected_values, &mut output)?
@@ -213,6 +217,47 @@ pub(crate) fn decode_payload_into_with_group_lengths<T: DecodeSample>(
         _ => unreachable!("unsupported representation rejected before decoding"),
     }
     output.finish()
+}
+
+/// Returns the value of a constant field encoded with zero bits per value.
+///
+/// ecCodes and NCEP g2c store the constant directly in the reference value and
+/// ignore both scale factors when bits-per-value is zero, so the reference is
+/// returned unscaled. Image templates are resolved here without invoking a
+/// codec because their Section 7 payload is empty for constant fields.
+fn zero_width_constant(representation: &DataRepresentation, payload: &[u8]) -> Result<Option<f64>> {
+    let packing = match representation {
+        DataRepresentation::SimplePacking(params) => params,
+        DataRepresentation::Jpeg2000Packing(params) => &params.packing,
+        DataRepresentation::PngPacking(params) => &params.packing,
+        DataRepresentation::CcsdsPacking(params) => {
+            let packing = params.packing();
+            if packing.bits_per_value == 0 && !payload.is_empty() {
+                return Err(Error::DataLengthMismatch {
+                    expected: 0,
+                    actual: payload.len(),
+                });
+            }
+            packing
+        }
+        _ => return Ok(None),
+    };
+    Ok((packing.bits_per_value == 0).then(|| f64::from(packing.reference_value)))
+}
+
+fn fill_present<T: DecodeSample>(
+    output: &mut OutputCursor<'_, T>,
+    value: T,
+    count: usize,
+) -> Result<()> {
+    if let Some(dense) = output.take_dense(count)? {
+        dense.fill(value);
+    } else {
+        for _ in 0..count {
+            output.push_present(value)?;
+        }
+    }
+    Ok(())
 }
 
 fn unpack_ieee_into<T: DecodeSample>(
@@ -542,20 +587,7 @@ fn unpack_simple_into<T: DecodeSample>(
     let decimal_factor = 10.0_f64.powi(-(params.decimal_scale as i32));
     let reference = params.reference_value as f64;
     if bits == 0 {
-        let constant = T::from_f64(scale_decoded_value(
-            reference,
-            0.0,
-            binary_factor,
-            decimal_factor,
-        ));
-        if let Some(dense) = output.take_dense(num_values)? {
-            dense.fill(constant);
-            return Ok(());
-        }
-        for _ in 0..num_values {
-            output.push_present(constant)?;
-        }
-        return Ok(());
+        return fill_present(output, T::from_f64(reference), num_values);
     }
     if bits > u64::BITS as usize {
         return Err(Error::UnsupportedPackingWidth(params.bits_per_value));
@@ -661,26 +693,6 @@ fn unpack_ccsds_into<T: DecodeSample>(
 ) -> Result<()> {
     let packing = params.packing();
     let bits = packing.bits_per_value;
-
-    if bits == 0 {
-        if !data_bytes.is_empty() {
-            return Err(Error::DataLengthMismatch {
-                expected: 0,
-                actual: data_bytes.len(),
-            });
-        }
-        // ecCodes stores a constant CCSDS field directly in referenceValue and
-        // ignores both scale factors when bitsPerValue is zero.
-        let value = T::from_f64(f64::from(packing.reference_value));
-        if let Some(dense) = output.take_dense(num_values)? {
-            dense.fill(value);
-        } else {
-            for _ in 0..num_values {
-                output.push_present(value)?;
-            }
-        }
-        return Ok(());
-    }
 
     if num_values == 0 {
         if data_bytes.is_empty() {
@@ -2083,8 +2095,8 @@ mod tests {
     use super::{
         bitmap_payload, count_bitmap_present_points, decode_field, decode_payload, unpack_complex,
         unpack_simple, CcsdsBlockSize, CcsdsFlags, CcsdsPackingParams, ComplexPackingParams,
-        DataRepresentation, IeeePackingParams, IeeePrecision, PngPackingParams,
-        RunLengthPackingParams, ScaledPackingParams, SpatialDifferencingParams,
+        DataRepresentation, IeeePackingParams, IeeePrecision, Jpeg2000PackingParams,
+        PngPackingParams, RunLengthPackingParams, ScaledPackingParams, SpatialDifferencingParams,
     };
     use crate::error::Error;
     use grib_core::binary::encode_ieee_binary128;
@@ -2477,6 +2489,54 @@ mod tests {
             decoded,
             values.iter().map(|value| *value as f64).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn zero_width_simple_packing_ignores_scale_factors() {
+        let params = ScaledPackingParams {
+            encoded_values: 3,
+            reference_value: 273.5,
+            binary_scale: 3,
+            decimal_scale: 2,
+            bits_per_value: 0,
+            original_field_type: 0,
+        };
+        let decoded =
+            decode_payload(&[], &DataRepresentation::SimplePacking(params), None, 3).unwrap();
+        assert_eq!(decoded, vec![273.5; 3]);
+    }
+
+    #[test]
+    fn zero_width_image_packings_decode_without_a_codestream() {
+        let packing = ScaledPackingParams {
+            encoded_values: 3,
+            reference_value: 7.25,
+            binary_scale: 0,
+            decimal_scale: 1,
+            bits_per_value: 0,
+            original_field_type: 0,
+        };
+        let bitmap_section = [0, 0, 0, 7, 6, 0, 0b1101_0000];
+        for representation in [
+            DataRepresentation::Jpeg2000Packing(Jpeg2000PackingParams {
+                packing: packing.clone(),
+                compression_type: 0,
+                target_compression_ratio: 255,
+            }),
+            DataRepresentation::PngPacking(PngPackingParams { packing }),
+        ] {
+            let decoded = decode_payload(
+                &[],
+                &representation,
+                bitmap_payload(&bitmap_section).unwrap(),
+                4,
+            )
+            .unwrap();
+            assert_eq!(decoded[0], 7.25);
+            assert_eq!(decoded[1], 7.25);
+            assert!(decoded[2].is_nan());
+            assert_eq!(decoded[3], 7.25);
+        }
     }
 
     #[cfg(feature = "ccsds")]
