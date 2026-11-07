@@ -209,6 +209,8 @@ GribWriter::new(&mut bytes).write_grib2_message([field])?;
 - Writer GRIB2 regular lat/lon fields with simple packing template 5.0,
   general or row-by-row complex packing template 5.2, and spatial
   differencing template 5.3
+- Writer GRIB2 rotated latitude/longitude grid template 3.1 and regular
+  Gaussian grid template 3.40 fields
 - Writer GRIB2 Mercator grid template 3.10, polar stereographic grid template
   3.20, Lambert conformal grid template 3.30, and Albers equal-area grid
   template 3.31 fields
