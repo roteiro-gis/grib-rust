@@ -24,6 +24,7 @@ pub use error::{Error, Result};
 pub use grid::{
     AlbersEqualAreaGrid, GridDefinition, LambertConformalGrid, LatLonGrid, MercatorGrid,
     PolarStereographicGrid, ProjectedGridCore, RegularGaussianGrid, RotatedLatLonGrid,
+    MISSING_INCREMENT,
 };
 pub use metadata::{ForecastTimeUnit, Parameter, ParameterTableSource, ReferenceTime};
 pub use parameter::{

@@ -40,10 +40,20 @@ pub struct LatLonGrid {
     pub lon_first: i32,
     pub lat_last: i32,
     pub lon_last: i32,
+    /// i direction increment in microdegrees, or [`MISSING_INCREMENT`] when
+    /// the grid section does not give it.
     pub di: u32,
+    /// j direction increment in microdegrees, or [`MISSING_INCREMENT`] when
+    /// the grid section does not give it.
     pub dj: u32,
     pub scanning_mode: u8,
 }
+
+/// Encoded value of a grid increment that the grid section does not give.
+///
+/// Coordinate axes derive missing increments from the first and last grid
+/// points.
+pub const MISSING_INCREMENT: u32 = u32::MAX;
 
 /// Template 3.1: rotated latitude/longitude grid.
 #[derive(Debug, Clone, PartialEq)]
@@ -532,7 +542,7 @@ impl LatLonGrid {
     }
 
     pub fn longitudes_with_limit(&self, max_axis_points: Option<usize>) -> Result<Vec<f64>> {
-        let step = self.di as f64 / 1_000_000.0;
+        let step = self.longitude_increment_degrees();
         let signed_step = if self.i_scans_positive() { step } else { -step };
         let start = self.lon_first as f64 / 1_000_000.0;
         linear_axis(
@@ -549,7 +559,7 @@ impl LatLonGrid {
     }
 
     pub fn latitudes_with_limit(&self, max_axis_points: Option<usize>) -> Result<Vec<f64>> {
-        let step = self.dj as f64 / 1_000_000.0;
+        let step = self.latitude_increment_degrees();
         let signed_step = if self.j_scans_positive() { step } else { -step };
         let start = self.lat_first as f64 / 1_000_000.0;
         linear_axis(
@@ -602,6 +612,39 @@ impl LatLonGrid {
         validate_supported_scan_order(self.scanning_mode)
     }
 
+    /// Longitude increment in degrees, derived from the first and last
+    /// longitudes when Di is missing or zero.
+    fn longitude_increment_degrees(&self) -> f64 {
+        if !increment_is_missing(self.di, self.ni) {
+            return f64::from(self.di) / 1_000_000.0;
+        }
+        if self.ni < 2 {
+            return 0.0;
+        }
+        let mut span = if self.i_scans_positive() {
+            i64::from(self.lon_last) - i64::from(self.lon_first)
+        } else {
+            i64::from(self.lon_first) - i64::from(self.lon_last)
+        };
+        if span <= 0 {
+            span += 360_000_000;
+        }
+        span as f64 / 1_000_000.0 / f64::from(self.ni - 1)
+    }
+
+    /// Latitude increment in degrees, derived from the first and last
+    /// latitudes when Dj is missing or zero.
+    fn latitude_increment_degrees(&self) -> f64 {
+        if !increment_is_missing(self.dj, self.nj) {
+            return f64::from(self.dj) / 1_000_000.0;
+        }
+        if self.nj < 2 {
+            return 0.0;
+        }
+        let span = (i64::from(self.lat_last) - i64::from(self.lat_first)).unsigned_abs();
+        span as f64 / 1_000_000.0 / f64::from(self.nj - 1)
+    }
+
     fn i_scans_positive(&self) -> bool {
         i_scans_positive(self.scanning_mode)
     }
@@ -609,6 +652,12 @@ impl LatLonGrid {
     fn j_scans_positive(&self) -> bool {
         j_scans_positive(self.scanning_mode)
     }
+}
+
+/// A zero increment cannot describe more than one point, so it is treated
+/// like the WMO missing pattern.
+fn increment_is_missing(increment: u32, count: u32) -> bool {
+    increment == MISSING_INCREMENT || (increment == 0 && count > 1)
 }
 
 impl RotatedLatLonGrid {
@@ -1303,9 +1352,38 @@ fn parse_projected_core(
 mod tests {
     use super::{
         AlbersEqualAreaGrid, GridDefinition, LambertConformalGrid, LatLonGrid, MercatorGrid,
-        PolarStereographicGrid, ProjectedGridCore, RegularGaussianGrid,
+        PolarStereographicGrid, ProjectedGridCore, RegularGaussianGrid, MISSING_INCREMENT,
     };
     use crate::binary::encode_wmo_i32;
+
+    #[test]
+    fn infers_missing_latlon_increments_from_endpoints() {
+        let mut grid = LatLonGrid {
+            ni: 5,
+            nj: 3,
+            lat_first: 10_000_000,
+            lon_first: 350_000_000,
+            lat_last: 0,
+            lon_last: 10_000_000,
+            di: MISSING_INCREMENT,
+            dj: MISSING_INCREMENT,
+            scanning_mode: 0,
+        };
+        assert_eq!(
+            grid.longitudes().unwrap(),
+            vec![350.0, 355.0, 360.0, 365.0, 370.0]
+        );
+        assert_eq!(grid.latitudes().unwrap(), vec![10.0, 5.0, 0.0]);
+
+        grid.scanning_mode = 0b1100_0000;
+        grid.lon_first = 20_000_000;
+        grid.lon_last = 0;
+        grid.lat_first = 0;
+        grid.lat_last = 10_000_000;
+        grid.dj = 0;
+        assert_eq!(grid.longitudes().unwrap(), vec![20.0, 15.0, 10.0, 5.0, 0.0]);
+        assert_eq!(grid.latitudes().unwrap(), vec![0.0, 5.0, 10.0]);
+    }
 
     fn projected_core(nx: u32, ny: u32, dx: u32, dy: u32, scanning_mode: u8) -> ProjectedGridCore {
         ProjectedGridCore {

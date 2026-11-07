@@ -2766,3 +2766,39 @@ fn generated_grib2_fixture_matches_eccodes_when_configured() {
         }
     }
 }
+
+#[test]
+fn flags_given_and_missing_latlon_increments() {
+    let resolution_flags = |grid: GridDefinition| {
+        let field = Grib2FieldBuilder::new()
+            .identification(identification())
+            .grid(grid)
+            .product(product(0, 0))
+            .packing(PackingStrategy::SimpleAuto { decimal_scale: 0 })
+            .values(&[1.0, 2.0, 3.0, 4.0])
+            .build()
+            .unwrap();
+        let bytes = write_message([field]);
+        let grid_section = scan_sections(&bytes)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.number == 3)
+            .unwrap();
+        let flags = bytes[grid_section.offset + 54];
+        (flags, GribFile::from_bytes(bytes).unwrap())
+    };
+
+    let (flags, _) = resolution_flags(grid());
+    assert_eq!(flags, 0x30);
+
+    let GridDefinition::LatLon(mut missing) = grid() else {
+        panic!("expected a latitude/longitude grid");
+    };
+    missing.di = grib_core::MISSING_INCREMENT;
+    missing.dj = grib_core::MISSING_INCREMENT;
+    let (flags, file) = resolution_flags(GridDefinition::LatLon(missing));
+    assert_eq!(flags, 0);
+    let message = file.message(0).unwrap();
+    assert_eq!(message.longitudes().unwrap().unwrap(), vec![-120.0, -119.0]);
+    assert_eq!(message.latitudes().unwrap().unwrap(), vec![50.0, 49.0]);
+}

@@ -3,7 +3,7 @@ use grib_core::binary::{
     U24_MAX,
 };
 use grib_core::grib1::ProductDefinition as Grib1ProductDefinition;
-use grib_core::{DataRepresentation, GridDefinition};
+use grib_core::{DataRepresentation, GridDefinition, MISSING_INCREMENT};
 
 use crate::packing::PackedField;
 use crate::{Error, Result};
@@ -65,7 +65,8 @@ pub(crate) fn write_grib1_grid_section(out: &mut Vec<u8>, grid: &GridDefinition)
         grid.lon_first,
         "longitude of first grid point",
     )?);
-    write_u8_be(out, 0x80)?;
+    let increments_given = grid.di != MISSING_INCREMENT && grid.dj != MISSING_INCREMENT;
+    write_u8_be(out, if increments_given { 0x80 } else { 0 })?;
     out.extend_from_slice(&encode_grib1_coordinate(
         grid.lat_last,
         "latitude of last grid point",
@@ -204,6 +205,9 @@ fn checked_grib1_grid_dimension(value: u32, name: &str) -> Result<u16> {
 }
 
 fn checked_grib1_increment(value: u32, name: &str) -> Result<u16> {
+    if value == MISSING_INCREMENT {
+        return Ok(u16::MAX);
+    }
     if !value.is_multiple_of(1_000) {
         return Err(Error::ValueOutOfRange(format!(
             "{name} must be representable in GRIB1 millidegrees"
