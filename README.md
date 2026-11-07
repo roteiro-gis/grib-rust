@@ -338,7 +338,7 @@ git push origin v<version>
   `main`/`master` pushes, release tags, and weekly scheduled verification.
 - `grib-writer` has a versioned dev-dependency on `grib-reader` for local
   validation tests and benchmarks, so dry-run and publish it after
-  `grib-reader` v0.7.0 is visible in the crates.io index.
+  `grib-reader` v0.8.0 is visible in the crates.io index.
 - For reference comparisons and current benchmark results against ecCodes, see
   [docs/benchmark-report.md](docs/benchmark-report.md). Re-run the benchmark
   scripts after corpus changes before using those numbers as current throughput

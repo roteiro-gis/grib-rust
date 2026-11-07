@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "grib-aec"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "cc",
  "thiserror 2.0.18",
@@ -285,14 +285,14 @@ dependencies = [
 
 [[package]]
 name = "grib-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "grib-reader"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "criterion",
  "grib-aec",
@@ -310,7 +310,7 @@ dependencies = [
 
 [[package]]
 name = "grib-writer"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "criterion",
  "grib-aec",
